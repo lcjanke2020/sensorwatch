@@ -1,0 +1,39 @@
+name: CI
+
+# Secret-free build + test gate. Runs on pushes to master and on every PR.
+# See README "Testing / CI scope": this exercises the parsing, config, and
+# logging logic (the shared-memory parser against synthetic byte buffers); it
+# does not and cannot exercise a live HWiNFO64 sensor read.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Check package metadata
+        run: uv run python -m twine check dist/*
+      - name: Run tests
+        run: uv run pytest
+      - name: Import smoke test
+        run: uv run python -c "import sensorwatch; print(sensorwatch.__version__)"

@@ -212,10 +212,11 @@ def read_sensors() -> list[SensorReading] | None:
 
 
 def _read_from_mapped(ptr: int) -> list[SensorReading] | None:
-    """Parse the mapped shared memory and return all sensor readings.
+    """Copy the mapped region into an immutable ``bytes`` buffer and parse it.
 
-    All parsing happens against a single immutable ``bytes`` copy sized to the
-    mapped region, so untrusted header offsets can never read past the mapping.
+    The copy is sized via ``VirtualQuery`` so untrusted header offsets can never
+    read past the mapping. Parsing the buffer is delegated to the pure,
+    Win32-free :func:`_parse_shared_memory` helper.
     """
     region_size = _mapped_region_size(ptr)
     if region_size < HEADER_SIZE:
@@ -225,75 +226,97 @@ def _read_from_mapped(ptr: int) -> list[SensorReading] | None:
     # Copy the region once; every read below is bounds-checked by struct/bytes.
     read_size = min(region_size, MAX_TOTAL_SIZE)
     buf = bytes((ctypes.c_char * read_size).from_address(ptr))
+    return _parse_shared_memory(buf)
 
-    magic = struct.unpack_from("<I", buf, 0x00)[0]
-    if magic != HEADER_MAGIC:
-        log.warning("Bad magic: 0x%08X (expected 0x%08X)", magic, HEADER_MAGIC)
+
+def _parse_shared_memory(buf: bytes) -> list[SensorReading] | None:
+    """Parse an HWiNFO shared-memory snapshot from an immutable byte buffer.
+
+    ``buf`` is an in-memory copy of the mapped region. Header fields are
+    untrusted, so they are bounds-checked against ``len(buf)`` before use and any
+    residual out-of-range access surfaces as a caught ``struct.error`` (logged,
+    returns ``None``) instead of crashing. This is the pure core of the reader:
+    :func:`read_sensors` supplies ``buf`` from the live Win32 mapping, while the
+    tests feed synthetic buffers directly. See SECURITY.md sections 1.3 and 8.1.
+    """
+    if len(buf) < HEADER_SIZE:
+        log.warning("Buffer too small (%d bytes)", len(buf))
         return None
 
-    sensor_off = struct.unpack_from("<I", buf, 0x14)[0]
-    sensor_size = struct.unpack_from("<I", buf, 0x18)[0]
-    sensor_count = struct.unpack_from("<I", buf, 0x1C)[0]
-    entry_off = struct.unpack_from("<I", buf, 0x20)[0]
-    entry_size = struct.unpack_from("<I", buf, 0x24)[0]
-    entry_count = struct.unpack_from("<I", buf, 0x28)[0]
+    try:
+        magic = struct.unpack_from("<I", buf, 0x00)[0]
+        if magic != HEADER_MAGIC:
+            log.warning("Bad magic: 0x%08X (expected 0x%08X)", magic, HEADER_MAGIC)
+            return None
 
-    # --- Validate untrusted header fields before using them as bounds (§1.3) ---
-    if sensor_size < MIN_SENSOR_SIZE or entry_size < MIN_ENTRY_SIZE:
-        log.warning("Element size too small (sensor=%d, entry=%d) — incompatible version?",
-                    sensor_size, entry_size)
+        sensor_off = struct.unpack_from("<I", buf, 0x14)[0]
+        sensor_size = struct.unpack_from("<I", buf, 0x18)[0]
+        sensor_count = struct.unpack_from("<I", buf, 0x1C)[0]
+        entry_off = struct.unpack_from("<I", buf, 0x20)[0]
+        entry_size = struct.unpack_from("<I", buf, 0x24)[0]
+        entry_count = struct.unpack_from("<I", buf, 0x28)[0]
+
+        # --- Validate untrusted header fields before using them as bounds (§1.3) ---
+        if sensor_size < MIN_SENSOR_SIZE or entry_size < MIN_ENTRY_SIZE:
+            log.warning("Element size too small (sensor=%d, entry=%d) — incompatible version?",
+                        sensor_size, entry_size)
+            return None
+        if sensor_count > MAX_SENSOR_COUNT or entry_count > MAX_ENTRY_COUNT:
+            log.warning("Unreasonable counts (sensors=%d, entries=%d)", sensor_count, entry_count)
+            return None
+
+        if sensor_off < HEADER_SIZE or entry_off < HEADER_SIZE:
+            # An offset inside the header would otherwise parse header bytes as data.
+            log.warning("Section offset overlaps header (sensor_off=%d, entry_off=%d, header=%d)",
+                        sensor_off, entry_off, HEADER_SIZE)
+            return None
+
+        sensor_end = sensor_off + sensor_count * sensor_size
+        entry_end = entry_off + entry_count * entry_size
+        if sensor_end > len(buf) or entry_end > len(buf):
+            log.warning("Header sections exceed mapped region (sensor_end=%d, entry_end=%d, region=%d)",
+                        sensor_end, entry_end, len(buf))
+            return None
+
+        # Build sensor name lookup: index -> display name
+        sensor_names: dict[int, str] = {}
+        for i in range(sensor_count):
+            base = sensor_off + i * sensor_size
+            name_user = _decode(buf, base + 136, 128)
+            name_orig = _decode(buf, base + 8, 128)
+            sensor_names[i] = name_user or name_orig
+
+        # Read all entries
+        readings: list[SensorReading] = []
+        for i in range(entry_count):
+            base = entry_off + i * entry_size
+            etype, sensor_idx, _ = struct.unpack_from("<III", buf, base)
+            reading_orig = _decode(buf, base + 12, 128)
+            reading_user = _decode(buf, base + 140, 128)
+            unit = _decode(buf, base + 268, 16)
+            value, value_min, value_max, value_avg = struct.unpack_from("<dddd", buf, base + 284)
+
+            if not (0 <= sensor_idx < sensor_count):
+                log.warning("Entry %d has invalid sensor_idx %d (count=%d)", i, sensor_idx, sensor_count)
+                sensor_name = f"sensor_{sensor_idx}"
+            else:
+                sensor_name = sensor_names.get(sensor_idx, f"sensor_{sensor_idx}")
+
+            readings.append(SensorReading(
+                sensor_name=sensor_name,
+                reading_name=reading_user or reading_orig,
+                sensor_type=SENSOR_TYPES.get(etype, f"unknown({etype})"),
+                value=value,
+                value_min=value_min,
+                value_max=value_max,
+                value_avg=value_avg,
+                unit=unit,
+            ))
+    except struct.error:
+        # Defensive backstop: the bounds checks above should prevent this, but a
+        # corrupt header must never crash the caller. See SECURITY.md §1.3.
+        log.exception("Malformed HWiNFO shared memory buffer")
         return None
-    if sensor_count > MAX_SENSOR_COUNT or entry_count > MAX_ENTRY_COUNT:
-        log.warning("Unreasonable counts (sensors=%d, entries=%d)", sensor_count, entry_count)
-        return None
-
-    if sensor_off < HEADER_SIZE or entry_off < HEADER_SIZE:
-        # An offset inside the header would otherwise parse header bytes as data.
-        log.warning("Section offset overlaps header (sensor_off=%d, entry_off=%d, header=%d)",
-                    sensor_off, entry_off, HEADER_SIZE)
-        return None
-
-    sensor_end = sensor_off + sensor_count * sensor_size
-    entry_end = entry_off + entry_count * entry_size
-    if sensor_end > len(buf) or entry_end > len(buf):
-        log.warning("Header sections exceed mapped region (sensor_end=%d, entry_end=%d, region=%d)",
-                    sensor_end, entry_end, len(buf))
-        return None
-
-    # Build sensor name lookup: index -> display name
-    sensor_names: dict[int, str] = {}
-    for i in range(sensor_count):
-        base = sensor_off + i * sensor_size
-        name_user = _decode(buf, base + 136, 128)
-        name_orig = _decode(buf, base + 8, 128)
-        sensor_names[i] = name_user or name_orig
-
-    # Read all entries
-    readings: list[SensorReading] = []
-    for i in range(entry_count):
-        base = entry_off + i * entry_size
-        etype, sensor_idx, _ = struct.unpack_from("<III", buf, base)
-        reading_orig = _decode(buf, base + 12, 128)
-        reading_user = _decode(buf, base + 140, 128)
-        unit = _decode(buf, base + 268, 16)
-        value, value_min, value_max, value_avg = struct.unpack_from("<dddd", buf, base + 284)
-
-        if not (0 <= sensor_idx < sensor_count):
-            log.warning("Entry %d has invalid sensor_idx %d (count=%d)", i, sensor_idx, sensor_count)
-            sensor_name = f"sensor_{sensor_idx}"
-        else:
-            sensor_name = sensor_names.get(sensor_idx, f"sensor_{sensor_idx}")
-
-        readings.append(SensorReading(
-            sensor_name=sensor_name,
-            reading_name=reading_user or reading_orig,
-            sensor_type=SENSOR_TYPES.get(etype, f"unknown({etype})"),
-            value=value,
-            value_min=value_min,
-            value_max=value_max,
-            value_avg=value_avg,
-            unit=unit,
-        ))
 
     log.debug("Read %d sensors, %d entries from HWiNFO shared memory", sensor_count, entry_count)
     return readings

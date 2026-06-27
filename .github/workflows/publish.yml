@@ -1,0 +1,41 @@
+name: Publish to PyPI
+
+# Fires when a GitHub Release is published. Publishes to PyPI via OIDC trusted
+# publishing — no stored token, no password. PEP 740 attestations are emitted by
+# default under trusted publishing.
+#
+# Prerequisites (one-time, configured on PyPI by the maintainer):
+#   - A trusted publisher for this repo: owner/repo, workflow `publish.yml`,
+#     environment `pypi`. See CONTRIBUTING.md "Releasing".
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest  # pypa/gh-action-pypi-publish is a Docker action (Linux-only).
+    environment: pypi
+    permissions:
+      id-token: write   # required for OIDC trusted publishing + PEP 740 attestations
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync
+      - name: Run test gate
+        run: uv run pytest
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Check package metadata
+        run: uv run python -m twine check dist/*
+      - name: Publish to PyPI (OIDC trusted publishing)
+        # No password / token input → OIDC. Uploads dist/ by default.
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
