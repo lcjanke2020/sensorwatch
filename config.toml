@@ -1,0 +1,15 @@
+[general]
+interval_seconds = 10
+log_dir = "logs"
+retention_days = 30
+
+[sensors]
+# Sensor name patterns to include (substring match, case-insensitive).
+# Empty list = capture ALL sensors from HWiNFO.
+#
+# Example — capture only a specific PSU's sensors:
+#   include = ["MEG Ai1600T"]
+include = []
+
+# Patterns to exclude (applied after include).
+exclude = []

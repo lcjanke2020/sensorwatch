@@ -1,0 +1,32 @@
+[project]
+name = "sensorwatch"
+version = "0.1.0"
+description = "Lightweight hardware sensor monitor for Windows — reads HWiNFO64 shared memory and logs JSON Lines"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Leonard Janke" }]
+keywords = ["hwinfo", "hardware-monitoring", "sensors", "psu", "telemetry", "windows"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "pendulum>=3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/lcjanke2020/sensorwatch"
+Repository = "https://github.com/lcjanke2020/sensorwatch"
+Issues = "https://github.com/lcjanke2020/sensorwatch/issues"
+
+[project.scripts]
+sensorwatch = "sensorwatch.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
