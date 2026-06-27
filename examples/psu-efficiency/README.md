@@ -95,6 +95,15 @@ Our measured data aligns with the [Cybenetics lab report](https://www.cybenetics
 
 ## Data Files
 
+> **Note on schema:** this dataset is a *post-processed, PSU-specific export* —
+> 16 flat columns derived from the raw capture. It is **not** the generic nested
+> `{"timestamp": ..., "sensors": [...]}` format that sensorwatch's `logger.py`
+> emits today (see the main [README](../../README.md)). `efficiency_pct` is
+> HWiNFO's native *PSU Efficiency* reading (the Ai1600T measures its own AC input
+> internally); it is **not** recomputable from the other published columns, which
+> omit AC input power. Treat this as a curated result set from the project's
+> original PSU monitor, published for reference alongside the charts.
+
 | File | Format | Size | Description |
 |------|--------|------|-------------|
 | `efficiency_test_2026_02_18.jsonl` | JSON Lines | 908 KB | One JSON object per sample, flat column names |

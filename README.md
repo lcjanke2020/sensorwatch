@@ -27,7 +27,7 @@ currents, power, fan speeds, clocks, and usage.
 ## Requirements
 
 - Windows (x64)
-- Python 3.11+
+- Python 3.12+
 - [HWiNFO64](https://www.hwinfo.com/) running with **Shared Memory Support**
   enabled (Settings → Shared Memory Support) and the sensors window open.
 

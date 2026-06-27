@@ -3,7 +3,7 @@ name = "sensorwatch"
 version = "0.1.0"
 description = "Lightweight hardware sensor monitor for Windows — reads HWiNFO64 shared memory and logs JSON Lines"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<4.0"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Leonard Janke" }]
@@ -13,6 +13,8 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: System :: Monitoring",
 ]
 dependencies = [

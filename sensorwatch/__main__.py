@@ -70,10 +70,10 @@ def main() -> None:
         shutdown = True
 
     signal.signal(signal.SIGINT, on_signal)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, on_signal)
     if sys.platform == "win32" and hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, on_signal)
-    else:
-        signal.signal(signal.SIGTERM, on_signal)
 
     hwinfo_warned = False
     with SensorLogger(config.log_dir, config.retention_days) as logger:
@@ -92,8 +92,9 @@ def main() -> None:
                 else:
                     log.debug("No readings matched sensor filters")
 
-            # Sleep in small increments so we can respond to signals promptly
-            for _ in range(config.interval_seconds * 10):
+            # Sleep in small increments so we can respond to signals promptly.
+            # Guard against a zero/non-int interval slipping through to range().
+            for _ in range(max(1, int(config.interval_seconds * 10))):
                 if shutdown:
                     break
                 time.sleep(0.1)

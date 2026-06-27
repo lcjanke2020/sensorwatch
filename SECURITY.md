@@ -563,6 +563,12 @@ copy the entire expected region into a Python `bytes` object in one operation, t
 parse from that buffer using `struct.unpack_from` (which raises `struct.error` on
 out-of-bounds, a catchable Python exception).
 
+**Status (v0.1.0): implemented.** `_read_from_mapped()` now sizes the mapping with
+`VirtualQuery`, copies the region into a single immutable `bytes` buffer, validates
+element sizes / counts (`MAX_SENSOR_COUNT`, `MAX_ENTRY_COUNT`) and section end
+offsets against the buffer length, and parses everything with `struct.unpack_from`.
+A malformed or spoofed header is now logged and returns `None` instead of crashing.
+
 ### 8.2 String Decoding from Untrusted Memory (LOW priority)
 
 **File**: `sensorwatch/hwinfo_shm.py`, line 104
@@ -625,14 +631,17 @@ writing to it.
 
 ### Must-Do (Before Production Use)
 
-| # | Finding | Section | Effort |
-|---|---------|---------|--------|
-| 1 | Add bounds validation for shared memory counts/offsets | 1.3, 8.1 | Small |
-| 2 | Copy mapped region to bytes buffer before parsing | 1.3, 8.1 | Small |
-| 3 | Bind REST service to 127.0.0.1 only (when implemented) | 3.1 | Trivial |
-| 4 | Validate Host header in REST service (when implemented) | 3.2 | Small |
-| 5 | No CORS headers in REST service (when implemented) | 3.2 | Trivial |
-| 6 | Load C DLL by absolute path only (when implemented) | 2.1 | Trivial |
+> Items 1–2 are **implemented in v0.1.0** (see §8.1). Items 3–6 apply to the REST
+> service / C DLL, which are not yet built.
+
+| # | Finding | Section | Effort | Status |
+|---|---------|---------|--------|--------|
+| 1 | Add bounds validation for shared memory counts/offsets | 1.3, 8.1 | Small | ✅ Done (v0.1.0) |
+| 2 | Copy mapped region to bytes buffer before parsing | 1.3, 8.1 | Small | ✅ Done (v0.1.0) |
+| 3 | Bind REST service to 127.0.0.1 only (when implemented) | 3.1 | Trivial | Planned |
+| 4 | Validate Host header in REST service (when implemented) | 3.2 | Small | Planned |
+| 5 | No CORS headers in REST service (when implemented) | 3.2 | Trivial | Planned |
+| 6 | Load C DLL by absolute path only (when implemented) | 2.1 | Trivial | Planned |
 
 ### Should-Do (Good Practice)
 

@@ -8,9 +8,31 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def _clean_str_list(items: list) -> list[str]:
-    """Filter a list to only non-empty strings."""
+def _clean_str_list(key: str, items: object) -> list[str]:
+    """Coerce a config value to a list of non-empty strings.
+
+    Non-list values (e.g. a bare ``include = "MEG"`` string) are rejected with a
+    warning rather than silently iterated character-by-character.
+    """
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        log.warning("Config '%s' must be a list of strings, got %s; ignoring", key, type(items).__name__)
+        return []
     return [s for s in items if isinstance(s, str) and s.strip()]
+
+
+def _as_int(key: str, value: object, default: int, minimum: int) -> int:
+    """Coerce a config value to an int >= minimum, falling back to default."""
+    # bool is an int subclass but is never a valid count/interval here.
+    if isinstance(value, bool) or not isinstance(value, int):
+        if value is not None:
+            log.warning("Config '%s' must be an integer, got %r; using %d", key, value, default)
+        return default
+    if value < minimum:
+        log.warning("Config '%s' (%d) is below minimum %d; using %d", key, value, minimum, default)
+        return default
+    return value
 
 
 @dataclass
@@ -23,7 +45,7 @@ class Config:
 
     @classmethod
     def from_toml(cls, path: Path) -> "Config":
-        """Load config from a TOML file, falling back to defaults for missing keys."""
+        """Load config from a TOML file, falling back to defaults for missing/invalid keys."""
         defaults = cls()
         with open(path, "rb") as f:
             data = tomllib.load(f)
@@ -32,11 +54,13 @@ class Config:
         sensors = data.get("sensors", {})
 
         return cls(
-            interval_seconds=general.get("interval_seconds", defaults.interval_seconds),
-            log_dir=general.get("log_dir", defaults.log_dir),
-            retention_days=general.get("retention_days", defaults.retention_days),
-            sensor_include=_clean_str_list(sensors.get("include", defaults.sensor_include)),
-            sensor_exclude=_clean_str_list(sensors.get("exclude", defaults.sensor_exclude)),
+            interval_seconds=_as_int(
+                "interval_seconds", general.get("interval_seconds"), defaults.interval_seconds, minimum=1),
+            log_dir=str(general.get("log_dir", defaults.log_dir)),
+            retention_days=_as_int(
+                "retention_days", general.get("retention_days"), defaults.retention_days, minimum=0),
+            sensor_include=_clean_str_list("sensors.include", sensors.get("include")),
+            sensor_exclude=_clean_str_list("sensors.exclude", sensors.get("exclude")),
         )
 
     @classmethod
@@ -46,10 +70,12 @@ class Config:
             if path and path.exists():
                 return cls.from_toml(path)
 
-            # Try default location next to the package
-            default = Path(__file__).resolve().parent.parent / "config.toml"
-            if default.exists():
-                return cls.from_toml(default)
+            # Look for a bundled config next to the package first (wheel install),
+            # then the project root (editable/dev checkout).
+            here = Path(__file__).resolve().parent
+            for candidate in (here / "config.toml", here.parent / "config.toml"):
+                if candidate.exists():
+                    return cls.from_toml(candidate)
         except (tomllib.TOMLDecodeError, OSError) as exc:
             log.warning("Failed to load config (%s), using defaults", exc)
 

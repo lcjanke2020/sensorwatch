@@ -35,24 +35,31 @@ class SensorLogger:
         if self._current_date == today and self._file is not None:
             return
 
+        rolled_over = self._current_date is not None
         self.close()
         self._current_date = today
         path = self._log_path(today)
         log.info("Opening log file: %s", path)
         self._file = open(path, "a", encoding="utf-8")
+        # Re-run retention on each daily rollover so a long-running process
+        # purges old files without needing a restart.
+        if rolled_over:
+            self._cleanup_old_files()
 
     def write(self, readings: list[dict], timestamp: pendulum.DateTime | None = None) -> None:
         """Write a single sample (all readings at one timestamp) as one JSONL record."""
         now = timestamp or pendulum.now("local")
-        self._ensure_file(now)
-
         record = {
             "timestamp": now.to_iso8601_string(),
             "sensors": readings,
         }
-        line = json.dumps(record, ensure_ascii=False)
-        self._file.write(line + "\n")
-        self._file.flush()
+        try:
+            self._ensure_file(now)
+            self._file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._file.flush()
+        except OSError as exc:
+            # Disk full, permission denied, etc. — log and keep the monitor alive.
+            log.warning("Failed to write log record (%s)", exc)
 
     def close(self) -> None:
         if self._file is not None:
