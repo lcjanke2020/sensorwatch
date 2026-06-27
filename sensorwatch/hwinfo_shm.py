@@ -247,6 +247,12 @@ def _read_from_mapped(ptr: int) -> list[SensorReading] | None:
         log.warning("Unreasonable counts (sensors=%d, entries=%d)", sensor_count, entry_count)
         return None
 
+    if sensor_off < HEADER_SIZE or entry_off < HEADER_SIZE:
+        # An offset inside the header would otherwise parse header bytes as data.
+        log.warning("Section offset overlaps header (sensor_off=%d, entry_off=%d, header=%d)",
+                    sensor_off, entry_off, HEADER_SIZE)
+        return None
+
     sensor_end = sensor_off + sensor_count * sensor_size
     entry_end = entry_off + entry_count * entry_size
     if sensor_end > len(buf) or entry_end > len(buf):

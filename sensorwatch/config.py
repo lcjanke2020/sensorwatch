@@ -19,7 +19,8 @@ def _clean_str_list(key: str, items: object) -> list[str]:
     if not isinstance(items, list):
         log.warning("Config '%s' must be a list of strings, got %s; ignoring", key, type(items).__name__)
         return []
-    return [s for s in items if isinstance(s, str) and s.strip()]
+    # Strip surrounding whitespace so a pattern like " MEG Ai1600T " still matches.
+    return [s.strip() for s in items if isinstance(s, str) and s.strip()]
 
 
 def _as_int(key: str, value: object, default: int, minimum: int) -> int:

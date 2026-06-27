@@ -51,6 +51,12 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
+    # The reader depends on HWiNFO64's Windows shared memory; fail fast rather
+    # than spinning and logging the same error every interval elsewhere.
+    if sys.platform != "win32":
+        log.error("sensorwatch requires Windows (HWiNFO64 shared memory); platform is %s.", sys.platform)
+        raise SystemExit(1)
+
     config = Config.load(args.config)
     log.info(
         "Starting sensorwatch: interval=%ds, log_dir=%s, retention=%d days",
