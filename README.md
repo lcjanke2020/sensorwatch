@@ -54,6 +54,14 @@ sensorwatch --config config.toml --verbose
 If HWiNFO64 is not running (or shared memory is disabled), sensorwatch logs a
 warning and keeps trying — start HWiNFO and readings begin flowing.
 
+## Running from WSL-2
+
+sensorwatch is a Windows program, but you can launch it from a WSL-2 shell via
+Windows interop — convenient if you prefer WSL-2's persistent SSH / terminal
+multiplexer (tmux, WezTerm) sessions. You can't run it as a native Linux
+process; you drive the Windows build from the WSL-2 side. See
+[docs/running-from-wsl2.md](docs/running-from-wsl2.md).
+
 ## Output format
 
 One JSON object per sample, written to `logs/sensors_YYYY-MM-DD.jsonl`:
