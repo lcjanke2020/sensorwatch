@@ -1,5 +1,7 @@
 # sensorwatch
 
+[![CI](https://github.com/lcjanke2020/sensorwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/lcjanke2020/sensorwatch/actions/workflows/ci.yml)
+
 A lightweight hardware sensor monitor for Windows. It reads [HWiNFO64](https://www.hwinfo.com/)'s
 shared-memory sensor feed and logs readings as JSON Lines with daily file
 rotation — a small, dependency-light background process you can leave running
@@ -79,6 +81,26 @@ Example — capture only a specific PSU's sensors:
 ```toml
 [sensors]
 include = ["MEG Ai1600T"]
+```
+
+## Testing / CI scope
+
+Continuous integration runs the unit tests on Ubuntu and Windows across Python
+3.12 and 3.13. The tests cover the **parsing, configuration, and logging
+logic** — in particular, the HWiNFO shared-memory parser is exercised against
+**synthetic byte buffers** (`_parse_shared_memory()`), so the untrusted-header
+bounds checks are validated without a live sensor source.
+
+CI does **not** — and cannot — exercise a real sensor read. That path requires
+[HWiNFO64](https://www.hwinfo.com/) running on Windows with **Shared Memory
+Support** enabled, and is verified manually. So a green CI badge means the logic
+is sound, not that end-to-end sensor reading has been validated on your machine.
+
+Run the tests locally:
+
+```sh
+uv sync
+uv run pytest
 ```
 
 ## Roadmap

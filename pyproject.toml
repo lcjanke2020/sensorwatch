@@ -32,3 +32,25 @@ sensorwatch = "sensorwatch.__main__:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Dev-only tooling (PEP 735). Installed by `uv sync`; kept out of
+# [project].dependencies so the runtime footprint stays just `pendulum`.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "twine>=5.0",
+]
+
+# Trim the sdist to source + metadata. The heavy worked-example artifacts
+# (charts and captured datasets) stay browsable on GitHub but are excluded from
+# the published tarball to keep it small. The wheel already ships only the
+# sensorwatch/ package.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "examples/**/*.png",
+    "examples/**/*.parquet",
+    "examples/**/*.jsonl",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
