@@ -1,6 +1,6 @@
 [project]
 name = "sensorwatch"
-version = "0.1.0"
+version = "0.1.1"
 description = "Lightweight hardware sensor monitor for Windows — reads HWiNFO64 shared memory and logs JSON Lines"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
