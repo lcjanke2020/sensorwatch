@@ -39,3 +39,10 @@ jobs:
       - name: Publish to PyPI (OIDC trusted publishing)
         # No password / token input → OIDC. Uploads dist/ by default.
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          # PEP 740 attestations are signed via Sigstore using the ambient OIDC
+          # token (the job's `id-token: write`) and uploaded to PyPI — this does
+          # NOT use GitHub's attestation store, so `attestations: write` is not
+          # required. On by default under trusted publishing; set explicitly to
+          # document intent and fail loudly if attestations can't be produced.
+          attestations: true

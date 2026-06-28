@@ -63,7 +63,14 @@ gh release create vX.Y.Z --generate-notes
 
 One-time setup before the first release: on PyPI, add a **pending** trusted
 publisher for this repo (owner `lcjanke2020`, repo `sensorwatch`, workflow
-`publish.yml`, environment `pypi`). A TestPyPI dry-run first is recommended.
+`publish.yml`, environment `pypi`).
+
+A **TestPyPI dry-run first is recommended** to validate the whole OIDC path
+without touching real PyPI. Configure a matching pending publisher on
+[test.pypi.org](https://test.pypi.org) (workflow `publish-testpypi.yml`,
+environment `testpypi`), then run the **Publish to TestPyPI (dry run)** workflow
+from the Actions tab (it's manually triggered and safely repeatable). TestPyPI
+and PyPI are fully independent registries, so each needs its own publisher.
 
 ## Reporting bugs
 
