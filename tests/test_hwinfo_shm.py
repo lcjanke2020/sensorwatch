@@ -36,11 +36,14 @@ def _pack_name(s: str, length: int) -> bytes:
     return raw + b"\x00" * (length - len(raw))
 
 
-def _build_buffer(sensors, entries):
+def _build_buffer(sensors, entries, *, sensor_originals=None, reading_originals=None):
     """Build a well-formed HWiNFO buffer.
 
     ``sensors``: list of display names (placed in the name_user field).
     ``entries``: list of ``(type, sensor_idx, reading_name, unit, value)``.
+    ``sensor_originals`` / ``reading_originals``: optional aligned lists for the
+    name_original fields (default empty), to exercise the "fall back to original
+    name when user name is blank" path.
 
     Corruption tests start from this valid buffer and patch a single header
     field via :func:`_patch_u32`.
@@ -52,18 +55,20 @@ def _build_buffer(sensors, entries):
     sensor_region = bytearray(len(sensors) * sensor_size)
     for i, name in enumerate(sensors):
         base = i * sensor_size
+        orig = sensor_originals[i] if sensor_originals else ""
         struct.pack_into("<I", sensor_region, base + 0, i)   # id
         struct.pack_into("<I", sensor_region, base + 4, 0)   # instance
-        sensor_region[base + 8: base + 136] = _pack_name("", 128)        # name_original
+        sensor_region[base + 8: base + 136] = _pack_name(orig, 128)      # name_original
         sensor_region[base + 136: base + 264] = _pack_name(name, 128)    # name_user
 
     entry_region = bytearray(len(entries) * entry_size)
     for i, (etype, sidx, reading, unit, value) in enumerate(entries):
         base = i * entry_size
+        rorig = reading_originals[i] if reading_originals else ""
         struct.pack_into("<I", entry_region, base + 0, etype)
         struct.pack_into("<I", entry_region, base + 4, sidx)
         struct.pack_into("<I", entry_region, base + 8, i)    # id
-        entry_region[base + 12: base + 140] = _pack_name("", 128)        # name_original
+        entry_region[base + 12: base + 140] = _pack_name(rorig, 128)     # name_original
         entry_region[base + 140: base + 268] = _pack_name(reading, 128)  # name_user
         entry_region[base + 268: base + 284] = _pack_name(unit, 16)      # unit
         struct.pack_into("<dddd", entry_region, base + 284, value, value, value, value)
@@ -130,6 +135,27 @@ def test_invalid_sensor_idx_falls_back_to_synthetic_name():
     assert readings[0].sensor_name == "sensor_5"
 
 
+def test_falls_back_to_original_names_when_user_blank():
+    # When the user-customizable name is blank, the original name is used.
+    buf = _build_buffer(
+        sensors=[""], sensor_originals=["CPU [#0]"],
+        entries=[(1, 0, "", "C", 30.0)], reading_originals=["Core 0"],
+    )
+    readings = _parse_shared_memory(buf)
+    assert readings is not None
+    assert readings[0].sensor_name == "CPU [#0]"
+    assert readings[0].reading_name == "Core 0"
+
+
+def test_control_chars_stripped_from_names():
+    # C0/C1 control bytes in decoded strings are stripped (SECURITY.md §8.2).
+    buf = _build_buffer(["GPU\x01"], [(1, 0, "Hot\x1fSpot", "C", 55.0)])
+    readings = _parse_shared_memory(buf)
+    assert readings is not None
+    assert readings[0].sensor_name == "GPU"
+    assert readings[0].reading_name == "HotSpot"
+
+
 # --- Malformed headers all return None safely -------------------------------
 
 def test_buffer_smaller_than_header_returns_none():
@@ -173,4 +199,11 @@ def test_sections_exceeding_region_returns_none():
     # A count within the sanity cap but too large for the buffer must be caught
     # by the region-bounds check, not by reading past the end.
     buf = _patch_u32(_valid_buffer(), OFF_SENSOR_COUNT, MAX_SENSOR_COUNT)
+    assert _parse_shared_memory(buf) is None
+
+
+def test_overlapping_sections_returns_none():
+    # Point the entry section back into the sensor section: both stay within the
+    # buffer and past the header, so only the overlap guard can catch this.
+    buf = _patch_u32(_valid_buffer(), OFF_ENTRY_OFF, HEADER_SIZE)
     assert _parse_shared_memory(buf) is None

@@ -1,14 +1,27 @@
 """Tests for sensorwatch.logger — JSONL record shape, daily rotation, retention.
 
-Timestamps are injected explicitly (pendulum DateTimes) so nothing depends on
-the wall clock. File operations use pytest's tmp_path.
+Nothing depends on the wall clock: the write/rotation tests inject explicit
+timestamps, and the retention-cleanup tests freeze ``pendulum.today`` (the clock
+``_cleanup_old_files`` reads) via the ``frozen_today`` fixture. File operations
+use pytest's tmp_path.
 """
 
 import json
 
 import pendulum
+import pytest
 
 from sensorwatch.logger import LOG_PREFIX, SensorLogger
+
+# Fixed reference date for retention tests (a Monday; value is arbitrary).
+FROZEN_TODAY = pendulum.datetime(2026, 6, 15, 12, 0, 0, tz="UTC")
+
+
+@pytest.fixture
+def frozen_today(monkeypatch):
+    """Freeze ``pendulum.today`` so retention-cutoff math is deterministic."""
+    monkeypatch.setattr(pendulum, "today", lambda tz="local": FROZEN_TODAY)
+    return FROZEN_TODAY
 
 
 def _read_jsonl(path):
@@ -52,10 +65,9 @@ def test_daily_rollover_opens_new_file(tmp_path):
     assert _read_jsonl(f2)[0]["sensors"] == [{"n": 2}]
 
 
-def test_cleanup_removes_files_older_than_retention(tmp_path):
-    today = pendulum.today("local")
-    old_file = tmp_path / f"{LOG_PREFIX}{today.subtract(days=40).to_date_string()}.jsonl"
-    recent_file = tmp_path / f"{LOG_PREFIX}{today.subtract(days=1).to_date_string()}.jsonl"
+def test_cleanup_removes_files_older_than_retention(tmp_path, frozen_today):
+    old_file = tmp_path / f"{LOG_PREFIX}{frozen_today.subtract(days=40).to_date_string()}.jsonl"
+    recent_file = tmp_path / f"{LOG_PREFIX}{frozen_today.subtract(days=1).to_date_string()}.jsonl"
     old_file.write_text("{}\n", encoding="utf-8")
     recent_file.write_text("{}\n", encoding="utf-8")
 
@@ -66,9 +78,8 @@ def test_cleanup_removes_files_older_than_retention(tmp_path):
     assert recent_file.exists()
 
 
-def test_cleanup_skips_malformed_and_unrelated_filenames(tmp_path):
-    today = pendulum.today("local")
-    old_valid = tmp_path / f"{LOG_PREFIX}{today.subtract(days=40).to_date_string()}.jsonl"
+def test_cleanup_skips_malformed_and_unrelated_filenames(tmp_path, frozen_today):
+    old_valid = tmp_path / f"{LOG_PREFIX}{frozen_today.subtract(days=40).to_date_string()}.jsonl"
     malformed = tmp_path / f"{LOG_PREFIX}not-a-date.jsonl"
     unrelated = tmp_path / "unrelated.jsonl"
     for f in (old_valid, malformed, unrelated):
@@ -81,9 +92,8 @@ def test_cleanup_skips_malformed_and_unrelated_filenames(tmp_path):
     assert unrelated.exists()       # outside the glob -> untouched
 
 
-def test_cleanup_disabled_when_retention_non_positive(tmp_path):
-    today = pendulum.today("local")
-    ancient = tmp_path / f"{LOG_PREFIX}{today.subtract(days=999).to_date_string()}.jsonl"
+def test_cleanup_disabled_when_retention_non_positive(tmp_path, frozen_today):
+    ancient = tmp_path / f"{LOG_PREFIX}{frozen_today.subtract(days=999).to_date_string()}.jsonl"
     ancient.write_text("{}\n", encoding="utf-8")
 
     SensorLogger(tmp_path, retention_days=0).close()

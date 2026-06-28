@@ -278,6 +278,14 @@ def _parse_shared_memory(buf: bytes) -> list[SensorReading] | None:
                         sensor_end, entry_end, len(buf))
             return None
 
+        # The sensor and entry arrays are disjoint regions in valid data. An
+        # overlap means a corrupt header would have the two arrays aliasing each
+        # other's bytes; reject rather than emit semantically bogus readings.
+        if sensor_off < entry_end and entry_off < sensor_end:
+            log.warning("Header sections overlap (sensor=[%d,%d), entry=[%d,%d))",
+                        sensor_off, sensor_end, entry_off, entry_end)
+            return None
+
         # Build sensor name lookup: index -> display name
         sensor_names: dict[int, str] = {}
         for i in range(sensor_count):
@@ -312,10 +320,12 @@ def _parse_shared_memory(buf: bytes) -> list[SensorReading] | None:
                 value_avg=value_avg,
                 unit=unit,
             ))
-    except struct.error:
+    except struct.error as exc:
         # Defensive backstop: the bounds checks above should prevent this, but a
-        # corrupt header must never crash the caller. See SECURITY.md §1.3.
-        log.exception("Malformed HWiNFO shared memory buffer")
+        # corrupt header must never crash the caller. Reaching here means input
+        # slipped past validation (untrusted/incompatible producer), not an
+        # internal bug — log a warning, not a full traceback. See SECURITY.md §1.3.
+        log.warning("Malformed HWiNFO shared memory buffer: %s", exc)
         return None
 
     log.debug("Read %d sensors, %d entries from HWiNFO shared memory", sensor_count, entry_count)
