@@ -51,14 +51,22 @@ runs the test gate, and uploads with [PEP 740](https://peps.python.org/pep-0740/
 attestations.
 
 ```sh
-# 1. Bump the version FIRST. PyPI refuses to overwrite an existing version —
-#    there is no delete-and-reupload. Keep both in sync:
-#      - pyproject.toml        [project] version
+# 1. Bump the version in BOTH places (PyPI refuses to overwrite a version —
+#    there is no delete-and-reupload), then refresh the lock:
+#      - pyproject.toml           [project] version
 #      - sensorwatch/__init__.py  __version__
-git commit -am "release: vX.Y.Z" && git push
+uv lock
 
-# 2. Cut the GitHub Release (creates the tag and fires publish.yml):
-gh release create vX.Y.Z --generate-notes
+# 2. master is branch-protected, so land the bump via a PR (not a direct push):
+git switch -c release-vX.Y.Z
+git commit -am "release: vX.Y.Z"
+git push -u origin release-vX.Y.Z
+gh pr create --fill
+#    ...then, once CI is green and the PR is approved:
+gh pr merge --squash --delete-branch
+
+# 3. Cut the GitHub Release on master — creates the tag and fires publish.yml:
+gh release create vX.Y.Z --target master --generate-notes
 ```
 
 One-time setup before the first release: on PyPI, add a **pending** trusted
