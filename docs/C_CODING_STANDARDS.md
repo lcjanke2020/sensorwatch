@@ -431,7 +431,7 @@ FFI callers should check at load time (using the public `sw_api_version()`):
 ```python
 dll_version = lib.sw_api_version()
 if dll_version // 10000 != EXPECTED_MAJOR:
-    raise RuntimeError(f"ABI mismatch: expected major 1, got {dll_version}")
+    raise RuntimeError(f"ABI mismatch: expected major {EXPECTED_MAJOR}, got {dll_version}")
 ```
 
 ### Versioning Rules
