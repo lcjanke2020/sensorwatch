@@ -23,13 +23,14 @@ except ImportError as exc:  # pragma: no cover - exercised only without the buil
     ) from exc
 
 
-# The ABI major version this binding was written against. The C ABI encodes its
-# version as MAJOR * 10000 + MINOR * 100 + PATCH (see SW_API_VERSION). Pre-1.0,
-# the minor acts as the breaking-change axis, but the binding is compiled against
-# the real header in API mode, so signature drift is already a build error; this
-# load-time guard catches a *runtime* mismatch (e.g. a stale extension paired
-# with newer Python wrappers).
+# The ABI version this binding was written against. The C ABI encodes its version
+# as MAJOR * 10000 + MINOR * 100 + PATCH (see SW_API_VERSION). API mode already
+# makes signature drift a build error; the load-time guard below catches a
+# *runtime* mismatch (e.g. a stale compiled extension paired with newer Python
+# wrappers). Pre-1.0 the MINOR is the breaking-change axis, so the guard pins
+# major.minor (a patch bump stays compatible); from 1.0 on, only the major gates.
 EXPECTED_ABI_MAJOR = 0
+EXPECTED_ABI_MINOR = 1
 
 
 class SensorwatchError(Exception):
@@ -64,6 +65,14 @@ class ReadingType(enum.IntEnum):
     OTHER = 8
     UNKNOWN = 255
 
+    @classmethod
+    def _missing_(cls, value):
+        # The C core already maps unrecognized source categories to UNKNOWN; this
+        # keeps any unexpected value inside the enum (never a bare ValueError out
+        # of Snapshot.__getitem__) should the ABI grow a category this binding
+        # predates.
+        return cls.UNKNOWN
+
 
 def _check(err: int) -> None:
     """Raise :class:`SensorwatchError` for any non-``SW_OK`` return code."""
@@ -72,17 +81,20 @@ def _check(err: int) -> None:
 
 
 def _require_compatible_abi() -> None:
-    """Fail fast at import if the loaded extension's ABI major is incompatible."""
+    """Fail fast at import if the loaded extension's ABI is incompatible."""
     version = lib.sw_api_version()
     major = version // 10000
-    if major != EXPECTED_ABI_MAJOR:
-        minor = (version // 100) % 100
+    minor = (version // 100) % 100
+    # Pre-1.0 a minor bump is breaking, so it must match; from 1.0 on only the
+    # major gates compatibility.
+    compatible = major == EXPECTED_ABI_MAJOR and (major >= 1 or minor == EXPECTED_ABI_MINOR)
+    if not compatible:
         patch = version % 100
         raise SensorwatchError(
             lib.SW_ERR_VERSION_MISMATCH,
             f"sensorwatch native ABI {major}.{minor}.{patch} is incompatible with "
-            f"this binding (expected major {EXPECTED_ABI_MAJOR}). Reinstall a "
-            f"matching sensorwatch build.",
+            f"this binding (expected {EXPECTED_ABI_MAJOR}.{EXPECTED_ABI_MINOR}.x). "
+            f"Reinstall a matching sensorwatch build.",
         )
 
 

@@ -162,6 +162,9 @@ class Session:
     """
 
     def __init__(self) -> None:
+        # Set before _check so a failed open leaves a clean, closeable object
+        # (close()/__del__ are no-ops) rather than an AttributeError on _ptr.
+        self._ptr = None
         out = ffi.new("sw_session_t **")
         _check(lib.sw_session_open(out))
         self._ptr = out[0]

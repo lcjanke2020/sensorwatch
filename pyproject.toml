@@ -73,7 +73,8 @@ packages = ["sensorwatch"]
 # Per-platform binary wheels. The native core is Windows-only at runtime, so we
 # ship Windows (x64) wheels; other platforms install the sdist and build from
 # source (the extension still compiles there and reports SW_ERR_UNSUPPORTED_
-# PLATFORM at runtime). Kept in sync with requires-python (3.12, 3.13).
+# PLATFORM at runtime). Extend `build` as new CPythons are supported — a Windows
+# user on a Python without a published wheel falls back to the sdist (needs MSVC).
 [tool.cibuildwheel]
 build = "cp312-* cp313-*"
 build-frontend = "build"

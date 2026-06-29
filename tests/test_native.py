@@ -30,9 +30,11 @@ def _type_str(rt: ReadingType) -> str:
 
 # --- Import + ABI version smoke -------------------------------------------------
 
-def test_abi_version_major_is_expected():
+def test_abi_version_matches_expected():
+    from sensorwatch._native import EXPECTED_ABI_MAJOR, EXPECTED_ABI_MINOR
     version = lib.sw_api_version()
-    assert version // 10000 == 0  # 0.1.0 draft
+    assert version // 10000 == EXPECTED_ABI_MAJOR
+    assert (version // 100) % 100 == EXPECTED_ABI_MINOR  # pinned pre-1.0 (0.1.x)
 
 
 def test_reading_type_enum_matches_abi():
@@ -41,6 +43,8 @@ def test_reading_type_enum_matches_abi():
     assert ReadingType.OTHER == 8
     assert ReadingType.UNKNOWN == 255
     assert ReadingType(lib.SW_READING_TYPE_FAN) is ReadingType.FAN
+    # An out-of-enum code maps to UNKNOWN rather than raising ValueError.
+    assert ReadingType(9999) is ReadingType.UNKNOWN
 
 
 def test_public_surface():
