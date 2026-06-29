@@ -1,4 +1,4 @@
-# sensorwatch C ABI Proposal
+# sensorwatch C ABI
 
 **Status**: Implemented (ABI draft `0.1.0`). A native core now implements this
 header: a Windows DLL plus a static library built with CMake, with cmocka unit

@@ -129,12 +129,21 @@ if(SW_BUILD_TESTS)
     # C++ ABI header compile check: the C TUs already exercise the header as C, so
     # this confirms include/sensorwatch/sensorwatch.h is also valid C++ (extern "C",
     # the static_asserts) for C++ consumers. Building the target is the check.
-    enable_language(CXX)
-    set(CMAKE_CXX_STANDARD 11)
-    set(CMAKE_CXX_STANDARD_REQUIRED ON)
-    add_library(sw_abi_header_cxx STATIC tests/c/abi_header_check.cpp)
-    target_include_directories(sw_abi_header_cxx PRIVATE include)
-    target_compile_definitions(sw_abi_header_cxx PRIVATE SW_STATIC)
+    # Skipped when no C++ compiler is present, so a pure-C toolchain can still build
+    # and run the C tests. The C++ standard is set on this target only, not globally.
+    include(CheckLanguage)
+    check_language(CXX)
+    if(CMAKE_CXX_COMPILER)
+        enable_language(CXX)
+        add_library(sw_abi_header_cxx STATIC tests/c/abi_header_check.cpp)
+        target_include_directories(sw_abi_header_cxx PRIVATE include)
+        target_compile_definitions(sw_abi_header_cxx PRIVATE SW_STATIC)
+        set_target_properties(sw_abi_header_cxx PROPERTIES
+            CXX_STANDARD 11
+            CXX_STANDARD_REQUIRED ON)
+    else()
+        message(STATUS "No C++ compiler found; skipping the C++ ABI header-compile check")
+    endif()
 endif()
 
 # --- Example / smoke program (opt-in) ---
