@@ -4,23 +4,82 @@
 **Scope**: Windows user-mode DLL, read-only shared memory access, consumed via FFI
 from Python, C++, and Rust.
 
+**Status**: Planned native core. The current repository is Python-only; there is
+no C source tree, CMake build, or shipped DLL yet. This document is normative for
+future native contributions and implementation PRs, but its code snippets are
+illustrative until promoted into a dedicated ABI specification or public header.
+If an ABI specification exists, it is authoritative for public symbol names and
+function signatures; this document remains the implementation and review standard
+for the native code behind that ABI.
+
 ---
 
 ## Table of Contents
 
-1. [Error Handling Pattern](#1-error-handling-pattern)
-2. [Memory Safety](#2-memory-safety)
-3. [ABI Versioning and Stability](#3-abi-versioning-and-stability)
-4. [Thread Safety](#4-thread-safety)
-5. [API Design for FFI](#5-api-design-for-ffi)
-6. [Coding Style](#6-coding-style)
-7. [Build and Tooling](#7-build-and-tooling)
-8. [Testing](#8-testing)
-9. [Modern C Features](#9-modern-c-features)
+1. [Review Checklist](#1-review-checklist)
+2. [Error Handling Pattern](#2-error-handling-pattern)
+3. [Memory Safety](#3-memory-safety)
+4. [ABI Versioning and Stability](#4-abi-versioning-and-stability)
+5. [Thread Safety](#5-thread-safety)
+6. [API Design for FFI](#6-api-design-for-ffi)
+7. [Coding Style](#7-coding-style)
+8. [Build and Tooling](#8-build-and-tooling)
+9. [Testing](#9-testing)
+10. [Modern C Features](#10-modern-c-features)
 
 ---
 
-## 1. Error Handling Pattern
+## 1. Review Checklist
+
+Use this as the compact PR-review version of the longer guidance below.
+
+### MUST
+
+- Target C17 and build cleanly with MSVC as the primary compiler.
+- Keep the shipped native core dependency-free beyond the C standard library,
+  the Windows SDK, and system libraries.
+- Treat HWiNFO shared memory as untrusted binary input: validate magic, element
+  sizes, counts, offsets, computed section bounds, and overlapping sections before
+  parsing entries.
+- Bound every count, allocation, copy, and offset calculation; perform size
+  arithmetic in `size_t` and check for overflow before use.
+- Copy mapped shared memory into owned memory before parsing; do not expose raw
+  shared-memory pointers or raw HWiNFO structs across the ABI.
+- Use explicit error codes for all fallible public APIs; do not use `errno`,
+  `GetLastError()`, process termination, or uncaught access violations as the
+  primary error channel.
+- Validate public pointer parameters and document ownership for every output
+  parameter.
+- Keep public handles opaque and public strings caller-buffer-owned.
+- Emit sanitized, NUL-terminated UTF-8 strings at the ABI boundary.
+- Make snapshots immutable once created.
+- Document thread-safety for every public function.
+- Run unit tests for malformed buffers before shipping native parsing changes.
+
+### SHOULD
+
+- Use the `goto cleanup` pattern for functions that acquire multiple resources.
+- Add SAL annotations on public APIs so MSVC `/analyze` can reason about buffers
+  and nullability.
+- Build with warnings as errors, `/sdl`, `/analyze`, AddressSanitizer, and a
+  clang-cl sanitizer/static-analysis configuration in CI once native code exists.
+- Fuzz the parser with mutated shared-memory blobs and run it under sanitizers.
+- Maintain an exported-symbol snapshot or equivalent ABI-compatibility check once
+  a native library is released.
+- Mirror the existing Python parser invariants in C tests, especially the cases
+  in `tests/test_hwinfo_shm.py`.
+
+### MAY
+
+- Add adapter-specific extension APIs after the source-neutral core ABI is stable.
+- Add optional tools such as a shared-memory capture utility for test fixture
+  generation.
+- Use handle magic values as a debugging aid for common FFI mistakes, while not
+  treating them as a security boundary.
+
+---
+
+## 2. Error Handling Pattern
 
 ### The Verdict: goto-cleanup Wins (Still)
 
@@ -148,7 +207,7 @@ genuinely improves clarity.
 
 ---
 
-## 2. Memory Safety
+## 3. Memory Safety
 
 ### Null Pointer Discipline
 
@@ -269,7 +328,7 @@ user-mode library; do not pretend it is security.
 
 ---
 
-## 3. ABI Versioning and Stability
+## 4. ABI Versioning and Stability
 
 ### API Version Constant
 
@@ -355,7 +414,7 @@ HWI_API hwi_error_t hwi_read_all(hwi_session_t *s, hwi_reading_t *buf, uint32_t 
 
 ---
 
-## 4. Thread Safety
+## 5. Thread Safety
 
 ### Contract Per API Function
 
@@ -405,7 +464,7 @@ The session-bound model is the practical choice for this library:
 
 ### The Global Function Table
 
-The `hwi_platform_ops_t` function table (Section 6, Testing) is a global
+The `hwi_platform_ops_t` function table (Section 9, Testing) is a global
 mutable. In production, it is set once at initialization and never modified.
 In tests, it is swapped before the test and restored after. This is safe
 because tests are single-threaded. Document this constraint:
@@ -419,7 +478,7 @@ extern hwi_platform_ops_t hwi_platform;
 
 ---
 
-## 5. API Design for FFI
+## 6. API Design for FFI
 
 ### Guiding Principles
 
@@ -593,7 +652,7 @@ extern "C" {
 
 ---
 
-## 6. Coding Style
+## 7. Coding Style
 
 ### Naming Conventions
 
@@ -713,7 +772,7 @@ if (handle == NULL)
 
 ---
 
-## 7. Build and Tooling
+## 8. Build and Tooling
 
 ### Compiler: MSVC (Primary) + clang-cl (Secondary)
 
@@ -844,7 +903,7 @@ clang-cl /fsanitize=undefined /std:c17 /Zi /MD ...
 
 ---
 
-## 8. Testing
+## 9. Testing
 
 ### Framework: cmocka
 
@@ -1012,10 +1071,37 @@ int main(void)
 | Integration tests | Real shared memory access (skip if HWiNFO not running) | Manual, on dev machine |
 | Fuzz tests | Feed random/mutated binary blobs to parser, verify no crashes | CI nightly |
 | Sanitizer tests | Full test suite under ASan + UBSan | Every CI build |
+| ABI compatibility tests | Exported-symbol snapshots, header compile tests, and smoke tests from Python/C++/Rust bindings | Every ABI-affecting change after first native release |
+
+### Fuzzing the Parser
+
+The parser consumes untrusted structured binary data, so unit tests alone are not
+enough once the C implementation exists. Add a fuzz target that accepts arbitrary
+bytes, invokes the same parse routine used by snapshot acquisition, and treats any
+crash, sanitizer finding, timeout, or unbounded allocation as a bug. Seed the
+corpus with the synthetic fixtures mirrored from `tests/test_hwinfo_shm.py` and
+any captured HWiNFO blobs that are safe to store in the repository.
+
+Keep fuzz targets separate from the shipped library target and gate them behind a
+CMake option such as `HWI_BUILD_FUZZ`. Run short fuzz/sanitizer jobs in CI for
+parser changes and longer jobs on a schedule.
+
+### ABI Compatibility Tests
+
+After a native library is released, ABI stability needs automated checks in
+addition to code review:
+
+- Compile the public header from a tiny C translation unit with MSVC and clang-cl.
+- Build and compare an exported-symbol list for the DLL.
+- Load the DLL from Python `ctypes` and perform a version/error-string smoke test.
+- Compile a minimal C++ RAII wrapper and a Rust `bindgen`/`libloading` smoke test
+  when those bindings exist.
+- Treat removed symbols, changed signatures, or changed public struct layouts as
+  ABI-breaking unless the major version changes.
 
 ---
 
-## 9. Modern C Features
+## 10. Modern C Features
 
 ### Target Standard: C17
 
