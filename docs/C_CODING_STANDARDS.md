@@ -462,6 +462,7 @@ hwi_error_t hwi_configure(const hwi_config_t *cfg)
         return HWI_ERR_VERSION_MISMATCH;
     }
     /* ... safe to read fields up to cfg->struct_size ... */
+    return HWI_OK;
 }
 ```
 
