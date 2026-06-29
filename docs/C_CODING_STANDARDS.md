@@ -407,7 +407,7 @@ user-mode library; do not pretend it is security.
 
 Embed a version in the public header so callers can check compatibility at
 both compile time and runtime. The authoritative public spelling is
-`SW_API_VERSION` / `sw_api_version()` in [`C_ABI.md`](C_ABI.md) and the shipped
+`SW_API_VERSION` / `sw_api_version()` in [`C_ABI.md`](C_ABI.md) and the declared
 [`sensorwatch.h`](../include/sensorwatch/sensorwatch.h); the `hwi_`-prefixed form
 below is an illustrative implementation sketch (see the Naming note in
 [Section 7](#7-coding-style)) showing the macro/runtime-query pattern:
