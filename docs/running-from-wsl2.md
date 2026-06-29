@@ -64,6 +64,22 @@ Readings are written under `log_dir` on the Windows filesystem. Stop the capture
 with Ctrl-C; each record is flushed as it is written, so stopping never truncates
 the log.
 
+> **Tip:** the working directory matters here because `log_dir` defaults to the
+> relative path `"logs"`. Setting an **absolute** `log_dir` in `config.toml`
+> (e.g. `log_dir = 'C:\Users\me\sensor-logs'`) pins the output wherever you want
+> regardless of where you launch from — then the cwd only affects where a
+> relative `--config` path is resolved.
+
+### Keeping a capture running across disconnects
+
+Because the capture is launched from the WSL-2 side, you can run it inside a
+terminal multiplexer (tmux, or WezTerm's multiplexer) and detach / reconnect
+over SSH without interrupting it — that persistence is the main reason to drive
+a Windows capture from WSL-2 rather than from a bare Windows console. The capture
+is still an ordinary foreground process, so it lives only as long as the session
+running it; keep the multiplexer session alive for as long as you want to keep
+logging.
+
 ### Creating the Windows venv
 
 If you don't already have one, create it with a **Windows** Python — for example
@@ -76,8 +92,9 @@ above).
 
 Only the *live capture* needs Windows. Parsing, configuration, and logging are
 platform-agnostic; the shared-memory parser is exercised against synthetic byte
-buffers, and CI runs on Linux. So you can develop and run the full test suite
-natively in WSL-2:
+buffers, so the suite runs anywhere — CI runs it on both Ubuntu and Windows
+(Python 3.12 and 3.13). So you can develop and run the full test suite natively
+in WSL-2:
 
 ```sh
 uv sync
