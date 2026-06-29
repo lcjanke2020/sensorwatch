@@ -45,12 +45,13 @@ extern "C" {
 
 /*
  * Portable compile-time assertion, active in every supported language mode
- * (C89+, C++98+) -- never a no-op, since these are ABI invariants. C11 / C++11
+ * (C99+, C++98+) -- never a no-op, since these are ABI invariants. C11 / C++11
  * use the native static_assert (which surfaces `msg`); older modes fall back to
  * a negative-size-array typedef, still a hard compile error and -- being a
  * declaration -- it cleanly consumes the trailing `;` (no stray semicolon under
  * -Wpedantic). _MSVC_LANG is checked because MSVC reports __cplusplus as
- * 199711L unless /Zc:__cplusplus is set.
+ * 199711L unless /Zc:__cplusplus is set. Helper names avoid `__` so the header
+ * stays clear of the reserved-identifier space (-Wreserved-identifier).
  */
 #if (defined(__cplusplus) && __cplusplus >= 201103L) || \
     (defined(_MSVC_LANG) && _MSVC_LANG >= 201103L)
@@ -58,10 +59,10 @@ extern "C" {
 #elif !defined(__cplusplus) && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #  define SW_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #else
-#  define SW__SA_CAT_(a, b) a##b
-#  define SW__SA_CAT(a, b) SW__SA_CAT_(a, b)
+#  define SW_STATIC_ASSERT_CAT_(a, b) a##b
+#  define SW_STATIC_ASSERT_CAT(a, b) SW_STATIC_ASSERT_CAT_(a, b)
 #  define SW_STATIC_ASSERT(cond, msg) \
-       typedef char SW__SA_CAT(sw__static_assert_, __LINE__)[(cond) ? 1 : -1]
+       typedef char SW_STATIC_ASSERT_CAT(sw_static_assert_, __LINE__)[(cond) ? 1 : -1]
 #endif
 
 #define SW_API_VERSION_MAJOR 0u

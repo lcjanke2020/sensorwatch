@@ -429,6 +429,7 @@ HWI_API uint32_t hwi_version(void);
 FFI callers should check at load time (using the public `sw_api_version()`):
 
 ```python
+EXPECTED_MAJOR = 1  # must match SW_API_VERSION_MAJOR from the header you built against
 dll_version = lib.sw_api_version()
 if dll_version // 10000 != EXPECTED_MAJOR:
     raise RuntimeError(f"ABI mismatch: expected major {EXPECTED_MAJOR}, got {dll_version}")
