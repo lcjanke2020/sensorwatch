@@ -142,7 +142,12 @@ hwi_error_t hwi_session_open(hwi_session_t **out_session)
     }
 
     /* --- Validate shared memory contents --- */
-    const uint32_t magic = *(const uint32_t *)view;
+    /* In production, bound the mapping with VirtualQuery before this read
+       (Section 3, Bounds Checking; full version in Appendix A); omitted here to
+       keep the cleanup pattern in focus. memcpy is the unaligned-safe read --
+       the view is a packed wire layout, not a naturally-aligned struct. */
+    uint32_t magic = 0;
+    memcpy(&magic, view, sizeof(magic));
     if (magic != HWI_HEADER_MAGIC) {
         err = HWI_ERR_BAD_MAGIC;
         goto cleanup;
@@ -245,15 +250,39 @@ The shared memory contains offset and count fields that we do not control. All
 offset arithmetic must be bounds-checked against the mapped region size:
 
 ```c
-/* Validate that the sensor array fits within the mapped region */
-size_t sensor_end = (size_t)header.sensor_offset
-                  + (size_t)header.sensor_count * (size_t)header.sensor_size;
+/* Validate that the sensor array fits within the mapped region.
+   Field names match the raw header struct in Section 10. */
+size_t sensor_end = (size_t)header.sensor_section_offset
+                  + (size_t)header.sensor_element_count
+                  * (size_t)header.sensor_element_size;
 if (sensor_end > mapped_size) {
     return HWI_ERR_CORRUPT_DATA;
 }
 ```
 
-Always cast to `size_t` before multiplying to prevent `uint32_t` overflow.
+Cast to `size_t` before multiplying. On a 64-bit build -- the default for the
+shipped DLL -- a `uint32_t * uint32_t` product cannot overflow a 64-bit `size_t`,
+so the comparison above is sufficient. A 32-bit build has a 32-bit `size_t`, where
+`sensor_element_count * sensor_element_size` *can* wrap and silently pass the
+bounds check. The
+Review Checklist requires checking overflow before use, so do not rely on the
+width of `size_t`; use overflow-checked arithmetic:
+
+```c
+#include <windows.h>   /* FAILED() lives in <winerror.h>, pulled in by <windows.h> */
+#include <intsafe.h>   /* MSVC: SizeTMult / SizeTAdd -> S_OK or an overflow HRESULT */
+
+size_t span = 0, sensor_end = 0;
+if (FAILED(SizeTMult(header.sensor_element_count, header.sensor_element_size, &span)) ||
+    FAILED(SizeTAdd(header.sensor_section_offset, span, &sensor_end)) ||
+    sensor_end > mapped_size) {
+    return HWI_ERR_CORRUPT_DATA;
+}
+```
+
+(clang-cl: `__builtin_mul_overflow` / `__builtin_add_overflow` give the same
+guarantee.) This mirrors the SECURITY.md §1.3 requirement to check
+size/count/offset multiplication with overflow-aware helpers.
 
 ### Safe String Handling
 
@@ -269,6 +298,9 @@ arrays. Always:
 static void copy_fixed_string(char *dest, size_t dest_size,
                                const char *src, size_t src_field_size)
 {
+    if (dest == NULL || dest_size == 0) {
+        return;  /* nothing we can safely write; dest_size - 1 would wrap to SIZE_MAX */
+    }
     size_t copy_len = (dest_size - 1 < src_field_size)
                     ? dest_size - 1
                     : src_field_size;
@@ -290,12 +322,52 @@ variable-size structs:
 ```c
 /* Good: explicit byte offset */
 const uint8_t *base = (const uint8_t *)view;
-const uint8_t *sensor_i = base + header.sensor_offset
-                         + (size_t)i * header.sensor_size;
+const uint8_t *sensor_i = base + header.sensor_section_offset
+                         + (size_t)i * header.sensor_element_size;
 
-/* Bad: assumes fixed struct size */
-const hwi_sensor_raw_t *sensor_i = &sensors[i];  /* wrong if element size varies */
+/* Bad: assumes fixed struct size (distinct name only so both lines can
+   coexist in one snippet -- the real mistake is the typed-pointer indexing) */
+const hwi_sensor_raw_t *sensor_i_bad = &sensors[i];  /* wrong if element size varies */
 ```
+
+### Packed Wire Structs and Unaligned Reads
+
+The HWiNFO layout is an externally-defined **packed wire format**, not a layout
+the C compiler is free to pad. The header's `last_update` is an `int64_t` at byte
+`0x0C`, which is **not** 8-byte aligned. This has two consequences that bite
+every binding author:
+
+1. **A naturally-aligned `struct` mirror does not match the wire layout.** The
+   compiler inserts 4 bytes of padding before `last_update` to align it, pushing
+   it to `0x10`, shifting every following field by 4, and making `sizeof` 56 not
+   48. To overlay a struct on the bytes (e.g. for a `static_assert` layout check
+   or a single bulk copy), it must be packed: `#pragma pack(push, 1)` /
+   `#pragma pack(pop)` on MSVC and clang-cl (equivalently
+   `__attribute__((packed))` on GCC/Clang). See Section 10 for the asserted
+   layout.
+2. **Dereferencing an unaligned member is undefined behavior.** Even with a
+   packed struct, taking `&header->last_update` and reading through that
+   `int64_t *` is UB: the pointer is underaligned. It happens to work on x86-64,
+   but UBSan (`-fsanitize=alignment`) flags it and strict-alignment targets fault.
+
+The robust pattern -- and the one the Python reference uses (`struct.unpack_from`
+at fixed offsets) -- is to read each scalar by byte offset into a correctly-typed
+local with `memcpy`. The compiler lowers this to a plain (possibly unaligned)
+load with no struct, no padding ambiguity, and no aliasing or alignment UB:
+
+```c
+/* Unaligned-safe scalar read from the packed wire layout */
+static int64_t read_i64(const uint8_t *base, size_t offset)
+{
+    int64_t v;
+    memcpy(&v, base + offset, sizeof(v));   /* never *(int64_t *)(base + offset) */
+    return v;
+}
+```
+
+Use a packed struct only for compile-time layout assertions or a verbatim copy;
+read field values through offset-based `memcpy`, never through member
+dereference of an unaligned pointer.
 
 ### Handle Validation (Optional Defense-in-Depth)
 
@@ -379,12 +451,18 @@ typedef struct hwi_config {
     /* ... future fields appended here ... */
 } hwi_config_t;
 
-/* Caller initializes: */
+/* Caller initializes a value and passes its address: */
 hwi_config_t cfg = { .struct_size = sizeof(cfg), .poll_interval_ms = 1000 };
 
-/* DLL validates: */
-if (cfg->struct_size < offsetof(hwi_config_t, poll_interval_ms) + sizeof(uint32_t)) {
-    return HWI_ERR_VERSION_MISMATCH;
+/* DLL validates the caller-provided pointer: */
+hwi_error_t hwi_configure(const hwi_config_t *cfg)
+{
+    if (cfg == NULL ||
+        cfg->struct_size < offsetof(hwi_config_t, poll_interval_ms) + sizeof(uint32_t)) {
+        return HWI_ERR_VERSION_MISMATCH;
+    }
+    /* ... safe to read fields up to cfg->struct_size ... */
+    return HWI_OK;
 }
 ```
 
@@ -916,8 +994,8 @@ Rationale:
   mocking Win32 API calls.
 - Detects memory leaks when using `test_malloc()` / `test_free()`.
 - Lightweight: one `.c` file, one `.h` file.
-- Active development (cmocka 2.0.0 released December 2025 with C99 requirement
-  and TAP 14 support).
+- Active development: the 2.0 line (cmocka 2.0.0, December 2025) added a C99
+  requirement and TAP 14 support; pin a specific patch release (2.0.2).
 - **CMake integration is trivial** via `FetchContent` -- no manual install, no
   vcpkg, no system package needed:
 
@@ -926,7 +1004,7 @@ include(FetchContent)
 FetchContent_Declare(
     cmocka
     GIT_REPOSITORY https://gitlab.com/cmocka/cmocka.git
-    GIT_TAG        cmocka-2.0.0
+    GIT_TAG        cmocka-2.0.2
 )
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -972,6 +1050,8 @@ typedef struct hwi_platform_ops {
     HANDLE (*open_file_mapping)(DWORD access, BOOL inherit, LPCWSTR name);
     void  *(*map_view_of_file)(HANDLE h, DWORD access,
                                 DWORD off_hi, DWORD off_lo, SIZE_T bytes);
+    SIZE_T (*virtual_query)(const void *addr, PMEMORY_BASIC_INFORMATION mbi,
+                            SIZE_T mbi_size);
     BOOL   (*unmap_view_of_file)(const void *base);
     BOOL   (*close_handle)(HANDLE h);
 } hwi_platform_ops_t;
@@ -981,12 +1061,20 @@ extern hwi_platform_ops_t hwi_platform;
 
 /* hwi_session.c */
 hwi_platform_ops_t hwi_platform = {
-    .open_file_mapping = OpenFileMappingW,
-    .map_view_of_file  = MapViewOfFile,
+    .open_file_mapping  = OpenFileMappingW,
+    .map_view_of_file   = MapViewOfFile,
+    .virtual_query      = VirtualQuery,
     .unmap_view_of_file = UnmapViewOfFile,
-    .close_handle      = CloseHandle,
+    .close_handle       = CloseHandle,
 };
 ```
+
+`virtual_query` is in the table for the same reason as the others: the
+region-size bound (Section 3) -- "query or otherwise bound the mapped region
+size before copying," required by SECURITY.md §1.3 -- can only be exercised in a
+unit test if the size query is mockable. A mock returns a
+`MEMORY_BASIC_INFORMATION` with a test-controlled `RegionSize`, letting tests
+feed undersized or oversized regions and assert the parser rejects them.
 
 In tests, replace with mocks that return pointers to `malloc`'d test data:
 
@@ -1009,17 +1097,56 @@ static void *mock_map_view_of_file(HANDLE h, DWORD access,
     return (void *)mock();  /* return pointer to test data blob */
 }
 
+static SIZE_T mock_virtual_query(const void *addr, PMEMORY_BASIC_INFORMATION mbi,
+                                 SIZE_T mbi_size)
+{
+    (void)addr;
+    /* Mirror VirtualQuery's failure contract: 0 (and no writes) on a bad
+       buffer. */
+    if (mbi == NULL || mbi_size < sizeof(*mbi)) {
+        return 0;
+    }
+    /* Feed the region size via will_return so cases can drive the Section 3
+       bound with an undersized or oversized mapping. Nonzero return = bytes
+       written = success. */
+    mbi->RegionSize = (SIZE_T)mock();
+    return sizeof(*mbi);
+}
+
+/* No-op cleanup mocks: the tests drive the session with fake state
+   ((HANDLE)0xDEAD, a heap/stack buffer), so unmap/close must not reach the
+   real Win32 calls on the success path or the failure goto-cleanup path. */
+static BOOL mock_unmap_view_of_file(const void *base)
+{
+    (void)base;
+    return TRUE;
+}
+
+static BOOL mock_close_handle(HANDLE h)
+{
+    (void)h;
+    return TRUE;
+}
+
 static void test_parse_valid_shm(void **state)
 {
     (void)state;
     /* Load a captured binary blob of real HWiNFO shared memory */
-    uint8_t *test_data = load_test_file("test_data/valid_shm.bin");
+    size_t data_size = 0;
+    uint8_t *test_data = load_test_file("test_data/valid_shm.bin", &data_size);
 
-    /* Configure mocks */
-    hwi_platform.open_file_mapping = mock_open_file_mapping;
-    hwi_platform.map_view_of_file  = mock_map_view_of_file;
+    /* Configure mocks. virtual_query must be mocked too: hwi_session_open()
+       bounds the mapping before reading the header, so the test controls the
+       reported RegionSize rather than calling the real Win32 syscall on a
+       heap pointer. */
+    hwi_platform.open_file_mapping  = mock_open_file_mapping;
+    hwi_platform.map_view_of_file   = mock_map_view_of_file;
+    hwi_platform.virtual_query      = mock_virtual_query;
+    hwi_platform.unmap_view_of_file = mock_unmap_view_of_file;
+    hwi_platform.close_handle       = mock_close_handle;
     will_return(mock_open_file_mapping, (HANDLE)0xDEAD);
     will_return(mock_map_view_of_file, test_data);
+    will_return(mock_virtual_query, (SIZE_T)data_size);  /* whole blob is "mapped" */
 
     /* Exercise */
     hwi_session_t *session = NULL;
@@ -1035,6 +1162,28 @@ static void test_parse_valid_shm(void **state)
     /* Cleanup */
     hwi_session_close(session);
     free(test_data);
+}
+
+/* The case that motivated adding virtual_query to the ops table: a mapping
+   smaller than the header must be rejected, not parsed. */
+static void test_open_rejects_undersized_region(void **state)
+{
+    (void)state;
+    static uint8_t tiny[8] = {0};   /* < sizeof(hwi_header_raw_t) */
+
+    hwi_platform.open_file_mapping  = mock_open_file_mapping;
+    hwi_platform.map_view_of_file   = mock_map_view_of_file;
+    hwi_platform.virtual_query      = mock_virtual_query;
+    hwi_platform.unmap_view_of_file = mock_unmap_view_of_file;
+    hwi_platform.close_handle       = mock_close_handle;
+    will_return(mock_open_file_mapping, (HANDLE)0xDEAD);
+    will_return(mock_map_view_of_file, tiny);
+    will_return(mock_virtual_query, (SIZE_T)sizeof(tiny));
+
+    hwi_session_t *session = NULL;
+    hwi_error_t err = hwi_session_open(&session);
+    assert_int_equal(err, HWI_ERR_CORRUPT_DATA);
+    assert_null(session);
 }
 ```
 
@@ -1158,11 +1307,28 @@ supports them:
 ### Practical static_assert Examples
 
 ```c
+#include <assert.h>   /* static_assert: standard macro since C11/C17 (-> _Static_assert) */
+#include <stdint.h>   /* uint32_t, int64_t */
+#include <stddef.h>   /* offsetof */
+
 /* Verify shared memory struct layout assumptions at compile time */
 static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
 static_assert(sizeof(double) == 8, "double must be 8 bytes");
 
-/* Verify our raw header struct matches the documented layout */
+/* The header magic, as it appears in the mapping (bytes 'H' 'W' 'i' 'S').
+   Must match the producer; the Python reference uses the same value. */
+#define HWI_HEADER_MAGIC 0x53695748u
+
+/* Verify our raw header struct matches the documented layout.
+ *
+ * This is a PACKED wire format: last_update is an int64 at byte 0x0C, which is
+ * NOT 8-byte aligned. A naturally-aligned struct would pad before last_update
+ * (pushing it to 0x10, sizeof to 56) and the asserts below would fail to
+ * compile. #pragma pack(1) strips the padding so the struct mirrors the bytes.
+ * See "Packed Wire Structs and Unaligned Reads" in Section 3 -- and note this
+ * struct is for layout assertions and verbatim copies only; read field *values*
+ * via offset-based memcpy, not by dereferencing unaligned members. */
+#pragma pack(push, 1)
 typedef struct hwi_header_raw {
     uint32_t magic;
     uint32_t version;
@@ -1176,12 +1342,14 @@ typedef struct hwi_header_raw {
     uint32_t entry_element_count;
     uint32_t poll_time;
 } hwi_header_raw_t;
+#pragma pack(pop)
 
 static_assert(sizeof(hwi_header_raw_t) == 48,
               "header struct size must match HWiNFO shared memory layout");
 
 /* Verify field offsets (catches struct padding surprises) */
-#include <stddef.h>
+static_assert(offsetof(hwi_header_raw_t, last_update) == 0x0C,
+              "last_update is an unaligned int64 at byte 0x0C");
 static_assert(offsetof(hwi_header_raw_t, sensor_section_offset) == 0x14,
               "sensor_section_offset must be at byte 0x14");
 static_assert(offsetof(hwi_header_raw_t, entry_section_offset) == 0x20,
@@ -1212,6 +1380,7 @@ what `hwi_session.c` would look like:
 hwi_platform_ops_t hwi_platform = {
     .open_file_mapping  = OpenFileMappingW,
     .map_view_of_file   = MapViewOfFile,
+    .virtual_query      = VirtualQuery,
     .unmap_view_of_file = UnmapViewOfFile,
     .close_handle       = CloseHandle,
 };
@@ -1220,10 +1389,11 @@ hwi_platform_ops_t hwi_platform = {
 
 hwi_error_t hwi_session_open(hwi_session_t **out)
 {
-    hwi_error_t    err        = HWI_OK;
-    HANDLE         map_handle = NULL;
-    void          *view       = NULL;
-    hwi_session_t *session    = NULL;
+    hwi_error_t    err         = HWI_OK;
+    HANDLE         map_handle  = NULL;
+    void          *view        = NULL;
+    size_t         mapped_size = 0;
+    hwi_session_t *session     = NULL;
 
     /* Validate parameters */
     if (out == NULL) {
@@ -1247,8 +1417,21 @@ hwi_error_t hwi_session_open(hwi_session_t **out)
         goto cleanup;
     }
 
-    /* Validate magic */
-    const uint32_t magic = *(const uint32_t *)view;
+    /* Bound the mapping before touching any field. An untrusted producer may
+       map fewer bytes than a full header; without this, the magic read below
+       could run off the end of the mapping. (Section 3, Bounds Checking.) */
+    MEMORY_BASIC_INFORMATION mbi = {0};
+    if (hwi_platform.virtual_query(view, &mbi, sizeof(mbi)) == 0 ||
+        mbi.RegionSize < sizeof(hwi_header_raw_t)) {
+        err = HWI_ERR_CORRUPT_DATA;
+        goto cleanup;
+    }
+    mapped_size = mbi.RegionSize;
+
+    /* Validate magic (now known to lie within the mapping). memcpy is the
+       unaligned-safe read for a packed wire layout. */
+    uint32_t magic = 0;
+    memcpy(&magic, view, sizeof(magic));
     if (magic != HWI_HEADER_MAGIC) {
         err = HWI_ERR_BAD_MAGIC;
         goto cleanup;
@@ -1260,11 +1443,15 @@ hwi_error_t hwi_session_open(hwi_session_t **out)
         err = HWI_ERR_OUT_OF_MEMORY;
         goto cleanup;
     }
-    session->magic      = HWI_SESSION_MAGIC;
-    session->map_handle = map_handle;
-    session->view       = view;
+    session->magic       = HWI_SESSION_MAGIC;
+    session->map_handle  = map_handle;
+    session->view        = view;
+    session->mapped_size = mapped_size;
 
-    /* Parse header into session cache */
+    /* Cache the now-bounded header. Bulk entry parsing happens later in
+       hwi_snapshot_take(), which copies the bounded region into owned memory
+       and parses the copy -- the live view is never parsed past this validated
+       header. (See "Snapshot/Iterator Pattern" and SECURITY.md §1.3.) */
     err = parse_header(view, &session->header);
     if (err != HWI_OK) {
         free(session);
