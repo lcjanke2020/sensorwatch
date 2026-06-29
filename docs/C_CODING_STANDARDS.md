@@ -8,9 +8,10 @@ from Python, C++, and Rust.
 no C source tree, CMake build, or shipped DLL yet. This document is normative for
 future native contributions and implementation PRs, but its code snippets are
 illustrative until promoted into a dedicated ABI specification or public header.
-If an ABI specification exists, it is authoritative for public symbol names and
-function signatures; this document remains the implementation and review standard
-for the native code behind that ABI.
+The ABI specification in [`C_ABI.md`](C_ABI.md) (with its declaration-only header
+[`../include/sensorwatch/sensorwatch.h`](../include/sensorwatch/sensorwatch.h)) is
+authoritative for public symbol names and function signatures; this document
+remains the implementation and review standard for the native code behind that ABI.
 
 ---
 
@@ -405,10 +406,14 @@ user-mode library; do not pretend it is security.
 ### API Version Constant
 
 Embed a version in the public header so callers can check compatibility at
-both compile time and runtime:
+both compile time and runtime. The authoritative public spelling is
+`SW_API_VERSION` / `sw_api_version()` in [`C_ABI.md`](C_ABI.md) and the declared
+[`sensorwatch.h`](../include/sensorwatch/sensorwatch.h); the `hwi_`-prefixed form
+below is an illustrative implementation sketch (see the Naming note in
+[Section 7](#7-coding-style)) showing the macro/runtime-query pattern:
 
 ```c
-/* hwi_version.h */
+/* Illustrative sketch -- public names are sw_/SW_; see C_ABI.md */
 #define HWI_API_VERSION_MAJOR 1
 #define HWI_API_VERSION_MINOR 0
 #define HWI_API_VERSION_PATCH 0
@@ -421,12 +426,13 @@ both compile time and runtime:
 HWI_API uint32_t hwi_version(void);
 ```
 
-FFI callers should check at load time:
+FFI callers should check at load time (using the public `sw_api_version()`):
 
 ```python
-dll_version = lib.hwi_version()
+EXPECTED_MAJOR = 0  # SW_API_VERSION_MAJOR from the header you built against (0 for the 0.1.0 draft)
+dll_version = lib.sw_api_version()
 if dll_version // 10000 != EXPECTED_MAJOR:
-    raise RuntimeError(f"ABI mismatch: expected major 1, got {dll_version}")
+    raise RuntimeError(f"ABI mismatch: expected major {EXPECTED_MAJOR}, got {dll_version}")
 ```
 
 ### Versioning Rules
@@ -708,9 +714,13 @@ Benefits:
 
 ### Calling Convention
 
-Use the default `__cdecl` calling convention. It is the default for MSVC, the
-default for C, and what Python `ctypes` expects. Do not use `__stdcall` --
-it complicates name decoration and provides no benefit for a modern DLL.
+Pin the `__cdecl` calling convention explicitly rather than relying on the
+compiler default. `__cdecl` is the C default and what Python `ctypes` expects,
+but the MSVC default can be flipped by build flags (e.g. `/Gz` makes it
+`__stdcall`), so a stable ABI annotates every exported function with an explicit
+`SW_CALL` macro (`__cdecl` on Windows, empty elsewhere) -- see the public header
+and [`C_ABI.md`](C_ABI.md). Do not use `__stdcall` -- it complicates name
+decoration and provides no benefit for a modern DLL.
 
 ### C++ Compatibility
 
@@ -736,31 +746,43 @@ extern "C" {
 
 | Element | Convention | Example |
 |---|---|---|
-| Public functions | `hwi_` prefix + snake_case | `hwi_session_open` |
-| Public types | `hwi_` prefix + snake_case + `_t` | `hwi_session_t` |
-| Public enums/constants | `HWI_` prefix + UPPER_SNAKE | `HWI_ERR_NULL_POINTER` |
+| Public functions | ABI prefix + snake_case | `sw_session_open` |
+| Public types | ABI prefix + snake_case + `_t` | `sw_session_t` |
+| Public enums/constants | ABI prefix + UPPER_SNAKE | `SW_ERR_NULL_POINTER` |
 | Internal functions | `static` + snake_case (no prefix) | `static parse_header(...)` |
 | Local variables | snake_case | `sensor_count` |
 | Struct members | snake_case | `map_handle` |
 | Macros | UPPER_SNAKE | `HWI_HEADER_MAGIC` |
 
-The `hwi_` prefix prevents symbol collisions when the DLL is loaded alongside
-other libraries. Keep it short -- three letters is enough.
+The draft public ABI uses the source-neutral `sw_` / `SW_` prefix; see
+[`C_ABI.md`](C_ABI.md). A short public prefix prevents symbol collisions when the
+DLL is loaded alongside other libraries. The `hwi_` / `HWI_` symbols in this
+document's worked examples are illustrative implementation sketches from the
+HWiNFO-first design phase — internal parser names (`hwi_header_t`,
+`HWI_HEADER_MAGIC`, etc.) may keep an adapter-specific prefix, but do **not**
+introduce new *public* ABI symbols under an HWiNFO-specific prefix unless they are
+explicitly adapter-specific extension APIs layered on the source-neutral core.
 
 ### Header Organization
 
+The draft public ABI is intentionally a single header:
+
 ```
 include/
-  hwi_monitor.h      -- Primary public header (users include this)
-  hwi_export.h       -- DLL export macro
-  hwi_error.h        -- Error enum and hwi_error_string()
-  hwi_types.h        -- Public typedefs (hwi_session_t, hwi_snapshot_t, etc.)
+  sensorwatch/
+    sensorwatch.h    -- Primary public ABI header (users include this)
+```
+
+When native implementation work begins, split the internal code by responsibility
+while keeping only the stable ABI in the public include directory:
+
+```
 src/
-  hwi_session.c      -- Session open/close, shared memory management
-  hwi_snapshot.c     -- Snapshot take/free/query
-  hwi_parse.c        -- Shared memory parsing (header, sensors, entries)
-  hwi_error.c        -- hwi_error_string() implementation
-  hwi_internal.h     -- Internal shared declarations (struct definitions, etc.)
+  sw_session.c       -- Session open/close, shared memory management
+  sw_snapshot.c      -- Snapshot take/free/query
+  sw_parse.c         -- Shared memory parsing (header, sensors, entries)
+  sw_error.c         -- sw_error_string() implementation
+  sw_internal.h      -- Internal shared declarations (struct definitions, etc.)
 ```
 
 ### Include Guards
@@ -768,12 +790,12 @@ src/
 Use traditional `#ifndef` guards, not `#pragma once`:
 
 ```c
-#ifndef HWI_MONITOR_H
-#define HWI_MONITOR_H
+#ifndef SENSORWATCH_SENSORWATCH_H
+#define SENSORWATCH_SENSORWATCH_H
 
 /* ... */
 
-#endif /* HWI_MONITOR_H */
+#endif /* SENSORWATCH_SENSORWATCH_H */
 ```
 
 Rationale: `#pragma once` is supported by all compilers we care about (MSVC,
