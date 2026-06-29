@@ -142,6 +142,12 @@ reported as `None` rather than crashing the process.
 - Keep the same copy-then-parse model; never expose raw shared-memory pointers
   across the ABI.
 - Query or otherwise bound the mapped region size before copying.
+- Treat the header as a packed wire layout: `last_update` is an `int64_t` at byte
+  `0x0C` and is not 8-byte aligned. Read scalar fields by explicit byte offset
+  (copying into a correctly-typed local) rather than overlaying a naturally-aligned
+  C struct, which both mis-parses every field after the gap -- corrupting the very
+  bounds the checks below rely on -- and risks unaligned-access UB that UBSan and
+  strict-alignment targets reject. See `docs/C_CODING_STANDARDS.md`.
 - Check size/count/offset multiplication using `size_t` and overflow-aware helper
   functions.
 - Apply explicit maximums for total mapped size, sensor count, and entry count.
