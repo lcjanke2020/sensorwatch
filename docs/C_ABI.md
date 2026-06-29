@@ -88,6 +88,25 @@ non-Windows toolchains `SW_API` carries default ELF visibility.
 
 ---
 
+## Supported Toolchains
+
+The public header is written to compile cleanly as both C and C++ across MSVC,
+Clang, and GCC, and its compile-time guards degrade safely on older language
+modes (C99+/C++98+). That breadth is a convenience for binding authors, not an
+open-ended support promise. The native core targets:
+
+- **MSVC** (`cl` / `clang-cl`) on Windows — the primary, first-class toolchain,
+  matching the Windows user-mode DLL the core ships as.
+- **Clang and GCC**, including under MinGW — secondary toolchains for local
+  development, bindings, and CI cross-checks.
+
+Exotic compilers, ABI-altering build flags (e.g. `-fshort-enums`), and pre-C99 /
+pre-C++98 language modes are out of scope: the header's `static_assert`s exist to
+*fail loudly* under such configurations rather than to promise support for them.
+Build bindings against one of the supported toolchains.
+
+---
+
 ## Error Model
 
 Every fallible public function returns `sw_error_t`. `SW_OK` is zero; errors are
