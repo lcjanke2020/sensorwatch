@@ -19,6 +19,11 @@ classifiers = [
 ]
 dependencies = [
     "pendulum>=3.0",
+    # API-mode cffi bindings over the native C core. At runtime only the
+    # _cffi_backend C extension (shipped inside the cffi wheel) is needed; the
+    # full cffi package is also the build-time dependency that compiles the
+    # extension (see sensorwatch/_native_build.py and setup.py).
+    "cffi>=1.17",
 ]
 
 [project.urls]
@@ -30,8 +35,12 @@ Issues = "https://github.com/lcjanke2020/sensorwatch/issues"
 sensorwatch = "sensorwatch.__main__:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+# setuptools + cffi: the binding is a compiled cffi extension (API mode), so the
+# wheel is no longer pure-Python. cffi's first-class setuptools integration
+# (`cffi_modules` in setup.py) compiles sensorwatch/_native_build.py at build
+# time and tags the wheel platform-specific automatically.
+requires = ["setuptools>=70", "cffi>=1.17"]
+build-backend = "setuptools.build_meta"
 
 # Dev-only tooling (PEP 735). Installed by `uv sync`; kept out of
 # [project].dependencies so the runtime footprint stays just `pendulum`.
@@ -39,18 +48,40 @@ build-backend = "hatchling.build"
 dev = [
     "pytest>=8.0",
     "twine>=5.0",
+    # cffi shells out through setuptools to compile the extension; uv venvs don't
+    # ship setuptools by default, and cffi requires it on Python >= 3.12. Needed
+    # to build sensorwatch._sw_cffi in the dev environment (the wheel build gets
+    # it from [build-system].requires instead).
+    "setuptools>=70",
+    # Builds the per-platform binary wheels in publish.yml. Pinned via uv.lock
+    # (hashes) so the release wheel build is reproducible without pinning a
+    # third-party GitHub Action by SHA. Driven by [tool.cibuildwheel] above.
+    "cibuildwheel>=2.21",
 ]
 
-# Trim the sdist to source + metadata. The heavy worked-example artifacts
-# (charts and captured datasets) stay browsable on GitHub but are excluded from
-# the published tarball to keep it small. The wheel already ships only the
-# sensorwatch/ package.
-[tool.hatch.build.targets.sdist]
-exclude = [
-    "examples/**/*.png",
-    "examples/**/*.parquet",
-    "examples/**/*.jsonl",
-]
+# Explicit package list: ship only the sensorwatch/ package (no auto-discovery
+# picking up tests/ or examples/). The compiled extension sensorwatch._sw_cffi is
+# added by cffi at build time via setup.py's cffi_modules, not listed here.
+[tool.setuptools]
+packages = ["sensorwatch"]
+
+# The sdist must carry the C sources + public header so it can build the
+# extension from source (non-Windows installs, or any platform without a
+# prebuilt wheel). Controlled by MANIFEST.in; the heavy example artifacts under
+# examples/ are not a package and are excluded from the sdist by default.
+
+# Per-platform binary wheels. The native core is Windows-only at runtime, so we
+# ship Windows (x64) wheels; other platforms install the sdist and build from
+# source (the extension still compiles there and reports SW_ERR_UNSUPPORTED_
+# PLATFORM at runtime). Kept in sync with requires-python (3.12, 3.13).
+[tool.cibuildwheel]
+build = "cp312-* cp313-*"
+build-frontend = "build"
+test-requires = ["pytest"]
+test-command = "python -m pytest {project}/tests"
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

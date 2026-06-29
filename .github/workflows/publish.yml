@@ -1,8 +1,14 @@
 name: Publish to PyPI
 
-# Fires when a GitHub Release is published. Publishes to PyPI via OIDC trusted
-# publishing — no stored token, no password. PEP 740 attestations are emitted by
-# default under trusted publishing.
+# Fires when a GitHub Release is published. Builds the binary wheels + sdist and
+# publishes to PyPI via OIDC trusted publishing — no stored token, no password.
+# PEP 740 attestations are emitted by default under trusted publishing and cover
+# every uploaded file (the Windows wheels AND the sdist).
+#
+# The native core is a compiled cffi extension, so the wheel is no longer
+# pure-Python: per-platform wheels are built with cibuildwheel on Windows, and an
+# sdist lets other platforms build from source. The publish step runs on Linux
+# because pypa/gh-action-pypi-publish is a Docker action.
 #
 # Prerequisites (one-time, configured on PyPI by the maintainer):
 #   - A trusted publisher for this repo: owner/repo, workflow `publish.yml`,
@@ -15,27 +21,66 @@ permissions:
   contents: read
 
 jobs:
-  publish:
-    name: Build and publish
-    runs-on: ubuntu-latest  # pypa/gh-action-pypi-publish is a Docker action (Linux-only).
-    environment: pypi
-    permissions:
-      id-token: write   # required for OIDC trusted publishing + PEP 740 attestations
-      contents: read
+  build-wheels:
+    name: Build Windows wheels (cibuildwheel)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: '3.12'
           enable-cache: true
-      - name: Install dependencies
+      - name: Install build tooling
+        run: uv sync
+      - name: Build wheels (cp312 + cp313, x64; each wheel is import+test gated)
+        # cibuildwheel is pinned via uv.lock; config lives in [tool.cibuildwheel].
+        # It builds and *tests* each wheel (test-command runs the pytest suite;
+        # the live HWiNFO path is skipped on the runner).
+        run: uv run cibuildwheel --output-dir wheelhouse
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dist-wheels
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build-sdist:
+    name: Build sdist + test gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - name: Install dependencies (compiles the extension via gcc)
         run: uv sync
       - name: Run test gate
         run: uv run pytest
-      - name: Build sdist and wheel
-        run: uv build
+      - name: Build sdist
+        run: uv build --sdist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI (OIDC trusted publishing)
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest  # pypa/gh-action-pypi-publish is a Docker action (Linux-only).
+    environment: pypi
+    permissions:
+      id-token: write   # required for OIDC trusted publishing + PEP 740 attestations
+      contents: read
+    steps:
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - name: Collect wheels + sdist into dist/
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
       - name: Check package metadata
-        run: uv run python -m twine check dist/*
+        run: uvx twine check dist/*
       - name: Publish to PyPI (OIDC trusted publishing)
         # No password / token input → OIDC. Uploads dist/ by default.
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
