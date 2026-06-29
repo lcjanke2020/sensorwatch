@@ -36,10 +36,19 @@ uint8_t *sw_test_build_buffer(const sw_test_sensor_t *sensors, uint32_t sensor_c
     const uint32_t entry_size  = SW_MIN_ENTRY_SIZE;
     const uint32_t sensor_off  = SW_HEADER_SIZE;
 
-    size_t sensor_region = (size_t)sensor_count * sensor_size;
-    size_t entry_region  = (size_t)entry_count * entry_size;
-    size_t entry_off     = (size_t)sensor_off + sensor_region;
-    size_t total         = entry_off + entry_region;
+    /* Overflow-checked, mirroring the parser's bounds math, so a future
+       large-count test can't silently wrap these into a too-small allocation and
+       then write past it. entry_off is also written into a uint32 header field, so
+       it must fit there. On a bad request, return NULL -- the caller's
+       assert_non_null() surfaces it. */
+    size_t sensor_region = 0, entry_region = 0, entry_off = 0, total = 0;
+    if (!sw_size_mul((size_t)sensor_count, (size_t)sensor_size, &sensor_region) ||
+        !sw_size_mul((size_t)entry_count, (size_t)entry_size, &entry_region) ||
+        !sw_size_add((size_t)sensor_off, sensor_region, &entry_off) ||
+        !sw_size_add(entry_off, entry_region, &total) ||
+        entry_off > UINT32_MAX) {
+        return NULL;
+    }
     if (total < SW_HEADER_SIZE) {
         total = SW_HEADER_SIZE;
     }
