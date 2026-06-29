@@ -250,9 +250,11 @@ The shared memory contains offset and count fields that we do not control. All
 offset arithmetic must be bounds-checked against the mapped region size:
 
 ```c
-/* Validate that the sensor array fits within the mapped region */
-size_t sensor_end = (size_t)header.sensor_offset
-                  + (size_t)header.sensor_count * (size_t)header.sensor_size;
+/* Validate that the sensor array fits within the mapped region.
+   Field names match the raw header struct in Section 10. */
+size_t sensor_end = (size_t)header.sensor_section_offset
+                  + (size_t)header.sensor_element_count
+                  * (size_t)header.sensor_element_size;
 if (sensor_end > mapped_size) {
     return HWI_ERR_CORRUPT_DATA;
 }
@@ -266,11 +268,12 @@ Review Checklist requires checking overflow before use, so do not rely on the
 width of `size_t`; use overflow-checked arithmetic:
 
 ```c
+#include <windows.h>   /* FAILED() lives in <winerror.h>, pulled in by <windows.h> */
 #include <intsafe.h>   /* MSVC: SizeTMult / SizeTAdd -> S_OK or an overflow HRESULT */
 
 size_t span = 0, sensor_end = 0;
-if (FAILED(SizeTMult(header.sensor_count, header.sensor_size, &span)) ||
-    FAILED(SizeTAdd(header.sensor_offset, span, &sensor_end)) ||
+if (FAILED(SizeTMult(header.sensor_element_count, header.sensor_element_size, &span)) ||
+    FAILED(SizeTAdd(header.sensor_section_offset, span, &sensor_end)) ||
     sensor_end > mapped_size) {
     return HWI_ERR_CORRUPT_DATA;
 }
@@ -318,8 +321,8 @@ variable-size structs:
 ```c
 /* Good: explicit byte offset */
 const uint8_t *base = (const uint8_t *)view;
-const uint8_t *sensor_i = base + header.sensor_offset
-                         + (size_t)i * header.sensor_size;
+const uint8_t *sensor_i = base + header.sensor_section_offset
+                         + (size_t)i * header.sensor_element_size;
 
 /* Bad: assumes fixed struct size */
 const hwi_sensor_raw_t *sensor_i = &sensors[i];  /* wrong if element size varies */
@@ -1091,17 +1094,34 @@ static void *mock_map_view_of_file(HANDLE h, DWORD access,
     return (void *)mock();  /* return pointer to test data blob */
 }
 
+static SIZE_T mock_virtual_query(const void *addr, PMEMORY_BASIC_INFORMATION mbi,
+                                 SIZE_T mbi_size)
+{
+    (void)addr; (void)mbi_size;
+    /* Feed the region size via will_return so cases can drive the Section 3
+       bound with an undersized or oversized mapping. Return value mirrors the
+       real VirtualQuery: nonzero (bytes written) on success, 0 on failure. */
+    mbi->RegionSize = (SIZE_T)mock();
+    return sizeof(*mbi);
+}
+
 static void test_parse_valid_shm(void **state)
 {
     (void)state;
     /* Load a captured binary blob of real HWiNFO shared memory */
-    uint8_t *test_data = load_test_file("test_data/valid_shm.bin");
+    size_t data_size = 0;
+    uint8_t *test_data = load_test_file("test_data/valid_shm.bin", &data_size);
 
-    /* Configure mocks */
+    /* Configure mocks. virtual_query must be mocked too: hwi_session_open()
+       bounds the mapping before reading the header, so the test controls the
+       reported RegionSize rather than calling the real Win32 syscall on a
+       heap pointer. */
     hwi_platform.open_file_mapping = mock_open_file_mapping;
     hwi_platform.map_view_of_file  = mock_map_view_of_file;
+    hwi_platform.virtual_query     = mock_virtual_query;
     will_return(mock_open_file_mapping, (HANDLE)0xDEAD);
     will_return(mock_map_view_of_file, test_data);
+    will_return(mock_virtual_query, (SIZE_T)data_size);  /* whole blob is "mapped" */
 
     /* Exercise */
     hwi_session_t *session = NULL;
@@ -1117,6 +1137,26 @@ static void test_parse_valid_shm(void **state)
     /* Cleanup */
     hwi_session_close(session);
     free(test_data);
+}
+
+/* The case that motivated adding virtual_query to the ops table: a mapping
+   smaller than the header must be rejected, not parsed. */
+static void test_open_rejects_undersized_region(void **state)
+{
+    (void)state;
+    static uint8_t tiny[8] = {0};   /* < sizeof(hwi_header_raw_t) */
+
+    hwi_platform.open_file_mapping = mock_open_file_mapping;
+    hwi_platform.map_view_of_file  = mock_map_view_of_file;
+    hwi_platform.virtual_query     = mock_virtual_query;
+    will_return(mock_open_file_mapping, (HANDLE)0xDEAD);
+    will_return(mock_map_view_of_file, tiny);
+    will_return(mock_virtual_query, (SIZE_T)sizeof(tiny));
+
+    hwi_session_t *session = NULL;
+    hwi_error_t err = hwi_session_open(&session);
+    assert_int_equal(err, HWI_ERR_CORRUPT_DATA);
+    assert_null(session);
 }
 ```
 
@@ -1240,7 +1280,8 @@ supports them:
 ### Practical static_assert Examples
 
 ```c
-#include <assert.h>   /* static_assert macro in C17 */
+#include <assert.h>   /* static_assert: standard macro since C11/C17 (-> _Static_assert) */
+#include <stdint.h>   /* uint32_t, int64_t */
 #include <stddef.h>   /* offsetof */
 
 /* Verify shared memory struct layout assumptions at compile time */
