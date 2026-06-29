@@ -263,7 +263,8 @@ if (sensor_end > mapped_size) {
 Cast to `size_t` before multiplying. On a 64-bit build -- the default for the
 shipped DLL -- a `uint32_t * uint32_t` product cannot overflow a 64-bit `size_t`,
 so the comparison above is sufficient. A 32-bit build has a 32-bit `size_t`, where
-`sensor_count * sensor_size` *can* wrap and silently pass the bounds check. The
+`sensor_element_count * sensor_element_size` *can* wrap and silently pass the
+bounds check. The
 Review Checklist requires checking overflow before use, so do not rely on the
 width of `size_t`; use overflow-checked arithmetic:
 
@@ -324,8 +325,9 @@ const uint8_t *base = (const uint8_t *)view;
 const uint8_t *sensor_i = base + header.sensor_section_offset
                          + (size_t)i * header.sensor_element_size;
 
-/* Bad: assumes fixed struct size */
-const hwi_sensor_raw_t *sensor_i = &sensors[i];  /* wrong if element size varies */
+/* Bad: assumes fixed struct size (distinct name only so both lines can
+   coexist in one snippet -- the real mistake is the typed-pointer indexing) */
+const hwi_sensor_raw_t *sensor_i_bad = &sensors[i];  /* wrong if element size varies */
 ```
 
 ### Packed Wire Structs and Unaligned Reads
@@ -1097,12 +1099,32 @@ static void *mock_map_view_of_file(HANDLE h, DWORD access,
 static SIZE_T mock_virtual_query(const void *addr, PMEMORY_BASIC_INFORMATION mbi,
                                  SIZE_T mbi_size)
 {
-    (void)addr; (void)mbi_size;
+    (void)addr;
+    /* Mirror VirtualQuery's failure contract: 0 (and no writes) on a bad
+       buffer. */
+    if (mbi == NULL || mbi_size < sizeof(*mbi)) {
+        return 0;
+    }
     /* Feed the region size via will_return so cases can drive the Section 3
-       bound with an undersized or oversized mapping. Return value mirrors the
-       real VirtualQuery: nonzero (bytes written) on success, 0 on failure. */
+       bound with an undersized or oversized mapping. Nonzero return = bytes
+       written = success. */
     mbi->RegionSize = (SIZE_T)mock();
     return sizeof(*mbi);
+}
+
+/* No-op cleanup mocks: the tests drive the session with fake state
+   ((HANDLE)0xDEAD, a heap/stack buffer), so unmap/close must not reach the
+   real Win32 calls on the success path or the failure goto-cleanup path. */
+static BOOL mock_unmap_view_of_file(const void *base)
+{
+    (void)base;
+    return TRUE;
+}
+
+static BOOL mock_close_handle(HANDLE h)
+{
+    (void)h;
+    return TRUE;
 }
 
 static void test_parse_valid_shm(void **state)
@@ -1116,9 +1138,11 @@ static void test_parse_valid_shm(void **state)
        bounds the mapping before reading the header, so the test controls the
        reported RegionSize rather than calling the real Win32 syscall on a
        heap pointer. */
-    hwi_platform.open_file_mapping = mock_open_file_mapping;
-    hwi_platform.map_view_of_file  = mock_map_view_of_file;
-    hwi_platform.virtual_query     = mock_virtual_query;
+    hwi_platform.open_file_mapping  = mock_open_file_mapping;
+    hwi_platform.map_view_of_file   = mock_map_view_of_file;
+    hwi_platform.virtual_query      = mock_virtual_query;
+    hwi_platform.unmap_view_of_file = mock_unmap_view_of_file;
+    hwi_platform.close_handle       = mock_close_handle;
     will_return(mock_open_file_mapping, (HANDLE)0xDEAD);
     will_return(mock_map_view_of_file, test_data);
     will_return(mock_virtual_query, (SIZE_T)data_size);  /* whole blob is "mapped" */
@@ -1146,9 +1170,11 @@ static void test_open_rejects_undersized_region(void **state)
     (void)state;
     static uint8_t tiny[8] = {0};   /* < sizeof(hwi_header_raw_t) */
 
-    hwi_platform.open_file_mapping = mock_open_file_mapping;
-    hwi_platform.map_view_of_file  = mock_map_view_of_file;
-    hwi_platform.virtual_query     = mock_virtual_query;
+    hwi_platform.open_file_mapping  = mock_open_file_mapping;
+    hwi_platform.map_view_of_file   = mock_map_view_of_file;
+    hwi_platform.virtual_query      = mock_virtual_query;
+    hwi_platform.unmap_view_of_file = mock_unmap_view_of_file;
+    hwi_platform.close_handle       = mock_close_handle;
     will_return(mock_open_file_mapping, (HANDLE)0xDEAD);
     will_return(mock_map_view_of_file, tiny);
     will_return(mock_virtual_query, (SIZE_T)sizeof(tiny));
