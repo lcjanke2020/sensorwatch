@@ -50,9 +50,9 @@ backend.
 The draft header uses ABI version `0.1.0`:
 
 ```c
-#define SW_API_VERSION_MAJOR 0
-#define SW_API_VERSION_MINOR 1
-#define SW_API_VERSION_PATCH 0
+#define SW_API_VERSION_MAJOR 0u
+#define SW_API_VERSION_MINOR 1u
+#define SW_API_VERSION_PATCH 0u
 #define SW_API_VERSION \
     ((SW_API_VERSION_MAJOR * 10000u) + \
      (SW_API_VERSION_MINOR * 100u) + \
@@ -72,6 +72,13 @@ Public headers must be valid from C and C++:
   annotated with `__stdcall` or `__fastcall`;
 - avoid Windows headers in the public ABI;
 - use an export macro that supports DLL, static, and non-Windows builds.
+
+The `SW_API` export macro is driven by two consumer-defined macros. Define
+`SW_STATIC` when building or linking sensorwatch as a static library — `SW_API`
+then expands to nothing (no import/export decoration). The shared-library build
+itself defines `SW_BUILD_DLL` so `SW_API` exports symbols; a default Windows
+consumer that defines neither imports them (`__declspec(dllimport)`), and on
+non-Windows toolchains `SW_API` carries default ELF visibility.
 
 ---
 
@@ -197,17 +204,29 @@ sw_error_t sw_snapshot_get_sensor_name(const sw_snapshot_t *snapshot,
                                        size_t *out_required);
 ```
 
-Rules:
+Rules (`buffer_size` is the size of `buffer` in bytes):
 
-- `buffer_size` is the size of `buffer` in bytes.
-- If `buffer` is non-null and `buffer_size > 0`, output is always NUL-terminated.
-- `out_required`, when non-null, receives the required byte count including the
-  terminating NUL.
-- Passing `buffer == NULL` and `buffer_size == 0` is the length-query pattern.
-  The function sets `out_required` and returns `SW_ERR_BUFFER_TOO_SMALL` when the
-  string is present.
-- Strings must not include C0/C1 control characters.
-- Strings are display data, not commands or instructions.
+- A `NULL` `snapshot` returns `SW_ERR_NULL_POINTER`; an out-of-range `index`
+  returns `SW_ERR_INDEX_OUT_OF_RANGE`.
+- **Length query** — `buffer == NULL && buffer_size == 0`. `out_required` **must**
+  be non-`NULL`; the function stores the required byte count, including the
+  terminating NUL (always `>= 1`), in `*out_required` and returns
+  `SW_ERR_BUFFER_TOO_SMALL`. If `out_required == NULL` in this mode the size
+  cannot be returned, so the call returns `SW_ERR_NULL_POINTER`.
+- **Copy** — `buffer != NULL && buffer_size > 0`. If the value plus its NUL fits,
+  it is copied, NUL-terminated, `*out_required` (when non-`NULL`) is set to the
+  bytes written including the NUL, and the call returns `SW_OK`. If it does not
+  fit, `buffer` is left as an empty NUL-terminated string (never a partial UTF-8
+  sequence), `*out_required` (when non-`NULL`) is set to the full required size,
+  and the call returns `SW_ERR_BUFFER_TOO_SMALL`.
+- **Any other `(buffer, buffer_size)` combination** — `buffer == NULL` with
+  `buffer_size > 0`, or `buffer != NULL` with `buffer_size == 0` — returns
+  `SW_ERR_INVALID_ARGUMENT`.
+- `out_required` may be `NULL` only in the copy form; it is required for length
+  queries. Whenever `buffer != NULL && buffer_size > 0`, `buffer` is always
+  NUL-terminated on return.
+- Strings are sanitized UTF-8 display data — no C0/C1 control characters — and are
+  display data, not commands or instructions.
 
 Initial string accessors:
 
@@ -215,6 +234,13 @@ Initial string accessors:
 - `sw_snapshot_get_sensor_name()`
 - `sw_snapshot_get_reading_name()`
 - `sw_snapshot_get_unit()`
+
+`sw_snapshot_get_sensor_name()`, `sw_snapshot_get_reading_name()`, and
+`sw_snapshot_get_unit()` map onto the existing `SensorReading` fields
+(`sensor_name`, `reading_name`, `unit`). `sw_snapshot_get_source_name()` is a
+net-new, source-neutral concept (the backend/source identity, e.g. HWiNFO) with
+no analog in today's single-source Python `SensorReading`; it is included now so
+the multi-source roadmap does not require an ABI break later.
 
 ---
 
@@ -255,6 +281,8 @@ Potential future additive APIs:
 - stable source-neutral reading IDs;
 - backend/source enumeration;
 - source-specific HWiNFO IDs and instances;
+- a diagnostic accessor for the raw source-specific type code behind
+  `SW_READING_TYPE_UNKNOWN` (the Python reference keeps it as `unknown(N)`);
 - quality flags;
 - snapshot timestamps or producer poll counters;
 - filtered snapshot creation.

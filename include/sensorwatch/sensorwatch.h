@@ -190,10 +190,29 @@ SW_API sw_error_t sw_snapshot_get_average(const sw_snapshot_t *snapshot,
 /*
  * Copy the source/backend name for a snapshot entry into a caller-owned buffer.
  *
- * Strings are UTF-8, NUL-terminated, and sanitized as untrusted display data.
- * out_required, when non-NULL, receives the required byte count including the
- * terminating NUL. Passing buffer == NULL and buffer_size == 0 is the length
- * query pattern and returns SW_ERR_BUFFER_TOO_SMALL when the string exists.
+ * Strings are UTF-8, sanitized as untrusted display data (no C0/C1 control
+ * characters). This buffer/size/length contract is shared by every string
+ * accessor below:
+ *
+ *   - snapshot == NULL                -> SW_ERR_NULL_POINTER.
+ *   - index >= entry count            -> SW_ERR_INDEX_OUT_OF_RANGE.
+ *   - Length query (buffer == NULL && buffer_size == 0): out_required MUST be
+ *     non-NULL. The required byte count, including the terminating NUL (always
+ *     >= 1), is stored in *out_required and the call returns
+ *     SW_ERR_BUFFER_TOO_SMALL. If out_required == NULL in this mode there is no
+ *     way to return the size, so the call returns SW_ERR_NULL_POINTER.
+ *   - Copy (buffer != NULL && buffer_size > 0): if the value plus its NUL fits,
+ *     it is copied, NUL-terminated, *out_required (when non-NULL) is set to the
+ *     bytes written including the NUL, and the call returns SW_OK. If it does
+ *     not fit, buffer is left as an empty NUL-terminated string (never a partial
+ *     UTF-8 sequence), *out_required (when non-NULL) is set to the full required
+ *     size, and the call returns SW_ERR_BUFFER_TOO_SMALL.
+ *   - Any other (buffer, buffer_size) combination -- buffer == NULL with
+ *     buffer_size > 0, or buffer != NULL with buffer_size == 0 -- returns
+ *     SW_ERR_INVALID_ARGUMENT.
+ *   - out_required may be NULL only in the copy form; it is required for length
+ *     queries. Whenever buffer != NULL && buffer_size > 0, buffer is always
+ *     NUL-terminated on return.
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */

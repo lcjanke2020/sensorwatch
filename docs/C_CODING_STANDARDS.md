@@ -406,10 +406,14 @@ user-mode library; do not pretend it is security.
 ### API Version Constant
 
 Embed a version in the public header so callers can check compatibility at
-both compile time and runtime:
+both compile time and runtime. The authoritative public spelling is
+`SW_API_VERSION` / `sw_api_version()` in [`C_ABI.md`](C_ABI.md) and the shipped
+[`sensorwatch.h`](../include/sensorwatch/sensorwatch.h); the `hwi_`-prefixed form
+below is an illustrative implementation sketch (see the Naming note in
+[Section 7](#7-coding-style)) showing the macro/runtime-query pattern:
 
 ```c
-/* hwi_version.h */
+/* Illustrative sketch -- public names are sw_/SW_; see C_ABI.md */
 #define HWI_API_VERSION_MAJOR 1
 #define HWI_API_VERSION_MINOR 0
 #define HWI_API_VERSION_PATCH 0
@@ -422,10 +426,10 @@ both compile time and runtime:
 HWI_API uint32_t hwi_version(void);
 ```
 
-FFI callers should check at load time:
+FFI callers should check at load time (using the public `sw_api_version()`):
 
 ```python
-dll_version = lib.hwi_version()
+dll_version = lib.sw_api_version()
 if dll_version // 10000 != EXPECTED_MAJOR:
     raise RuntimeError(f"ABI mismatch: expected major 1, got {dll_version}")
 ```
@@ -781,12 +785,12 @@ src/
 Use traditional `#ifndef` guards, not `#pragma once`:
 
 ```c
-#ifndef HWI_MONITOR_H
-#define HWI_MONITOR_H
+#ifndef SENSORWATCH_SENSORWATCH_H
+#define SENSORWATCH_SENSORWATCH_H
 
 /* ... */
 
-#endif /* HWI_MONITOR_H */
+#endif /* SENSORWATCH_SENSORWATCH_H */
 ```
 
 Rationale: `#pragma once` is supported by all compilers we care about (MSVC,
