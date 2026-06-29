@@ -713,9 +713,13 @@ Benefits:
 
 ### Calling Convention
 
-Use the default `__cdecl` calling convention. It is the default for MSVC, the
-default for C, and what Python `ctypes` expects. Do not use `__stdcall` --
-it complicates name decoration and provides no benefit for a modern DLL.
+Pin the `__cdecl` calling convention explicitly rather than relying on the
+compiler default. `__cdecl` is the C default and what Python `ctypes` expects,
+but the MSVC default can be flipped by build flags (e.g. `/Gz` makes it
+`__stdcall`), so a stable ABI annotates every exported function with an explicit
+`SW_CALL` macro (`__cdecl` on Windows, empty elsewhere) -- see the public header
+and [`C_ABI.md`](C_ABI.md). Do not use `__stdcall` -- it complicates name
+decoration and provides no benefit for a modern DLL.
 
 ### C++ Compatibility
 

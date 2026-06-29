@@ -7,9 +7,14 @@
  * This is a declaration-only proposal for the future native core. The current
  * project does not yet ship a C implementation or DLL.
  *
- * Calling convention: every function below uses the platform default C calling
- * convention (`__cdecl` on MSVC). ABI functions must not be annotated with
- * `__stdcall` or `__fastcall`.
+ * Calling convention: every function is declared with SW_CALL, which pins the
+ * platform C calling convention (`__cdecl` on Windows) so the ABI stays stable
+ * even when a consumer's compiler default differs (e.g. MSVC `/Gz`). ABI
+ * functions are never `__stdcall` or `__fastcall`.
+ *
+ * Enum width: sw_error_t and sw_reading_type_t are asserted to be 4 bytes so the
+ * implementation-defined enum size cannot silently drift across compilers/flags
+ * (e.g. `-fshort-enums`) and break the wire layout bindings depend on.
  */
 
 #include <stddef.h>
@@ -29,6 +34,22 @@ extern "C" {
 #  define SW_API __attribute__((visibility("default")))
 #else
 #  define SW_API
+#endif
+
+/* Explicit calling convention: __cdecl on Windows, default elsewhere. */
+#if defined(_WIN32)
+#  define SW_CALL __cdecl
+#else
+#  define SW_CALL
+#endif
+
+/* Portable compile-time assertion (no-op before C11 / C++11). */
+#if defined(__cplusplus)
+#  define SW_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define SW_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#else
+#  define SW_STATIC_ASSERT(cond, msg)
 #endif
 
 #define SW_API_VERSION_MAJOR 0u
@@ -58,6 +79,9 @@ typedef enum sw_error {
     SW_ERR_INTERNAL               = -12
 } sw_error_t;
 
+SW_STATIC_ASSERT(sizeof(sw_error_t) == 4,
+                 "sw_error_t must be 4 bytes for a stable cross-compiler ABI");
+
 /*
  * Source-neutral reading category.
  *
@@ -81,12 +105,15 @@ typedef enum sw_reading_type {
     SW_READING_TYPE_UNKNOWN       = 255
 } sw_reading_type_t;
 
+SW_STATIC_ASSERT(sizeof(sw_reading_type_t) == 4,
+                 "sw_reading_type_t must be 4 bytes for a stable cross-compiler ABI");
+
 /*
  * Return the ABI version encoded as MAJOR * 10000 + MINOR * 100 + PATCH.
  *
  * Thread safety: thread-safe.
  */
-SW_API uint32_t sw_api_version(void);
+SW_API uint32_t SW_CALL sw_api_version(void);
 
 /*
  * Return a static human-readable string for an error code.
@@ -96,7 +123,7 @@ SW_API uint32_t sw_api_version(void);
  *
  * Thread safety: thread-safe.
  */
-SW_API const char *sw_error_string(sw_error_t error);
+SW_API const char *SW_CALL sw_error_string(sw_error_t error);
 
 /*
  * Open a sensorwatch session for the default sensor source.
@@ -106,14 +133,14 @@ SW_API const char *sw_error_string(sw_error_t error);
  *
  * Thread safety: safe to call concurrently for different output sessions.
  */
-SW_API sw_error_t sw_session_open(sw_session_t **out_session);
+SW_API sw_error_t SW_CALL sw_session_open(sw_session_t **out_session);
 
 /*
  * Close a session opened by sw_session_open(). Passing NULL is a no-op.
  *
  * Thread safety: must not race with any other use of the same session.
  */
-SW_API void sw_session_close(sw_session_t *session);
+SW_API void SW_CALL sw_session_close(sw_session_t *session);
 
 /*
  * Take an immutable snapshot of all currently available sensor readings.
@@ -124,68 +151,68 @@ SW_API void sw_session_close(sw_session_t *session);
  * Thread safety: session-bound. Callers must synchronize concurrent use of the
  * same session.
  */
-SW_API sw_error_t sw_snapshot_take(sw_session_t *session,
-                                   sw_snapshot_t **out_snapshot);
+SW_API sw_error_t SW_CALL sw_snapshot_take(sw_session_t *session,
+                                           sw_snapshot_t **out_snapshot);
 
 /*
  * Free a snapshot returned by sw_snapshot_take(). Passing NULL is a no-op.
  *
  * Thread safety: must not race with any other use of the same snapshot.
  */
-SW_API void sw_snapshot_free(sw_snapshot_t *snapshot);
+SW_API void SW_CALL sw_snapshot_free(sw_snapshot_t *snapshot);
 
 /*
  * Return the number of reading entries in a snapshot.
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_entry_count(const sw_snapshot_t *snapshot,
-                                          uint32_t *out_count);
+SW_API sw_error_t SW_CALL sw_snapshot_entry_count(const sw_snapshot_t *snapshot,
+                                                  uint32_t *out_count);
 
 /*
  * Return the source-neutral reading type for a snapshot entry.
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_reading_type(const sw_snapshot_t *snapshot,
-                                               uint32_t index,
-                                               sw_reading_type_t *out_type);
+SW_API sw_error_t SW_CALL sw_snapshot_get_reading_type(const sw_snapshot_t *snapshot,
+                                                       uint32_t index,
+                                                       sw_reading_type_t *out_type);
 
 /*
  * Return the current value for a snapshot entry.
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_value(const sw_snapshot_t *snapshot,
-                                        uint32_t index,
-                                        double *out_value);
+SW_API sw_error_t SW_CALL sw_snapshot_get_value(const sw_snapshot_t *snapshot,
+                                                uint32_t index,
+                                                double *out_value);
 
 /*
  * Return the minimum value for a snapshot entry.
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_minimum(const sw_snapshot_t *snapshot,
-                                          uint32_t index,
-                                          double *out_value);
+SW_API sw_error_t SW_CALL sw_snapshot_get_minimum(const sw_snapshot_t *snapshot,
+                                                  uint32_t index,
+                                                  double *out_value);
 
 /*
  * Return the maximum value for a snapshot entry.
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_maximum(const sw_snapshot_t *snapshot,
-                                          uint32_t index,
-                                          double *out_value);
+SW_API sw_error_t SW_CALL sw_snapshot_get_maximum(const sw_snapshot_t *snapshot,
+                                                  uint32_t index,
+                                                  double *out_value);
 
 /*
  * Return the average value for a snapshot entry.
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_average(const sw_snapshot_t *snapshot,
-                                          uint32_t index,
-                                          double *out_value);
+SW_API sw_error_t SW_CALL sw_snapshot_get_average(const sw_snapshot_t *snapshot,
+                                                  uint32_t index,
+                                                  double *out_value);
 
 /*
  * Copy the source/backend name for a snapshot entry into a caller-owned buffer.
@@ -216,11 +243,11 @@ SW_API sw_error_t sw_snapshot_get_average(const sw_snapshot_t *snapshot,
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_source_name(const sw_snapshot_t *snapshot,
-                                              uint32_t index,
-                                              char *buffer,
-                                              size_t buffer_size,
-                                              size_t *out_required);
+SW_API sw_error_t SW_CALL sw_snapshot_get_source_name(const sw_snapshot_t *snapshot,
+                                                      uint32_t index,
+                                                      char *buffer,
+                                                      size_t buffer_size,
+                                                      size_t *out_required);
 
 /*
  * Copy the sensor display name for a snapshot entry into a caller-owned buffer.
@@ -228,11 +255,11 @@ SW_API sw_error_t sw_snapshot_get_source_name(const sw_snapshot_t *snapshot,
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_sensor_name(const sw_snapshot_t *snapshot,
-                                              uint32_t index,
-                                              char *buffer,
-                                              size_t buffer_size,
-                                              size_t *out_required);
+SW_API sw_error_t SW_CALL sw_snapshot_get_sensor_name(const sw_snapshot_t *snapshot,
+                                                      uint32_t index,
+                                                      char *buffer,
+                                                      size_t buffer_size,
+                                                      size_t *out_required);
 
 /*
  * Copy the reading display name for a snapshot entry into a caller-owned buffer.
@@ -240,11 +267,11 @@ SW_API sw_error_t sw_snapshot_get_sensor_name(const sw_snapshot_t *snapshot,
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_reading_name(const sw_snapshot_t *snapshot,
-                                               uint32_t index,
-                                               char *buffer,
-                                               size_t buffer_size,
-                                               size_t *out_required);
+SW_API sw_error_t SW_CALL sw_snapshot_get_reading_name(const sw_snapshot_t *snapshot,
+                                                       uint32_t index,
+                                                       char *buffer,
+                                                       size_t buffer_size,
+                                                       size_t *out_required);
 
 /*
  * Copy the unit string for a snapshot entry into a caller-owned buffer.
@@ -252,11 +279,11 @@ SW_API sw_error_t sw_snapshot_get_reading_name(const sw_snapshot_t *snapshot,
  *
  * Thread safety: thread-safe for a live immutable snapshot.
  */
-SW_API sw_error_t sw_snapshot_get_unit(const sw_snapshot_t *snapshot,
-                                       uint32_t index,
-                                       char *buffer,
-                                       size_t buffer_size,
-                                       size_t *out_required);
+SW_API sw_error_t SW_CALL sw_snapshot_get_unit(const sw_snapshot_t *snapshot,
+                                               uint32_t index,
+                                               char *buffer,
+                                               size_t buffer_size,
+                                               size_t *out_required);
 
 #ifdef __cplusplus
 }

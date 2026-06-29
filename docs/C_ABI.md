@@ -68,8 +68,14 @@ review.
 Public headers must be valid from C and C++:
 
 - use `extern "C"` for C++ consumers;
-- default to the C calling convention (`__cdecl` on MSVC); ABI functions are not
-  annotated with `__stdcall` or `__fastcall`;
+- pin the C calling convention with an explicit `SW_CALL` macro (`__cdecl` on
+  Windows, empty elsewhere) on every exported function, so the ABI stays stable
+  even if a consumer's compiler default differs (e.g. MSVC `/Gz`); ABI functions
+  are never `__stdcall` or `__fastcall`;
+- pin the width of the public enums crossing the ABI (`sw_error_t`,
+  `sw_reading_type_t`) with a `static_assert(sizeof(...) == 4)`, so the
+  implementation-defined enum size cannot silently drift (e.g. under
+  `-fshort-enums`) and break bindings that treat them as 32-bit;
 - avoid Windows headers in the public ABI;
 - use an export macro that supports DLL, static, and non-Windows builds.
 
