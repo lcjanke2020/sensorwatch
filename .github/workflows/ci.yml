@@ -64,11 +64,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      # The Visual Studio generator locates MSVC itself -- no vcvars/dev-shell step
-      # needed. /W4 /WX gates warnings; /analyze runs non-fatally (/analyze:WX-).
-      - name: Configure
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON -DSW_ENABLE_ANALYZE=ON
-      - name: Build
-        run: cmake --build build --config Debug
-      - name: Test
-        run: ctest --test-dir build -C Debug --output-on-failure
+      # Discover whatever Visual Studio the runner ships (version-independent) via
+      # vswhere, enter its Dev Shell to put cl + the bundled CMake/Ninja on PATH,
+      # then build + test. /W4 /WX gates warnings; /analyze runs non-fatally
+      # (/analyze:WX-). All in one step since shell env does not persist.
+      - name: Build and test (MSVC + Ninja)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          if (-not $vs) { throw "No Visual Studio installation found" }
+          Write-Host "Using Visual Studio at: $vs"
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -DevCmdArguments '-arch=x64 -host_arch=x64' -SkipAutomaticLocation | Out-Null
+          $env:PATH = "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;" + $env:PATH
+          cmake -B build -G Ninja -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON -DSW_ENABLE_ANALYZE=ON
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build build
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          ctest --test-dir build --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
