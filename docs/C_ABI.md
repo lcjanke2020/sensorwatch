@@ -1,17 +1,21 @@
-# sensorwatch C ABI Proposal
+# sensorwatch C ABI
 
-**Status**: Draft interface proposal. sensorwatch is currently a Python package;
-there is no native implementation, CMake build, shipped DLL, or Python binding to
-this header yet.
+**Status**: Implemented (ABI draft `0.1.0`). A native core now implements this
+header: a Windows DLL plus a static library built with CMake, with cmocka unit
+tests and an AddressSanitizer/UBSan gate (see "Building the native core" in the
+[README](../README.md)). The ABI itself is still a **pre-1.0 draft** and may change
+during review until the first release carries a stability commitment (see
+[Evolution Policy](#evolution-policy)). There is no Python/C++/Rust binding to the
+DLL yet.
 
-This document defines the proposed stable C ABI for a future native sensorwatch
-core. The ABI is designed to be wrapped by Python, C++, Rust, and other languages
-without exposing Windows handles, HWiNFO raw structs, or raw shared-memory
-pointers.
+This document defines the stable C ABI for the native sensorwatch core. The ABI is
+designed to be wrapped by Python, C++, Rust, and other languages without exposing
+Windows handles, HWiNFO raw structs, or raw shared-memory pointers.
 
-The declaration draft lives in [`include/sensorwatch/sensorwatch.h`](../include/sensorwatch/sensorwatch.h).
-Future implementation work should follow [`docs/C_CODING_STANDARDS.md`](C_CODING_STANDARDS.md)
-and the security requirements in [`SECURITY.md`](../SECURITY.md).
+The header lives in [`include/sensorwatch/sensorwatch.h`](../include/sensorwatch/sensorwatch.h)
+and the implementation in [`src/`](../src). Implementation follows
+[`docs/C_CODING_STANDARDS.md`](C_CODING_STANDARDS.md) and the security requirements
+in [`SECURITY.md`](../SECURITY.md).
 
 ---
 
@@ -30,9 +34,10 @@ and the security requirements in [`SECURITY.md`](../SECURITY.md).
 
 ## Non-goals
 
-- No native implementation in this proposal.
 - No replacement of the current Python HWiNFO parser yet.
-- No CMake, native CI matrix, DLL packaging, or wheel packaging changes yet.
+- No language bindings (Python/C++/Rust) over the native core yet.
+- No prebuilt DLL distribution, code signing, or wheel packaging yet.
+- No fuzzing harness yet (planned; the parser is already under ASan/UBSan).
 - No public exposure of HWiNFO shared-memory layout structs.
 - No filesystem logging API in the core ABI.
 - No network or REST API in the core ABI.

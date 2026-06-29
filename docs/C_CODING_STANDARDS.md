@@ -4,14 +4,14 @@
 **Scope**: Windows user-mode DLL, read-only shared memory access, consumed via FFI
 from Python, C++, and Rust.
 
-**Status**: Planned native core. The current repository is Python-only; there is
-no C source tree, CMake build, or shipped DLL yet. This document is normative for
-future native contributions and implementation PRs, but its code snippets are
-illustrative until promoted into a dedicated ABI specification or public header.
-The ABI specification in [`C_ABI.md`](C_ABI.md) (with its declaration-only header
-[`../include/sensorwatch/sensorwatch.h`](../include/sensorwatch/sensorwatch.h)) is
-authoritative for public symbol names and function signatures; this document
-remains the implementation and review standard for the native code behind that ABI.
+**Status**: Active. A native core now implements the ABI under [`src/`](../src),
+built with CMake, with cmocka tests under [`tests/c/`](../tests/c). This document
+is the normative implementation and review standard for that native code. Its
+`hwi_`-prefixed code snippets remain illustrative sketches from the design phase —
+the shipped public symbols use the `sw_`/`SW_` prefix defined in
+[`C_ABI.md`](C_ABI.md) and the public header
+[`../include/sensorwatch/sensorwatch.h`](../include/sensorwatch/sensorwatch.h),
+which are authoritative for public symbol names and function signatures.
 
 ---
 

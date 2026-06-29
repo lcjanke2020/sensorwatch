@@ -111,6 +111,37 @@ uv sync
 uv run pytest
 ```
 
+## Building the native core (C)
+
+Alongside the Python package, sensorwatch ships a small native C core that
+implements the source-neutral C ABI in
+[`include/sensorwatch/sensorwatch.h`](include/sensorwatch/sensorwatch.h) (see
+[`docs/C_ABI.md`](docs/C_ABI.md)). It opens HWiNFO shared memory read-only,
+copies-then-parses it with full bounds validation, and exposes immutable
+snapshots — no third-party runtime dependencies beyond the C runtime and Windows
+SDK. The Python package does not use it yet; bindings come later.
+
+Build the DLL + static library and run the cmocka unit tests with CMake:
+
+```sh
+cmake -B build -DSW_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+MSVC is the primary toolchain; the parser core also builds with GCC/Clang
+(including MinGW) for development and CI cross-checks. Useful options:
+
+- `-DSW_ENABLE_ASAN=ON` — AddressSanitizer (plus UBSan on GCC/Clang).
+- `-DSW_ENABLE_ANALYZE=ON` — MSVC `/analyze` static analysis (non-fatal).
+- `-DSW_BUILD_EXAMPLES=ON` — build `sw_dump`, which prints a live snapshot (run it
+  with HWiNFO64 running and Shared Memory Support enabled).
+
+Like the Python suite, the C tests feed the parser **synthetic byte buffers** (no
+live HWiNFO needed) and mirror the invariants in
+[`tests/test_hwinfo_shm.py`](tests/test_hwinfo_shm.py); the Windows-only session
+test mocks the Win32 calls.
+
 ## Roadmap
 
 sensorwatch starts as a Python monitor and grows toward a general hardware
@@ -120,9 +151,13 @@ observability toolkit:
   interface (HWiNFO today; UPS, AIDA64, and IPMI next) with stable sensor
   identities and per-reading quality flags.
 - **Optional localhost REST service** for live queries (bound to `127.0.0.1`).
-- **Language bindings** over a shared core. The draft C ABI is proposed in
-  [`docs/C_ABI.md`](docs/C_ABI.md), with implementation standards in
-  [`docs/C_CODING_STANDARDS.md`](docs/C_CODING_STANDARDS.md).
+- **Native C core** — a dependency-free Windows DLL (plus static library)
+  implementing the source-neutral C ABI in
+  [`include/sensorwatch/sensorwatch.h`](include/sensorwatch/sensorwatch.h)
+  ([`docs/C_ABI.md`](docs/C_ABI.md); standards in
+  [`docs/C_CODING_STANDARDS.md`](docs/C_CODING_STANDARDS.md)). Built with CMake —
+  see [Building the native core](#building-the-native-core-c). **Language bindings**
+  (Python, C++, Rust) over that core are the next step.
 - **Agent integration** via an MCP / skill layer so AI agents can query
   hardware state directly.
 

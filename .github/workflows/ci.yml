@@ -1,9 +1,10 @@
 name: CI
 
 # Secret-free build + test gate. Runs on pushes to master and on every PR.
-# See README "Testing / CI scope": this exercises the parsing, config, and
-# logging logic (the shared-memory parser against synthetic byte buffers); it
-# does not and cannot exercise a live HWiNFO64 sensor read.
+# See README "Testing / CI scope": the Python job exercises the parsing, config,
+# and logging logic (the shared-memory parser against synthetic byte buffers); the
+# native jobs build the C core and run its cmocka tests (also synthetic buffers).
+# Neither exercises a live HWiNFO64 sensor read.
 on:
   push:
     branches: [master]
@@ -37,3 +38,50 @@ jobs:
         run: uv run pytest
       - name: Import smoke test
         run: uv run python -c "import sensorwatch; print(sensorwatch.__version__)"
+
+  native-linux:
+    name: native (ubuntu, gcc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Configure
+        run: cmake -B build -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      # Sanitizer pass (SECURITY.md: run the parser under sanitizers). RelWithDebInfo
+      # avoids debug-only checks and keeps ASan/UBSan happy.
+      - name: Configure (ASan + UBSan)
+        run: cmake -B build-asan -DSW_BUILD_TESTS=ON -DSW_ENABLE_ASAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build (ASan + UBSan)
+        run: cmake --build build-asan -j
+      - name: Test (ASan + UBSan)
+        run: ctest --test-dir build-asan --output-on-failure
+
+  native-windows:
+    name: native (windows, msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      # Discover whatever Visual Studio the runner ships (version-independent) via
+      # vswhere, enter its Dev Shell to put cl + the bundled CMake/Ninja on PATH,
+      # then build + test. /W4 /WX gates warnings; /analyze runs non-fatally
+      # (/analyze:WX-). All in one step since shell env does not persist.
+      - name: Build and test (MSVC + Ninja)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          if (-not $vs) { throw "No Visual Studio installation found" }
+          Write-Host "Using Visual Studio at: $vs"
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -DevCmdArguments '-arch=x64 -host_arch=x64' -SkipAutomaticLocation | Out-Null
+          $env:PATH = "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;" + $env:PATH
+          cmake -B build -G Ninja -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON -DSW_ENABLE_ANALYZE=ON
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build build
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          ctest --test-dir build --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "ctest failed" }

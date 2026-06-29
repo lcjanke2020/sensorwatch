@@ -167,10 +167,12 @@ correct for HWiNFO's documented mapping.
 
 ---
 
-## 2. DLL Security (planned)
+## 2. DLL Security
 
-The current package does not ship a DLL. This section applies to the planned
-native C ABI / Windows DLL and to language bindings that load it.
+The native C core is now built from source (a Windows DLL plus a static library;
+see "Building the native core" in the README), but the Python package does not yet
+distribute a prebuilt DLL or load one. This section applies to that native DLL and
+to the language bindings that will load it.
 
 ### 2.1 DLL Search Order Hijacking
 
@@ -490,11 +492,11 @@ change could warn when the log directory appears broadly writable/readable.
 
 | # | Requirement | Section | Status |
 |---|-------------|---------|--------|
-| 1 | Load DLLs by absolute path in bindings | 2.1 | Planned |
-| 2 | Keep native core runtime dependency-free beyond system libraries | 2.1, 6.1 | Planned |
-| 3 | Preserve copy-then-parse model; expose immutable snapshots, not raw pointers | 1.3 | Planned |
-| 4 | Return explicit error codes for source unavailable vs corrupt data | 1.3 | Planned |
-| 5 | Run native parser tests under sanitizers and fuzzing | 1.3, 6.2 | Planned |
+| 1 | Load DLLs by absolute path in bindings | 2.1 | Planned (no bindings yet) |
+| 2 | Keep native core runtime dependency-free beyond system libraries | 2.1, 6.1 | Done |
+| 3 | Preserve copy-then-parse model; expose immutable snapshots, not raw pointers | 1.3 | Done |
+| 4 | Return explicit error codes for source unavailable vs corrupt data | 1.3 | Done |
+| 5 | Run native parser tests under sanitizers and fuzzing | 1.3, 6.2 | ASan/UBSan done; fuzzing planned |
 
 ### Planned REST Service
 
