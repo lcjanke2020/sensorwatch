@@ -28,6 +28,13 @@ def _type_str(rt: ReadingType) -> str:
     return _TYPE_TO_STR.get(rt, f"unknown({int(rt)})")
 
 
+def _norm_type(label: str) -> str:
+    # The C ABI normalizes any unrecognized source code to UNKNOWN ("unknown(255)"),
+    # while the pure-Python reader preserves the raw code ("unknown(<N>)"). Collapse
+    # both so the shape comparison doesn't false-fail on an unrecognized live type.
+    return "unknown" if label.startswith("unknown") else label
+
+
 # --- Import + ABI version smoke -------------------------------------------------
 
 def test_abi_version_matches_expected():
@@ -119,14 +126,17 @@ def test_live_snapshot_shape_matches_reference():
 
     with _live_session_or_skip() as session:
         snapshot = session.snapshot()
-        assert snapshot.source == "HWiNFO"
         assert len(snapshot) == len(reference)
+        if len(snapshot):  # an empty snapshot has no source identity to report
+            assert snapshot.source == "HWiNFO"
 
         native_shape = [
-            (r.sensor, r.reading, r.unit, _type_str(r.type)) for r in snapshot
+            (r.sensor, r.reading, r.unit, _norm_type(_type_str(r.type)))
+            for r in snapshot
         ]
         reference_shape = [
-            (p.sensor_name, p.reading_name, p.unit, p.sensor_type) for p in reference
+            (p.sensor_name, p.reading_name, p.unit, _norm_type(p.sensor_type))
+            for p in reference
         ]
         assert native_shape == reference_shape
 

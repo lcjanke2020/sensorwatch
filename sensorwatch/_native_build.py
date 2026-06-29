@@ -8,9 +8,13 @@ helpers stay extension-local. This single-artifact shape sidesteps the DLL
 search-order risk discussed in ``SECURITY.md`` §2.1.
 
 API mode (vs. ABI/ctypes) means cffi compiles a stub against the *real* header
-``include/sensorwatch/sensorwatch.h``, so any drift between the hand-curated
-``cdef`` below and the shipped prototypes becomes a **compile error** at wheel
-build time.
+``include/sensorwatch/sensorwatch.h``, so **structural** drift between the
+hand-curated ``cdef`` below and the shipped prototypes (function names, arity,
+pointer types/depth) becomes a compile error at wheel build time. An
+implicitly-convertible scalar change (e.g. ``uint32_t`` -> ``uint64_t``) may not
+warn; the ABI pins fixed-width types and 4-byte enums via ``SW_STATIC_ASSERT`` in
+the header, and ``test_abi_version_*`` exercises the value, which together close
+that gap.
 
 The ``cdef`` is curated by hand because cffi's parser cannot ingest the full
 header (it carries ``#include``s and the ``SW_STATIC_ASSERT`` / ``SW_API`` /

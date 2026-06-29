@@ -13,6 +13,7 @@ build/
 /sensorwatch/_sw_cffi.c
 /sensorwatch/*.pyd
 /sensorwatch/*.so
+*.o
 *.obj
 *.lib
 *.exp

@@ -32,6 +32,11 @@ except ImportError as exc:  # pragma: no cover - exercised only without the buil
 EXPECTED_ABI_MAJOR = 0
 EXPECTED_ABI_MINOR = 1
 
+# Defensive upper bound for a single ABI string (see _query_string). The ABI's
+# name fields are bounded, sanitized UTF-8 (a few hundred bytes at most); 64 KiB
+# is far above any legitimate value, so anything larger signals a fault.
+_MAX_STRING_BYTES = 64 * 1024
+
 
 class SensorwatchError(Exception):
     """A native ``sw_error_t`` surfaced as a Python exception.
@@ -90,11 +95,13 @@ def _require_compatible_abi() -> None:
     compatible = major == EXPECTED_ABI_MAJOR and (major >= 1 or minor == EXPECTED_ABI_MINOR)
     if not compatible:
         patch = version % 100
-        raise SensorwatchError(
-            lib.SW_ERR_VERSION_MISMATCH,
+        # Raised at import time, so use ImportError (not SensorwatchError): callers
+        # that guard the optional native import with `except ImportError` — the same
+        # way they'd catch a missing extension — then fall back cleanly.
+        raise ImportError(
             f"sensorwatch native ABI {major}.{minor}.{patch} is incompatible with "
             f"this binding (expected {EXPECTED_ABI_MAJOR}.{EXPECTED_ABI_MINOR}.x). "
-            f"Reinstall a matching sensorwatch build.",
+            f"Reinstall a matching sensorwatch build."
         )
 
 
@@ -119,6 +126,14 @@ def _query_string(accessor, snapshot, index: int) -> str:
         )
 
     size = required[0]
+    # Defensive cap (SECURITY.md treats sensor data as untrusted): ABI strings are
+    # bounded, sanitized UTF-8, so an unreasonable required size signals a fault
+    # rather than a value worth allocating for.
+    if size > _MAX_STRING_BYTES:
+        raise SensorwatchError(
+            lib.SW_ERR_CORRUPT_DATA,
+            f"native string length {size} exceeds the {_MAX_STRING_BYTES}-byte cap",
+        )
     buffer = ffi.new("char[]", size)
     _check(accessor(snapshot, index, buffer, size, required))
     return ffi.string(buffer).decode("utf-8", errors="replace")

@@ -16,6 +16,6 @@ graft tests
 global-exclude *.py[cod]
 global-exclude *.pyd
 global-exclude *.so
-global-exclude *.obj *.lib *.exp
+global-exclude *.o *.obj *.lib *.exp
 global-exclude _sw_cffi.c
 prune **/__pycache__

@@ -43,7 +43,8 @@ requires = ["setuptools>=70", "cffi>=1.17"]
 build-backend = "setuptools.build_meta"
 
 # Dev-only tooling (PEP 735). Installed by `uv sync`; kept out of
-# [project].dependencies so the runtime footprint stays just `pendulum`.
+# [project].dependencies so the runtime footprint stays minimal — `pendulum`
+# plus `cffi` (which backs the native binding).
 [dependency-groups]
 dev = [
     "pytest>=8.0",

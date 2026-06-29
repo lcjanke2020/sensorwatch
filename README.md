@@ -24,7 +24,8 @@ currents, power, fan speeds, clocks, and usage.
 - **Sensor filtering** by case-insensitive substring include/exclude patterns.
 - **JSON Lines output** with daily file rotation and configurable retention.
 - **Graceful shutdown** on Ctrl+C / signals.
-- **Light footprint** — a handful of stdlib modules plus `pendulum`.
+- **Light footprint** — a handful of stdlib modules plus `pendulum` (and `cffi`,
+  which backs the native binding).
 - **Optional native binding** (`sensorwatch.native`) — a cffi wrapper over the
   bundled C core that reads the same data through the native parser (see
   [Native binding](#native-binding-cffi)).

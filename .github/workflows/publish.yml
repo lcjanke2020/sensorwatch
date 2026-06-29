@@ -73,14 +73,20 @@ jobs:
       id-token: write   # required for OIDC trusted publishing + PEP 740 attestations
       contents: read
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - name: Install tooling (twine pinned via uv.lock)
+        run: uv sync
       - name: Collect wheels + sdist into dist/
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: dist
           merge-multiple: true
       - name: Check package metadata
-        run: uvx twine check dist/*
+        run: uv run python -m twine check dist/*
       - name: Publish to PyPI (OIDC trusted publishing)
         # No password / token input → OIDC. Uploads dist/ by default.
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0

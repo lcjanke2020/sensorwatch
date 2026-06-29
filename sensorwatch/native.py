@@ -75,6 +75,7 @@ class Snapshot:
         count = ffi.new("uint32_t *")
         _check(lib.sw_snapshot_entry_count(ptr, count))
         self._count = int(count[0])
+        self._source = None  # snapshot-global; queried once and cached on access
 
     def _require_open(self):
         if self._ptr is None:
@@ -88,11 +89,18 @@ class Snapshot:
 
     @property
     def source(self) -> str:
-        """The source/backend identity (e.g. ``"HWiNFO"``)."""
-        ptr = self._require_open()
-        if self._count == 0:
-            return ""
-        return _query_string(lib.sw_snapshot_get_source_name, ptr, 0)
+        """The source/backend identity (e.g. ``"HWiNFO"``); shared by all readings.
+
+        Empty for a zero-entry snapshot (the ABI's source accessor is index-gated,
+        so there is no index to query).
+        """
+        if self._source is None:
+            ptr = self._require_open()
+            self._source = (
+                "" if self._count == 0
+                else _query_string(lib.sw_snapshot_get_source_name, ptr, 0)
+            )
+        return self._source
 
     def __getitem__(self, index: int) -> Reading:
         if not isinstance(index, int):
@@ -117,7 +125,7 @@ class Snapshot:
         _check(lib.sw_snapshot_get_average(ptr, index, average))
 
         return Reading(
-            source=_query_string(lib.sw_snapshot_get_source_name, ptr, index),
+            source=self.source,  # snapshot-global; cached, not re-queried per entry
             sensor=_query_string(lib.sw_snapshot_get_sensor_name, ptr, index),
             reading=_query_string(lib.sw_snapshot_get_reading_name, ptr, index),
             unit=_query_string(lib.sw_snapshot_get_unit, ptr, index),
