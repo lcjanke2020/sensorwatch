@@ -822,7 +822,7 @@ nothing else to configure, nothing else to download.
 #### MSVC (`cl.exe`)
 
 ```
-/std:c17          # C17 standard (see Section 9 for rationale)
+/std:c17          # C17 standard (see Section 10 for rationale)
 /W4               # Warning level 4 (high, but not /Wall which is too noisy)
 /WX               # Warnings as errors
 /sdl              # Security Development Lifecycle checks (buffer overrun, etc.)
