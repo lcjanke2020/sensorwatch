@@ -38,6 +38,10 @@ and 3.13 (see the [Testing / CI scope](README.md#testing--ci-scope) note).
   log messages.
 - **Don't make safety-critical decisions on raw sensor data.** See
   [`SECURITY.md`](SECURITY.md) — shared-memory input is treated as untrusted.
+- **Follow the native-core standards for C work.** Proposed C ABI or DLL changes
+  should follow [`docs/C_ABI.md`](docs/C_ABI.md),
+  [`docs/C_CODING_STANDARDS.md`](docs/C_CODING_STANDARDS.md), and the threat
+  model in [`SECURITY.md`](SECURITY.md).
 - **One logical change per pull request**, with a clear description of what and
   why.
 

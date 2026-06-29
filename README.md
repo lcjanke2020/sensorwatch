@@ -120,7 +120,9 @@ observability toolkit:
   interface (HWiNFO today; UPS, AIDA64, and IPMI next) with stable sensor
   identities and per-reading quality flags.
 - **Optional localhost REST service** for live queries (bound to `127.0.0.1`).
-- **Language bindings** over a shared core.
+- **Language bindings** over a shared core. The draft C ABI is proposed in
+  [`docs/C_ABI.md`](docs/C_ABI.md), with implementation standards in
+  [`docs/C_CODING_STANDARDS.md`](docs/C_CODING_STANDARDS.md).
 - **Agent integration** via an MCP / skill layer so AI agents can query
   hardware state directly.
 
