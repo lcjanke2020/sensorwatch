@@ -991,8 +991,8 @@ Rationale:
   mocking Win32 API calls.
 - Detects memory leaks when using `test_malloc()` / `test_free()`.
 - Lightweight: one `.c` file, one `.h` file.
-- Active development (cmocka 2.0.0 released December 2025 with C99 requirement
-  and TAP 14 support).
+- Active development: the 2.0 line (cmocka 2.0.0, December 2025) added a C99
+  requirement and TAP 14 support; pin a specific patch release (2.0.2).
 - **CMake integration is trivial** via `FetchContent` -- no manual install, no
   vcpkg, no system package needed:
 
@@ -1001,7 +1001,7 @@ include(FetchContent)
 FetchContent_Declare(
     cmocka
     GIT_REPOSITORY https://gitlab.com/cmocka/cmocka.git
-    GIT_TAG        cmocka-2.0.0
+    GIT_TAG        cmocka-2.0.2
 )
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
