@@ -41,6 +41,14 @@ HWiNFO normally — your WSL-2 terminal is just the launcher.
   open).
 - WSL interop enabled (the default).
 
+### Creating the Windows venv
+
+If you don't already have one, create it with a **Windows** Python — for example
+run `uv sync` from a normal Windows terminal in the checkout, or invoke the
+Windows build of `uv`/`python` from WSL. The only thing that matters is that the
+resulting venv's base interpreter is a Windows CPython (see the prerequisite
+above).
+
 ### Launch
 
 From your WSL-2 shell, call the Windows interpreter by path. Run from a **real
@@ -79,14 +87,6 @@ a Windows capture from WSL-2 rather than from a bare Windows console. The captur
 is still an ordinary foreground process, so it lives only as long as the session
 running it; keep the multiplexer session alive for as long as you want to keep
 logging.
-
-### Creating the Windows venv
-
-If you don't already have one, create it with a **Windows** Python — for example
-run `uv sync` from a normal Windows terminal in the checkout, or invoke the
-Windows build of `uv`/`python` from WSL. The only thing that matters is that the
-resulting venv's base interpreter is a Windows CPython (see the prerequisite
-above).
 
 ## Developing and testing in WSL-2 (native — no Windows needed)
 
