@@ -32,6 +32,10 @@ int main(void)
 
     uint32_t limit = (count < 20u) ? count : 20u;
     for (uint32_t i = 0; i < limit; i++) {
+        /* The buffers are sized generously and these are zero-initialized, so a
+           (very unlikely) too-small result just leaves an empty string. Accessor
+           return codes are intentionally ignored here to keep the demo short --
+           real consumers should check them and/or do a length query first. */
         char sensor[256] = {0};
         char reading[256] = {0};
         char unit[64] = {0};

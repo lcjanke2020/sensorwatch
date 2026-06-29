@@ -23,10 +23,10 @@ typedef struct sw_platform_ops {
 } sw_platform_ops_t;
 
 /*
- * Defined in sw_session.c, defaulting to the real Win32 calls. Tests swap members
- * before opening a session and restore them after. Process-global and mutated
- * only in single-threaded test setup (see the standards' note on the function
- * table), so it carries no internal locking.
+ * Defined in sw_session.c, defaulting to the real Win32 calls. Tests install mocks
+ * into this table before opening a session (see tests/c/test_session.c). It is
+ * process-global and mutated only in single-threaded test setup (see the
+ * standards' note on the function table), so it carries no internal locking.
  */
 extern sw_platform_ops_t sw_platform;
 

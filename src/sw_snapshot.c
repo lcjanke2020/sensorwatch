@@ -35,7 +35,7 @@ void sw_snapshot_destroy(sw_snapshot_t *snapshot)
         free(snapshot->entries);
     }
     free(snapshot->source_name);
-    snapshot->magic = 0;  /* poison */
+    snapshot->magic = 0;  /* poison the freed handle (debug breadcrumb; not read back) */
     free(snapshot);
 }
 

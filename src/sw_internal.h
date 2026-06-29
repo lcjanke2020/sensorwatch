@@ -54,8 +54,11 @@
 #define SW_MAX_SENSOR_COUNT  4096u
 #define SW_MAX_ENTRY_COUNT   65536u
 
-/* Defensive handle magics (docs/C_CODING_STANDARDS.md section 3). Poisoned on
-   free to catch use-after-free; not a security boundary. */
+/* Handle magics (docs/C_CODING_STANDARDS.md section 3): set on create and zeroed
+   on free as a debugging breadcrumb (visible in a debugger / crash dump). No code
+   reads them back -- reading magic through a freed/garbage pointer would itself be
+   undefined behavior -- so this is a marker, not an active use-after-free check,
+   and never a security boundary. */
 #define SW_SESSION_MAGIC   0x53575345u  /* 'SWSE' */
 #define SW_SNAPSHOT_MAGIC  0x5357534Eu  /* 'SWSN' */
 

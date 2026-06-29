@@ -142,7 +142,7 @@ SW_API void SW_CALL sw_session_close(sw_session_t *session)
     if (session->map_handle != NULL) {
         sw_platform.close_handle((HANDLE)session->map_handle);
     }
-    session->magic = 0;  /* poison: catch use-after-free */
+    session->magic = 0;  /* poison the freed handle (debug breadcrumb; not read back) */
     free(session);
 }
 
@@ -178,9 +178,12 @@ SW_API sw_error_t SW_CALL sw_snapshot_take(sw_session_t *session,
 
 SW_API sw_error_t SW_CALL sw_session_open(sw_session_t **out_session)
 {
-    if (out_session != NULL) {
-        *out_session = NULL;
+    /* Validate arguments before reporting platform support, so the NULL-pointer
+       contract is identical across platforms (matches the Windows path). */
+    if (out_session == NULL) {
+        return SW_ERR_NULL_POINTER;
     }
+    *out_session = NULL;
     return SW_ERR_UNSUPPORTED_PLATFORM;
 }
 
@@ -192,10 +195,10 @@ SW_API void SW_CALL sw_session_close(sw_session_t *session)
 SW_API sw_error_t SW_CALL sw_snapshot_take(sw_session_t *session,
                                            sw_snapshot_t **out_snapshot)
 {
-    (void)session;
-    if (out_snapshot != NULL) {
-        *out_snapshot = NULL;
+    if (session == NULL || out_snapshot == NULL) {
+        return SW_ERR_NULL_POINTER;
     }
+    *out_snapshot = NULL;
     return SW_ERR_UNSUPPORTED_PLATFORM;
 }
 

@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
+# VERSION tracks the C ABI draft (matches SW_API_VERSION 0.1.0 in the public
+# header), deliberately independent of the Python package version in pyproject.toml.
 project(sensorwatch
     VERSION 0.1.0
     DESCRIPTION "sensorwatch native C core (HWiNFO shared-memory reader)"

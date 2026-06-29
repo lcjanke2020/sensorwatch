@@ -178,6 +178,16 @@ static void test_source_name(void **state)
     sw_snapshot_free(snap);
 }
 
+/* The session entry points validate NULL arguments before anything else, so these
+   hold identically on Windows and on the non-Windows (unsupported) stubs. */
+static void test_session_funcs_reject_null(void **state)
+{
+    (void)state;
+    sw_snapshot_t *snap = NULL;
+    assert_int_equal(sw_session_open(NULL), SW_ERR_NULL_POINTER);
+    assert_int_equal(sw_snapshot_take(NULL, &snap), SW_ERR_NULL_POINTER);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -192,6 +202,7 @@ int main(void)
         cmocka_unit_test(test_string_invalid_combinations),
         cmocka_unit_test(test_string_null_and_range),
         cmocka_unit_test(test_source_name),
+        cmocka_unit_test(test_session_funcs_reject_null),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
