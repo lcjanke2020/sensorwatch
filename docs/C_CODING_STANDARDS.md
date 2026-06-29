@@ -8,9 +8,10 @@ from Python, C++, and Rust.
 no C source tree, CMake build, or shipped DLL yet. This document is normative for
 future native contributions and implementation PRs, but its code snippets are
 illustrative until promoted into a dedicated ABI specification or public header.
-If an ABI specification exists, it is authoritative for public symbol names and
-function signatures; this document remains the implementation and review standard
-for the native code behind that ABI.
+The ABI specification in [`C_ABI.md`](C_ABI.md) (with its declaration-only header
+[`../include/sensorwatch/sensorwatch.h`](../include/sensorwatch/sensorwatch.h)) is
+authoritative for public symbol names and function signatures; this document
+remains the implementation and review standard for the native code behind that ABI.
 
 ---
 
@@ -736,31 +737,43 @@ extern "C" {
 
 | Element | Convention | Example |
 |---|---|---|
-| Public functions | `hwi_` prefix + snake_case | `hwi_session_open` |
-| Public types | `hwi_` prefix + snake_case + `_t` | `hwi_session_t` |
-| Public enums/constants | `HWI_` prefix + UPPER_SNAKE | `HWI_ERR_NULL_POINTER` |
+| Public functions | ABI prefix + snake_case | `sw_session_open` |
+| Public types | ABI prefix + snake_case + `_t` | `sw_session_t` |
+| Public enums/constants | ABI prefix + UPPER_SNAKE | `SW_ERR_NULL_POINTER` |
 | Internal functions | `static` + snake_case (no prefix) | `static parse_header(...)` |
 | Local variables | snake_case | `sensor_count` |
 | Struct members | snake_case | `map_handle` |
 | Macros | UPPER_SNAKE | `HWI_HEADER_MAGIC` |
 
-The `hwi_` prefix prevents symbol collisions when the DLL is loaded alongside
-other libraries. Keep it short -- three letters is enough.
+The draft public ABI uses the source-neutral `sw_` / `SW_` prefix; see
+[`C_ABI.md`](C_ABI.md). A short public prefix prevents symbol collisions when the
+DLL is loaded alongside other libraries. The `hwi_` / `HWI_` symbols in this
+document's worked examples are illustrative implementation sketches from the
+HWiNFO-first design phase — internal parser names (`hwi_header_t`,
+`HWI_HEADER_MAGIC`, etc.) may keep an adapter-specific prefix, but do **not**
+introduce new *public* ABI symbols under an HWiNFO-specific prefix unless they are
+explicitly adapter-specific extension APIs layered on the source-neutral core.
 
 ### Header Organization
 
+The draft public ABI is intentionally a single header:
+
 ```
 include/
-  hwi_monitor.h      -- Primary public header (users include this)
-  hwi_export.h       -- DLL export macro
-  hwi_error.h        -- Error enum and hwi_error_string()
-  hwi_types.h        -- Public typedefs (hwi_session_t, hwi_snapshot_t, etc.)
+  sensorwatch/
+    sensorwatch.h    -- Primary public ABI header (users include this)
+```
+
+When native implementation work begins, split the internal code by responsibility
+while keeping only the stable ABI in the public include directory:
+
+```
 src/
-  hwi_session.c      -- Session open/close, shared memory management
-  hwi_snapshot.c     -- Snapshot take/free/query
-  hwi_parse.c        -- Shared memory parsing (header, sensors, entries)
-  hwi_error.c        -- hwi_error_string() implementation
-  hwi_internal.h     -- Internal shared declarations (struct definitions, etc.)
+  sw_session.c       -- Session open/close, shared memory management
+  sw_snapshot.c      -- Snapshot take/free/query
+  sw_parse.c         -- Shared memory parsing (header, sensors, entries)
+  sw_error.c         -- sw_error_string() implementation
+  sw_internal.h      -- Internal shared declarations (struct definitions, etc.)
 ```
 
 ### Include Guards
