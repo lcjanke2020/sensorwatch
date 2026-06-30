@@ -1,10 +1,12 @@
 name: CI
 
 # Secret-free build + test gate. Runs on pushes to master and on every PR.
-# See README "Testing / CI scope": the Python job exercises the parsing, config,
-# and logging logic (the shared-memory parser against synthetic byte buffers); the
-# native jobs build the C core and run its cmocka tests (also synthetic buffers).
-# Neither exercises a live HWiNFO64 sensor read.
+# See README "Testing / CI scope": the Python job builds the package (which now
+# compiles the cffi extension over the C core via setuptools — MSVC on Windows,
+# gcc on Linux, both auto-discovered) and exercises the parsing, config, logging,
+# and native-binding logic; the native jobs build the C core and run its cmocka
+# tests. None exercises a live HWiNFO64 sensor read — the native-binding tests
+# skip the live path and assert SW_ERR_UNSUPPORTED_PLATFORM on non-Windows.
 on:
   push:
     branches: [master]
@@ -36,8 +38,10 @@ jobs:
         run: uv run python -m twine check dist/*
       - name: Run tests
         run: uv run pytest
-      - name: Import smoke test
-        run: uv run python -c "import sensorwatch; print(sensorwatch.__version__)"
+      - name: Import smoke test (incl. native binding)
+        # sensorwatch.native imports on every OS (the extension builds everywhere);
+        # on non-Windows the source is simply unavailable at session-open time.
+        run: uv run python -c "import sensorwatch, sensorwatch.native; print(sensorwatch.__version__)"
 
   native-linux:
     name: native (ubuntu, gcc)

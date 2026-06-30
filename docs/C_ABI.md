@@ -5,8 +5,9 @@ header: a Windows DLL plus a static library built with CMake, with cmocka unit
 tests and an AddressSanitizer/UBSan gate (see "Building the native core" in the
 [README](../README.md)). The ABI itself is still a **pre-1.0 draft** and may change
 during review until the first release carries a stability commitment (see
-[Evolution Policy](#evolution-policy)). There is no Python/C++/Rust binding to the
-DLL yet.
+[Evolution Policy](#evolution-policy)). A Python binding (cffi, API mode) now ships
+over this ABI — see [Binding Notes → Python](#python); C++ and Rust bindings are
+not provided yet.
 
 This document defines the stable C ABI for the native sensorwatch core. The ABI is
 designed to be wrapped by Python, C++, Rust, and other languages without exposing
@@ -35,8 +36,9 @@ in [`SECURITY.md`](../SECURITY.md).
 ## Non-goals
 
 - No replacement of the current Python HWiNFO parser yet.
-- No language bindings (Python/C++/Rust) over the native core yet.
-- No prebuilt DLL distribution, code signing, or wheel packaging yet.
+- No C++ or Rust bindings yet (a Python cffi binding now ships over the ABI).
+- No prebuilt standalone DLL distribution or code signing yet (the Python binding
+  ships as binary wheels that statically link the core into the extension).
 - No fuzzing harness yet (planned; the parser is already under ASan/UBSan).
 - No public exposure of HWiNFO shared-memory layout structs.
 - No filesystem logging API in the core ABI.
@@ -399,10 +401,17 @@ int main(void)
 
 ### Python
 
-Python bindings should load the eventual DLL by absolute path resolved relative
-to the installed package, not by current working directory or `PATH`. Bindings can
-wrap sessions/snapshots in context managers and translate non-`SW_OK` results
-into exceptions that include `sw_error_string()`.
+The shipped Python binding (`sensorwatch.native`) uses **cffi in API mode**: it
+compiles the C sources in `src/` directly into the extension module
+`sensorwatch._sw_cffi` (with `SW_STATIC`, so `SW_API` expands to nothing), rather
+than loading a separate DLL. Compiling the stub against the real header makes
+signature drift a build error, and linking the core into the extension sidesteps
+the DLL search-order risk in [`SECURITY.md`](../SECURITY.md) §2.1 entirely — there
+is no name-based DLL load. Sessions and snapshots are exposed as context managers,
+and every non-`SW_OK` result becomes a `SensorwatchError` carrying the `sw_error_t`
+code and `sw_error_string()` text. A consumer that instead loads the standalone
+CMake-built `sensorwatch.dll` should still load it by absolute path relative to the
+installed package, never from the current working directory or `PATH`.
 
 ### C++
 

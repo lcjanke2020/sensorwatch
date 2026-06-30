@@ -24,7 +24,11 @@ currents, power, fan speeds, clocks, and usage.
 - **Sensor filtering** by case-insensitive substring include/exclude patterns.
 - **JSON Lines output** with daily file rotation and configurable retention.
 - **Graceful shutdown** on Ctrl+C / signals.
-- **Light footprint** — a handful of stdlib modules plus `pendulum`.
+- **Light footprint** — a handful of stdlib modules plus `pendulum` (and `cffi`,
+  which backs the native binding).
+- **Optional native binding** (`sensorwatch.native`) — a cffi wrapper over the
+  bundled C core that reads the same data through the native parser (see
+  [Native binding](#native-binding-cffi)).
 
 ## Requirements
 
@@ -34,6 +38,15 @@ currents, power, fan speeds, clocks, and usage.
   enabled (Settings → Shared Memory Support) and the sensors window open.
 
 ## Install
+
+From PyPI — Windows wheels are prebuilt, so no compiler is needed:
+
+```sh
+pip install sensorwatch
+```
+
+From source — this builds the native cffi extension, so a C compiler is required
+(MSVC on Windows; gcc/clang elsewhere):
 
 ```sh
 git clone https://github.com/lcjanke2020/sensorwatch
@@ -97,7 +110,10 @@ Continuous integration runs the unit tests on Ubuntu and Windows across Python
 3.12 and 3.13. The tests cover the **parsing, configuration, and logging
 logic** — in particular, the HWiNFO shared-memory parser is exercised against
 **synthetic byte buffers** (`_parse_shared_memory()`), so the untrusted-header
-bounds checks are validated without a live sensor source.
+bounds checks are validated without a live sensor source. The Python job also
+builds the native cffi extension and runs the binding's non-live tests (the live
+HWiNFO path is skipped, and `SW_ERR_UNSUPPORTED_PLATFORM` is asserted on Linux);
+the C core is built and unit-tested separately with cmocka on both OSes.
 
 CI does **not** — and cannot — exercise a real sensor read. That path requires
 [HWiNFO64](https://www.hwinfo.com/) running on Windows with **Shared Memory
@@ -119,7 +135,8 @@ implements the source-neutral C ABI in
 [`docs/C_ABI.md`](docs/C_ABI.md)). It opens HWiNFO shared memory read-only,
 copies-then-parses it with full bounds validation, and exposes immutable
 snapshots — no third-party runtime dependencies beyond the C runtime and Windows
-SDK. The Python package does not use it yet; bindings come later.
+SDK. The Python package binds to this core via cffi — see
+[Native binding](#native-binding-cffi).
 
 Build the DLL + static library and run the cmocka unit tests with CMake:
 
@@ -142,6 +159,35 @@ live HWiNFO needed) and mirror the invariants in
 [`tests/test_hwinfo_shm.py`](tests/test_hwinfo_shm.py); the Windows-only session
 test mocks the Win32 calls.
 
+## Native binding (cffi)
+
+`sensorwatch.native` is a thin, safe Python wrapper over the bundled C core, built
+with [cffi](https://cffi.readthedocs.io/) in API mode. The C sources are compiled
+directly into a Python extension — there is no separate DLL to locate or load — so
+it ships as an ordinary binary wheel and reads the same HWiNFO data as the
+pure-Python reader, through the native parser.
+
+```python
+from sensorwatch.native import Session
+
+with Session() as session:           # raises on non-Windows or if HWiNFO is down
+    snapshot = session.snapshot()    # an immutable view of all readings
+    print(len(snapshot), "readings from", snapshot.source)
+    for r in snapshot:
+        print(f"{r.sensor} / {r.reading} = {r.value} {r.unit} [{r.type.name}]")
+```
+
+Every native error surfaces as a `SensorwatchError` carrying the `sw_error_t` code
+and the library's message — e.g. `SW_ERR_SOURCE_UNAVAILABLE` when HWiNFO isn't
+running, `SW_ERR_UNSUPPORTED_PLATFORM` on non-Windows. `Session` and `Snapshot`
+are context managers, and a `Snapshot` is an immutable sequence of `Reading`s
+(`source`, `sensor`, `reading`, `unit`, `type`, `value`, `minimum`, `maximum`,
+`average`). `type` is a `ReadingType` enum following the C ABI, which reports any
+unrecognized source category as `ReadingType.UNKNOWN` (the pure-Python reader
+instead preserves the raw code as `"unknown(<N>)"`). The pure-Python reader and
+the CLI are unchanged — the native binding is an additional, optional API over the
+same data.
+
 ## Roadmap
 
 sensorwatch starts as a Python monitor and grows toward a general hardware
@@ -157,7 +203,8 @@ observability toolkit:
   ([`docs/C_ABI.md`](docs/C_ABI.md); standards in
   [`docs/C_CODING_STANDARDS.md`](docs/C_CODING_STANDARDS.md)). Built with CMake —
   see [Building the native core](#building-the-native-core-c). **Language bindings**
-  (Python, C++, Rust) over that core are the next step.
+  over that core: a Python binding ships now (cffi — see
+  [Native binding](#native-binding-cffi)); C++ and Rust are next.
 - **Agent integration** via an MCP / skill layer so AI agents can query
   hardware state directly.
 

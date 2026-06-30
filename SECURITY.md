@@ -16,12 +16,16 @@ cloud service.
 
 **Current implementation**:
 
-- Python package and CLI only.
-- Reads HWiNFO64 shared memory through `sensorwatch.hwinfo_shm` using read-only
-  Win32 file-mapping APIs via `ctypes`.
+- Python package and CLI, plus a native C core with a Python binding.
+- Reads HWiNFO64 shared memory through `sensorwatch.hwinfo_shm` (read-only Win32
+  file-mapping APIs via `ctypes`), or through `sensorwatch.native` (a cffi
+  API-mode binding over the native C core).
 - Writes local JSON Lines log files.
 - Opens no network listeners.
-- Ships no native DLL/shared library.
+- The binary wheel ships a compiled cffi extension (`sensorwatch._sw_cffi`) with
+  the C core statically linked in; Python imports it from the package directory,
+  not via a name-based DLL search. A standalone `sensorwatch.dll` is built by
+  CMake for C/C++ consumers but is not loaded by the Python package.
 
 **Planned components covered by this threat model**:
 
@@ -169,18 +173,25 @@ correct for HWiNFO's documented mapping.
 
 ## 2. DLL Security
 
-The native C core is now built from source (a Windows DLL plus a static library;
-see "Building the native core" in the README), but the Python package does not yet
-distribute a prebuilt DLL or load one. This section applies to that native DLL and
-to the language bindings that will load it.
+The native C core is built from source (a Windows DLL plus a static library; see
+"Building the native core" in the README). The shipped Python binding does **not**
+load a separate DLL — it statically links the core into the `sensorwatch._sw_cffi`
+extension (see §2.2). This section applies to the standalone `sensorwatch.dll` and
+to any consumer, current or future, that loads it by name.
 
 ### 2.1 DLL Search Order Hijacking
 
-**Risk Level**: MEDIUM for the planned C DLL
+**Risk Level**: MEDIUM for the standalone C DLL; not applicable to the shipped
+Python binding
 
 **Threat**: When an FFI caller loads a DLL by name rather than by full path,
 Windows searches multiple directories. An attacker who can place a malicious DLL
 in a searched directory can execute code in the caller process.
+
+**The shipped Python binding avoids this by construction**: `sensorwatch.native`
+compiles the C core into its own extension module (`SW_STATIC`), so no separate
+DLL is loaded and there is no name-based search to hijack. The mitigations below
+apply to C/C++ consumers of the standalone CMake-built `sensorwatch.dll`.
 
 **Mitigations**:
 
@@ -194,13 +205,17 @@ in a searched directory can execute code in the caller process.
 - If distributing pre-built binaries, publish provenance and checksums; consider
   signing if the project reaches a distribution scale where that is practical.
 
-### 2.2 Current Python DLL Use
+### 2.2 Python DLL Use
 
 **Risk Level**: LOW
 
-The current Python implementation uses `kernel32` Win32 APIs through `ctypes` and
-does not load third-party DLLs. Native DLL loading risks apply only after a
-sensorwatch DLL exists.
+The pure-Python reader (`sensorwatch.hwinfo_shm`) uses `kernel32` Win32 APIs
+through `ctypes` and loads no third-party DLLs. The native binding
+(`sensorwatch.native`) statically links the C core into the `sensorwatch._sw_cffi`
+extension, which Python imports from the package directory; it likewise loads no
+third-party DLL and performs no name-based DLL search. The search-order risk in
+§2.1 therefore applies only to a consumer that loads the standalone
+`sensorwatch.dll`.
 
 ---
 
@@ -388,9 +403,11 @@ small project should treat supply-chain changes carefully.
 
 **Risk Level**: LOW currently
 
-For the Python package, source distribution and GitHub Actions trusted publishing
-are sufficient for this project's scale. For future compiled components, provide
-repeatable build instructions, build logs, checksums, and CI provenance.
+The Python package now ships compiled binary wheels (the cffi extension). Wheels
+are built in CI with cibuildwheel and published via GitHub Actions OIDC trusted
+publishing with PEP 740 attestations covering every uploaded file (wheels and the
+sdist); `uv.lock` pins the build toolchain. The sdist stays buildable from source
+for platforms without a prebuilt wheel.
 
 ---
 
@@ -488,11 +505,11 @@ change could warn when the log directory appears broadly writable/readable.
 | 5 | Consider replacing `pendulum` with stdlib `datetime` | 6.1, 8.3 | Open |
 | 6 | Document or check log-directory privacy expectations | 5.2, 8.4 | Open |
 
-### Planned Native C ABI / DLL
+### Native C ABI / DLL and Python binding
 
 | # | Requirement | Section | Status |
 |---|-------------|---------|--------|
-| 1 | Load DLLs by absolute path in bindings | 2.1 | Planned (no bindings yet) |
+| 1 | Avoid name-based DLL search in the Python binding (static-link the core into the extension) | 2.1, 2.2 | Done (cffi binding) |
 | 2 | Keep native core runtime dependency-free beyond system libraries | 2.1, 6.1 | Done |
 | 3 | Preserve copy-then-parse model; expose immutable snapshots, not raw pointers | 1.3 | Done |
 | 4 | Return explicit error codes for source unavailable vs corrupt data | 1.3 | Done |

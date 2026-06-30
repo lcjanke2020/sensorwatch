@@ -1,0 +1,21 @@
+# Source distribution contents.
+#
+# setuptools already includes pyproject.toml, setup.py, README.md, LICENSE, and
+# the sensorwatch/ package's .py files. The cffi extension is built from source
+# when there is no matching wheel (e.g. non-Windows), so the sdist must also
+# carry the C sources and the public header that _native_build.py compiles.
+graft src
+graft include
+include CMakeLists.txt
+
+# Ship the test suite so the sdist is self-checking (cibuildwheel and downstream
+# packagers run it from the unpacked tree).
+graft tests
+
+# Keep build artifacts and caches out of the tarball.
+global-exclude *.py[cod]
+global-exclude *.pyd
+global-exclude *.so
+global-exclude *.o *.obj *.lib *.exp
+global-exclude _sw_cffi.c
+prune **/__pycache__

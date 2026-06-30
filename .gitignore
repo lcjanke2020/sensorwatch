@@ -9,6 +9,18 @@ dist/
 build/
 *.egg-info/
 
+# cffi-generated extension build artifacts (sensorwatch/_sw_cffi.*)
+/sensorwatch/_sw_cffi.c
+/sensorwatch/*.pyd
+/sensorwatch/*.so
+*.o
+*.obj
+*.lib
+*.exp
+# MSVC in-place build intermediates and cibuildwheel output
+/Release/
+wheelhouse/
+
 # Tooling / editor
 .claude/
 *.un~
