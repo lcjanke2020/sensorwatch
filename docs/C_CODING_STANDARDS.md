@@ -62,9 +62,10 @@ Use this as the compact PR-review version of the longer guidance below.
 - Use the `goto cleanup` pattern for functions that acquire multiple resources.
 - Add SAL annotations on public APIs so MSVC `/analyze` can reason about buffers
   and nullability.
-- Build with warnings as errors, `/sdl`, `/analyze`, AddressSanitizer, and a
-  clang-cl sanitizer/static-analysis configuration in CI — the native core's CI
-  does this today; keep it green.
+- Build with warnings as errors, `/sdl`, `/analyze`, and AddressSanitizer/UBSan in
+  CI — the native core's CI does this today (gcc ASan+UBSan on Linux, MSVC
+  `/analyze` on Windows); keep it green. A dedicated clang-cl sanitizer /
+  static-analysis job is still aspirational.
 - Fuzz the parser with mutated shared-memory blobs and run it under sanitizers.
 - Maintain an exported-symbol snapshot or equivalent ABI-compatibility check once
   a native library is released.
