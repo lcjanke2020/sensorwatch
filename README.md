@@ -149,10 +149,47 @@ ctest --test-dir build --output-on-failure
 MSVC is the primary toolchain; the parser core also builds with GCC/Clang
 (including MinGW) for development and CI cross-checks. Useful options:
 
+- `-DSW_BUILD_SHARED=ON|OFF` — the shared library (`sensorwatch.dll` on Windows;
+  default **ON**).
+- `-DSW_BUILD_STATIC=ON|OFF` — the static library (target `sensorwatch_static`;
+  default **ON**).
 - `-DSW_ENABLE_ASAN=ON` — AddressSanitizer (plus UBSan on GCC/Clang).
 - `-DSW_ENABLE_ANALYZE=ON` — MSVC `/analyze` static analysis (non-fatal).
 - `-DSW_BUILD_EXAMPLES=ON` — build `sw_dump`, which prints a live snapshot (run it
   with HWiNFO64 running and Shared Memory Support enabled).
+
+Both libraries build by default. To build just one — without fetching the test
+dependency (cmocka, pulled over the network) — turn tests off and name the target:
+
+```sh
+# Static library only
+cmake -B build -DSW_BUILD_TESTS=OFF -DSW_BUILD_SHARED=OFF
+cmake --build build --target sensorwatch_static
+
+# Shared library (DLL) only
+cmake -B build -DSW_BUILD_TESTS=OFF -DSW_BUILD_STATIC=OFF
+cmake --build build --target sensorwatch
+```
+
+Artifacts land in `build/` (single-config generators) or `build/<Config>/`
+(multi-config generators such as Visual Studio).
+
+### Linking against the core
+
+The export macro `SW_API` (in the public header) keys off how you link:
+
+- **Static library** — compile your own translation units with `-DSW_STATIC` so
+  the ABI is undecorated (no `dllimport`).
+- **Shared library (DLL)** — define nothing; on Windows `SW_API` resolves to
+  `dllimport` and you link the generated import library.
+
+Consuming the build tree from CMake (`add_subdirectory()` or `FetchContent`) is the
+easiest path: link the `sensorwatch_static`, `sensorwatch`, or header-only
+`sensorwatch::hpp` target and the right include directories and defines propagate
+automatically (`sensorwatch_static` carries `SW_STATIC` for you). A
+`cmake --install` plus `find_package(sensorwatch)` package export is a planned
+follow-up — until then, consume the core in-tree or link the artifacts from
+`build/` directly.
 
 Like the Python suite, the C tests feed the parser **synthetic byte buffers** (no
 live HWiNFO needed) and mirror the invariants in

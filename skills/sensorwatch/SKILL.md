@@ -198,6 +198,23 @@ The Python `sensorwatch.native` binding (Recipe 1) is the same C core via cffi,
 so prefer it from Python; reach for the C/C++ headers only when building native
 consumers.
 
+**Build & link the C core.** Both a static library and a shared library (DLL)
+build from [`CMakeLists.txt`](../../CMakeLists.txt) — both on by default:
+
+```sh
+# Static library only (tests off → no cmocka network fetch)
+cmake -B build -DSW_BUILD_TESTS=OFF -DSW_BUILD_SHARED=OFF
+cmake --build build --target sensorwatch_static   # or --target sensorwatch for the DLL
+```
+
+Compile consumers of the **static** library with `-DSW_STATIC`; for the **DLL**,
+define nothing (on Windows `SW_API` resolves to `dllimport`). There is no
+`cmake --install` / `find_package(sensorwatch)` yet — consume the build tree from
+CMake (`add_subdirectory` / `FetchContent`, linking `sensorwatch_static`,
+`sensorwatch`, or `sensorwatch::hpp`, which propagate the right defines) or link
+the artifacts from `build/`. Full details, toggles, and the linking rules:
+[README → Building the native core](../../README.md#building-the-native-core-c).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
