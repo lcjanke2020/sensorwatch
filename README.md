@@ -281,9 +281,10 @@ observability toolkit:
   DLL + static library, see [Building the native core](#building-the-native-core-c))
   and its [Python](#native-binding-cffi) and [C++](#c-binding) bindings ship today;
   a Rust binding is next.
-- **Agent integration** — an [agent skill](skills/sensorwatch/SKILL.md) for
-  using sensorwatch ships now (see [Skills](#skills)); an MCP server, so agents
-  can query hardware state over a protocol, is next.
+- **Agent integration** — AI agents use sensorwatch through the shipped
+  [agent skill](skills/sensorwatch/SKILL.md) over the CLI and Python/C/C++ APIs
+  (see [Skills](#skills)), not a bespoke MCP server. If remote, over-a-protocol
+  access is ever needed, it would come through the localhost REST service above.
 
 See [`SECURITY.md`](SECURITY.md) for the threat model covering these planned
 components.
@@ -292,9 +293,9 @@ components.
 
 sensorwatch reads read-only hardware data and writes local log files; it opens
 no network listeners in its current form. The full threat model — shared-memory
-attack surface, the agent skill, the planned REST service and MCP server,
-supply-chain notes — is in [`SECURITY.md`](SECURITY.md). Please report
-vulnerabilities privately (see that document).
+attack surface, the agent skill, the planned REST service, supply-chain notes —
+is in [`SECURITY.md`](SECURITY.md). Please report vulnerabilities privately (see
+that document).
 
 ## Contributing
 

@@ -4,8 +4,7 @@
 **Scope**: Windows hardware sensor monitoring toolkit reading HWiNFO64 shared
 memory today through a Python package and CLI, a native C core with Python (cffi)
 and header-only C++ bindings, and a read-only agent skill; with a planned localhost
-REST service, an MCP server for AI agent integration, and further language bindings
-(Rust next).
+REST service and further language bindings (Rust next).
 
 **Methodology**: Code review of the current Python implementation plus
 architectural analysis of planned components. Risk levels are calibrated to what
@@ -36,9 +35,9 @@ cloud service.
 **Planned components covered by this threat model**:
 
 - Further language bindings over the C ABI (Rust next).
-- Optional localhost REST service.
-- A read-only MCP server exposing hardware state to agents over a protocol (the
-  agent skill above ships today; the MCP server is planned).
+- Optional localhost REST service. (sensorwatch does not plan a separate MCP
+  server: local agents use the shipped skill over the CLI/API, and any future
+  remote, over-a-protocol access would be served by this REST service — see §4.)
 
 Sections for planned components are design requirements, not currently shipped
 attack surface.
@@ -284,11 +283,13 @@ honest that it is designed primarily as a single-user desktop utility.
 
 ## 4. Agent Integration Security
 
-sensorwatch now ships a read-only agent skill (`skills/sensorwatch/`) — guidance
-plus a `snapshot.py` helper over the existing read-only API; it adds no network
-surface. An MCP server that exposes hardware state over a protocol is still
-planned. This section applies to both: the requirements below already govern the
-shipped skill and must also govern that future MCP server.
+sensorwatch's agent interface is the shipped read-only agent skill
+(`skills/sensorwatch/`) — guidance plus a `snapshot.py` helper over the existing
+read-only CLI/API; it adds no network surface. There is deliberately no separate
+MCP server: local agents use the skill, and any future remote, over-a-protocol
+access would be served by the planned localhost REST service (§3), whose own
+threat model then applies. The requirements below govern the shipped skill and any
+agent-facing surface layered on top later.
 
 ### 4.1 Prompt Injection via Sensor Data
 
@@ -535,13 +536,13 @@ change could warn when the log directory appears broadly writable/readable.
 | 4 | Keep endpoints read-only | 3.2 | Planned |
 | 5 | Use custom-header API key only if needed | 3.3 | Planned |
 
-### Agent Integration (skill shipped; MCP server planned)
+### Agent Integration (skill shipped)
 
 | # | Requirement | Section | Status |
 |---|-------------|---------|--------|
 | 1 | Treat sensor strings as untrusted display data | 4.1 | Done (skill) / ongoing |
-| 2 | Use structured output for agent-facing data | 4.1 | Done (skill); planned for MCP server |
-| 3 | Keep agent integration read-only | 4.1, 4.3 | Done (skill); planned for MCP server |
+| 2 | Use structured output for agent-facing data | 4.1 | Done (skill) |
+| 3 | Keep agent integration read-only | 4.1, 4.3 | Done (skill) |
 
 ### Not Worth Doing for This Project
 
