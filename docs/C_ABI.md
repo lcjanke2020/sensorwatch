@@ -435,7 +435,11 @@ becomes a `sensorwatch::Error` carrying the `sw_error_t` `code()` and the librar
 ABI (major.minor while pre-1.0, major-only from 1.0) against the header, throwing
 `Error(SW_ERR_VERSION_MISMATCH)` on a mismatch — relevant when linking the DLL,
 since a static link is already pinned at link time — and **then** opens the source,
-throwing `Error(SW_ERR_UNSUPPORTED_PLATFORM)` off Windows.
+throwing `Error(SW_ERR_UNSUPPORTED_PLATFORM)` off Windows. Those are the `sw_error_t`
+translations; ordinary standard-library exceptions still propagate as usual — an
+out-of-range `at()` throws `std::out_of_range`, and an allocation failure throws
+`std::bad_alloc` — so catch `std::exception` (the base of `Error`) for exhaustive
+handling.
 
 ### Rust
 

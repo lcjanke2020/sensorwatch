@@ -266,10 +266,12 @@ public:
     std::uint32_t size() const noexcept { return count_; }
 
     /*
-     * The source/backend identity (e.g. "HWiNFO"), shared by every reading.
-     * Empty for a zero-entry snapshot. Queried once in the constructor.
+     * The source/backend identity (e.g. "HWiNFO"), shared by every reading. Empty
+     * for a zero-entry snapshot. Queried once in the constructor and returned by
+     * reference, valid for the snapshot's lifetime (copy it if you need it to
+     * outlive the Snapshot).
      */
-    std::string source() const { return source_; }
+    const std::string& source() const noexcept { return source_; }
 
     /* Build the reading at index, throwing std::out_of_range if out of bounds. */
     Reading at(std::uint32_t index) const {
@@ -362,11 +364,9 @@ private:
 
     Reading build_reading(std::uint32_t index) const {
         Reading r;
-        r.source  = source_;
-        r.sensor  = detail::query_string(sw_snapshot_get_sensor_name, ptr_, index);
-        r.reading = detail::query_string(sw_snapshot_get_reading_name, ptr_, index);
-        r.unit    = detail::query_string(sw_snapshot_get_unit, ptr_, index);
-
+        // Read the scalars first: these validate `index` without allocating, so an
+        // out-of-range operator[] throws Error(SW_ERR_INDEX_OUT_OF_RANGE) before any
+        // string is built -- a deterministic error with no wasted allocation.
         sw_reading_type_t type = SW_READING_TYPE_UNKNOWN;
         check(sw_snapshot_get_reading_type(ptr_, index, &type));
         r.type = to_reading_type(type);
@@ -380,6 +380,11 @@ private:
         r.maximum = scalar;
         check(sw_snapshot_get_average(ptr_, index, &scalar));
         r.average = scalar;
+
+        r.source  = source_;
+        r.sensor  = detail::query_string(sw_snapshot_get_sensor_name, ptr_, index);
+        r.reading = detail::query_string(sw_snapshot_get_reading_name, ptr_, index);
+        r.unit    = detail::query_string(sw_snapshot_get_unit, ptr_, index);
         return r;
     }
 

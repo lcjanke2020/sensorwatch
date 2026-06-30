@@ -96,11 +96,21 @@ endif()
 add_library(sensorwatch_hpp INTERFACE)
 target_include_directories(sensorwatch_hpp INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-# Propagate the C++17 floor to consumers so linking sensorwatch::hpp under an older
-# standard is a clear error, not a cryptic header failure. (An install/export with
-# $<INSTALL_INTERFACE:include> is a deferred follow-up.)
-target_compile_features(sensorwatch_hpp INTERFACE cxx_std_17)
 add_library(sensorwatch::hpp ALIAS sensorwatch_hpp)
+
+# Propagate the C++17 floor to consumers so linking sensorwatch::hpp under an older
+# standard is a clear error, not a cryptic header failure -- but only when a C++
+# compiler is available. The project is declared LANGUAGES C, and requesting
+# cxx_std_17 requires CXX to be enabled, so on a pure-C toolchain (or with
+# -DSW_BUILD_TESTS=OFF) this would otherwise fail to configure. enable_language(CXX)
+# here is a no-op if CXX is already enabled (e.g. by the test block below). (An
+# install/export with $<INSTALL_INTERFACE:include> is a deferred follow-up.)
+include(CheckLanguage)
+check_language(CXX)
+if(CMAKE_CXX_COMPILER)
+    enable_language(CXX)
+    target_compile_features(sensorwatch_hpp INTERFACE cxx_std_17)
+endif()
 
 # --- Tests (cmocka via FetchContent) ---
 if(SW_BUILD_TESTS)
