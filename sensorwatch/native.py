@@ -67,7 +67,8 @@ class Snapshot:
     context manager, or call :meth:`close`, to release the native snapshot
     promptly; it is also freed on garbage collection. A snapshot stays valid
     after its parent :class:`Session` is closed (it owns its own copy of the
-    data).
+    data). Once the snapshot itself is closed, every accessor (``len()``,
+    :attr:`source`, indexing) raises :class:`SensorwatchError`.
     """
 
     def __init__(self, ptr) -> None:
@@ -85,6 +86,7 @@ class Snapshot:
         return self._ptr
 
     def __len__(self) -> int:
+        self._require_open()
         return self._count
 
     @property
@@ -92,10 +94,12 @@ class Snapshot:
         """The source/backend identity (e.g. ``"HWiNFO"``); shared by all readings.
 
         Empty for a zero-entry snapshot (the ABI's source accessor is index-gated,
-        so there is no index to query).
+        so there is no index to query). Requires the snapshot to be open on every
+        access — including the cached path — so the closed-state guard stays
+        consistent with the other accessors.
         """
+        ptr = self._require_open()
         if self._source is None:
-            ptr = self._require_open()
             self._source = (
                 "" if self._count == 0
                 else _query_string(lib.sw_snapshot_get_source_name, ptr, 0)
@@ -141,10 +145,16 @@ class Snapshot:
             yield self[i]
 
     def close(self) -> None:
-        """Free the native snapshot. Idempotent."""
-        if self._ptr is not None:
-            lib.sw_snapshot_free(self._ptr)
-            self._ptr = None
+        """Free the native snapshot. Idempotent.
+
+        Clears the handle before freeing it. Like the C ABI (``sw_snapshot_free``
+        "must not race with any other use of the same snapshot"), this is not safe
+        to call concurrently with other operations on the same snapshot —
+        synchronize externally if you share one across threads.
+        """
+        ptr, self._ptr = self._ptr, None  # poison-then-free
+        if ptr is not None:
+            lib.sw_snapshot_free(ptr)
 
     def __enter__(self) -> "Snapshot":
         return self
@@ -188,10 +198,16 @@ class Session:
         return Snapshot(out[0])
 
     def close(self) -> None:
-        """Close the session. Idempotent."""
-        if self._ptr is not None:
-            lib.sw_session_close(self._ptr)
-            self._ptr = None
+        """Close the session. Idempotent.
+
+        Clears the handle before closing it. Like the C ABI (``sw_session_close``
+        "must not race with any other use of the same session"), this is not safe
+        to call concurrently with other operations on the same session —
+        synchronize externally if you share one across threads.
+        """
+        ptr, self._ptr = self._ptr, None  # poison-then-close
+        if ptr is not None:
+            lib.sw_session_close(ptr)
 
     def __enter__(self) -> "Session":
         return self
