@@ -79,8 +79,9 @@ python skills/sensorwatch/scripts/snapshot.py --type TEMPERATURE
 python skills/sensorwatch/scripts/snapshot.py --match 12V
 ```
 
-It exits `0` after printing (possibly an empty array) and `1` with a clear
-message when sensorwatch/HWiNFO is unavailable.
+It exits `0` after printing (possibly an empty array), `1` with a clear message
+when sensorwatch/HWiNFO is unavailable, and `2` on a usage error (an unknown
+`--type` or a negative `--indent`).
 
 **Pure-Python fallback.** If the compiled native extension isn't available, the
 `sensorwatch.hwinfo_shm` reader gets the same data with no compiled dependency

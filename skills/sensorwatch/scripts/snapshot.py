@@ -16,6 +16,8 @@ Exit codes:
   0  a snapshot was printed (possibly an empty array)
   1  sensorwatch / HWiNFO is unavailable -- not Windows, HWiNFO not running with
      Shared Memory Support enabled, or the native extension is not built
+  2  invalid command-line arguments (argparse usage error, e.g. an unknown
+     --type or a negative --indent)
 
 Examples:
   python snapshot.py
@@ -67,7 +69,7 @@ def main() -> int:
     # Import lazily so a missing/unbuilt extension is reported cleanly here
     # rather than as an import error at startup.
     try:
-        from sensorwatch.native import Session, SensorwatchError
+        from sensorwatch.native import Session, SensorwatchError, ReadingType
     except ImportError as exc:
         print(
             f"sensorwatch native binding unavailable: {exc}\n"
@@ -80,6 +82,18 @@ def main() -> int:
     # The canonical reading-type labels, shared with the pure-Python reader and
     # the CLI logger, so this helper's "type" matches a logged record's "type".
     from sensorwatch.hwinfo_shm import SENSOR_TYPES
+
+    # Validate --type against the known categories up front, so a typo fails
+    # loudly (exit 2) instead of silently filtering down to an empty array.
+    type_filter: str | None = args.type_filter.upper() if args.type_filter else None
+    if type_filter is not None and type_filter not in ReadingType.__members__:
+        valid = ", ".join(t.name for t in ReadingType)
+        print(
+            f"Unknown --type {args.type_filter!r}; valid values are: {valid}.",
+            file=sys.stderr,
+        )
+        return 2
+    match: str | None = args.match.lower() if args.match else None
 
     try:
         with Session() as session:        # raises off-Windows or if HWiNFO is down
@@ -96,9 +110,6 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-
-    match: str | None = args.match.lower() if args.match else None
-    type_filter: str | None = args.type_filter.upper() if args.type_filter else None
 
     out: list[dict] = []
     for r in readings:
