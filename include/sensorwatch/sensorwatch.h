@@ -7,8 +7,8 @@
  * This header is the public C ABI for the native sensorwatch core, implemented in
  * src/ (a Windows DLL plus a static library; see docs/C_ABI.md and the README).
  * The ABI is a pre-1.0 draft and may still change until the first release carries
- * a stability commitment. A Python binding (cffi, API mode) ships over this ABI;
- * C++ and Rust bindings are not provided yet.
+ * a stability commitment. A Python binding (cffi, API mode) and a header-only C++
+ * binding (sensorwatch.hpp) ship over this ABI; a Rust binding is not provided yet.
  *
  * Calling convention: every function is declared with SW_CALL, which pins the
  * platform C calling convention (`__cdecl` on Windows) so the ABI stays stable
