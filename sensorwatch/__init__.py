@@ -4,4 +4,4 @@ Reads HWiNFO64 shared memory and logs sensor readings as JSON Lines with
 daily file rotation.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
