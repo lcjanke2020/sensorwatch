@@ -426,16 +426,16 @@ deterministically (the moved-from handle is left inert, so each is released
 exactly once). A `Snapshot` exposes its entries as `Reading` values (`source`,
 `sensor`, `reading`, `unit`, `type`, `value`, `minimum`, `maximum`, `average`) via
 `size()`, `at()` / `operator[]`, range-based iteration, and a `readings()`
-`std::vector` helper; `source` is queried once per snapshot and cached. `type` is a
-`ReadingType` enum that folds any unrecognized source category to
+`std::vector` helper; `source` is queried once per snapshot, in the constructor.
+`type` is a `ReadingType` enum that folds any unrecognized source category to
 `ReadingType::Unknown` (mirroring the Python binding). Every non-`SW_OK` result
 becomes a `sensorwatch::Error` carrying the `sw_error_t` `code()` and the library's
-`sw_error_string()` text; `Session` construction throws
-`Error(SW_ERR_UNSUPPORTED_PLATFORM)` off Windows, and `at()` throws
-`std::out_of_range` past the end. `Session` construction also verifies the loaded
-core's ABI (major.minor while pre-1.0, major-only from 1.0) against the header and
-throws `Error(SW_ERR_VERSION_MISMATCH)` on a mismatch — relevant when linking the
-DLL rather than the static library, which is already pinned at link time.
+`sw_error_string()` text (an out-of-range `at()` instead throws
+`std::out_of_range`). `Session` construction **first** verifies the loaded core's
+ABI (major.minor while pre-1.0, major-only from 1.0) against the header, throwing
+`Error(SW_ERR_VERSION_MISMATCH)` on a mismatch — relevant when linking the DLL,
+since a static link is already pinned at link time — and **then** opens the source,
+throwing `Error(SW_ERR_UNSUPPORTED_PLATFORM)` off Windows.
 
 ### Rust
 

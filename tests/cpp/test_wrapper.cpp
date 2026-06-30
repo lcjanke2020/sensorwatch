@@ -19,6 +19,7 @@
 
 #include "sensorwatch/sensorwatch.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
@@ -56,6 +57,8 @@ static_assert(std::is_nothrow_move_constructible<sw::Snapshot>::value,
               "Snapshot must be nothrow move-constructible");
 static_assert(std::is_nothrow_move_assignable<sw::Snapshot>::value,
               "Snapshot must be nothrow move-assignable");
+static_assert(std::is_nothrow_constructible<sw::Error, sw_error_t>::value,
+              "Error construction must be noexcept (holds the static error string)");
 
 static void test_error_translation() {
     const sw::Error err(SW_ERR_SOURCE_UNAVAILABLE);
@@ -91,14 +94,30 @@ static void test_reading_type_folding() {
           sw::ReadingType::Unknown);
 }
 
-#if defined(_WIN32)
-static void test_windows_live() {
-    // Open the default source. Without a running sensor source the ABI reports it
-    // as unavailable -- that is a skip, not a failure. SW_ERR_UNSUPPORTED_PLATFORM
-    // here would be a real bug, since Windows is the supported platform.
-    try {
-        sw::Session session;
+static void test_reading_equality() {
+    // Reading equality stays reflexive even when a scalar is NaN (a raw double ==
+    // would make a NaN-carrying Reading compare unequal to itself).
+    sw::Reading a;
+    a.sensor = "S";
+    a.value = std::nan("");
+    a.minimum = std::nan("");
+    const sw::Reading b = a;
+    CHECK(a == b);
+    CHECK(a == a);
+    CHECK(!(a != b));
 
+    sw::Reading c = a;
+    c.value = 1.0;  // a finite value differs from the NaN one
+    CHECK(a != c);
+}
+
+#if defined(_WIN32)
+// Run the live-snapshot assertions on an already-open session (taken by value).
+// Once the session is open the source is present, so ANY sw::Error here is a real
+// failure, not a skip -- this function swallows its own sw::Error as a FAILURE so a
+// later SW_ERR_SOURCE_UNAVAILABLE can never masquerade as a skip in the caller.
+static void run_live_checks(sw::Session session) {
+    try {
         // Move-construct the session; the moved-from handle must be inert so the
         // session is closed exactly once (verified under ASan).
         sw::Session moved_session(std::move(session));
@@ -124,10 +143,11 @@ static void test_windows_live() {
         CHECK(first.source == moved_snapshot.source());
         CHECK(first == moved_snapshot[0u]);
 
-        // Range-for visits exactly size() readings.
+        // Range/iteration visits exactly size() readings; exercise operator-> too.
         std::uint32_t iterated = 0;
-        for (const sw::Reading& r : moved_snapshot) {
-            CHECK(r.source == moved_snapshot.source());
+        for (sw::Snapshot::const_iterator it = moved_snapshot.begin();
+             it != moved_snapshot.end(); ++it) {
+            CHECK(it->source == moved_snapshot.source());  // operator->
             ++iterated;
         }
         CHECK(iterated == count);
@@ -150,16 +170,32 @@ static void test_windows_live() {
         sw::Snapshot reassigned = moved_session.snapshot();
         reassigned = std::move(moved_snapshot);
         CHECK(reassigned.size() == count);
+
+        // The moved-from snapshot is observably empty, not a stale view over null.
+        CHECK(moved_snapshot.size() == 0u);
+        CHECK(moved_snapshot.source().empty());
+        CHECK(moved_snapshot.begin() == moved_snapshot.end());
     } catch (const sw::Error& err) {
-        // Only a genuinely absent source is a skip. Any other code (MAP_FAILED,
-        // CORRUPT_DATA, BAD_MAGIC, INTERNAL, UNSUPPORTED_PLATFORM, ...) means the
-        // wrapper or core is broken and must fail the test rather than hide behind
-        // a skip. sw_session_open reports SW_ERR_SOURCE_UNAVAILABLE when HWiNFO is
-        // not running (src/sw_session.c) — that is the no-data CI/dev case.
+        FAILURE("live snapshot path threw an unexpected sw::Error");
+        std::fprintf(stderr, "  unexpected code %d: %s\n",
+                     static_cast<int>(err.code()), err.what());
+    }
+}
+
+static void test_windows_live() {
+    // The only legitimate skip is a genuinely absent source, and it surfaces
+    // exactly at Session construction: the constructor maps the HWiNFO shared
+    // memory eagerly and reports SW_ERR_SOURCE_UNAVAILABLE when it is not running
+    // (src/sw_session.c). If that construction (evaluated as the argument below)
+    // throws SOURCE_UNAVAILABLE we skip; once it succeeds, run_live_checks() treats
+    // every later error as a failure, so nothing past acquisition can hide a bug.
+    try {
+        run_live_checks(sw::Session{});
+    } catch (const sw::Error& err) {
         if (err.code() == SW_ERR_SOURCE_UNAVAILABLE) {
             std::printf("[test] SKIP live snapshot (source unavailable)\n");
         } else {
-            FAILURE("live snapshot failed with an unexpected sw::Error");
+            FAILURE("Session construction failed with an unexpected sw::Error");
             std::fprintf(stderr, "  unexpected code %d: %s\n",
                          static_cast<int>(err.code()), err.what());
         }
@@ -183,6 +219,7 @@ static void test_unsupported_platform() {
 int main() {
     test_error_translation();
     test_reading_type_folding();
+    test_reading_equality();
 #if defined(_WIN32)
     test_windows_live();
 #else

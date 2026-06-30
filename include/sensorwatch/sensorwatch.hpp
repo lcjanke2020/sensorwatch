@@ -21,8 +21,10 @@
 
 #include "sensorwatch/sensorwatch.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <iterator>
 #include <stdexcept>
 #include <string>
@@ -76,15 +78,22 @@ inline ReadingType to_reading_type(sw_reading_type_t type) noexcept {
  * uses the library's own sw_error_string() text as what(). SW_OK is never thrown
  * (see check()).
  */
-class Error : public std::runtime_error {
+class Error : public std::exception {
 public:
-    explicit Error(sw_error_t code)
-        : std::runtime_error(sw_error_string(code)), code_(code) {}
+    explicit Error(sw_error_t code) noexcept
+        : code_(code), what_(sw_error_string(code)) {}
 
     sw_error_t code() const noexcept { return code_; }
 
+    // sw_error_string returns a static, process-lifetime string (never NULL), so
+    // Error holds the pointer directly -- no allocation. Construction is therefore
+    // noexcept, and even an out-of-memory error can be reported without check()
+    // itself throwing std::bad_alloc instead of the Error.
+    const char* what() const noexcept override { return what_; }
+
 private:
     sw_error_t code_;
+    const char* what_;
 };
 
 /* Throw an Error for any non-SW_OK result; a no-op on success. */
@@ -131,11 +140,24 @@ struct Reading {
     double average = 0.0;
 };
 
+namespace detail {
+/*
+ * Equality for the scalar fields that stays reflexive for NaN sensor values. Raw
+ * == makes NaN != NaN, so a Reading carrying a NaN (the C core copies raw doubles
+ * out of the source buffer) would not compare equal to itself.
+ */
+inline bool scalar_equal(double a, double b) noexcept {
+    return a == b || (std::isnan(a) && std::isnan(b));
+}
+}  // namespace detail
+
 inline bool operator==(const Reading& a, const Reading& b) {
     return a.source == b.source && a.sensor == b.sensor &&
            a.reading == b.reading && a.unit == b.unit && a.type == b.type &&
-           a.value == b.value && a.minimum == b.minimum &&
-           a.maximum == b.maximum && a.average == b.average;
+           detail::scalar_equal(a.value, b.value) &&
+           detail::scalar_equal(a.minimum, b.minimum) &&
+           detail::scalar_equal(a.maximum, b.maximum) &&
+           detail::scalar_equal(a.average, b.average);
 }
 
 inline bool operator!=(const Reading& a, const Reading& b) { return !(a == b); }
@@ -219,6 +241,7 @@ public:
         : ptr_(other.ptr_), count_(other.count_), source_(std::move(other.source_)) {
         other.ptr_ = nullptr;
         other.count_ = 0;
+        other.source_.clear();  // moved-from is observably empty: size()==0, source()==""
     }
 
     Snapshot& operator=(Snapshot&& other) noexcept {
@@ -229,6 +252,7 @@ public:
             source_ = std::move(other.source_);
             other.ptr_ = nullptr;
             other.count_ = 0;
+            other.source_.clear();  // a moved-from std::string is valid but unspecified
         }
         return *this;
     }
@@ -274,22 +298,34 @@ public:
     }
 
     /*
-     * Input iterator yielding Reading by value (range-for friendly). The category
-     * is input, not forward: a by-value operator* cannot model the
-     * LegacyForwardIterator reference requirements.
+     * Input iterator over the snapshot's Readings (range-for friendly). operator*
+     * yields a Reading by value and operator-> returns a small proxy so `it->field`
+     * works. The category is input, not forward: a by-value operator* cannot model
+     * the LegacyForwardIterator reference requirements. It is default-constructible
+     * (a singular iterator) and provides operator->, so it satisfies
+     * LegacyInputIterator.
      */
     class const_iterator {
     public:
+        // operator* is a prvalue, so operator-> hands back a proxy that owns the
+        // Reading for the duration of the `it->member` access.
+        struct arrow_proxy {
+            Reading value;
+            const Reading* operator->() const noexcept { return &value; }
+        };
+
         using iterator_category = std::input_iterator_tag;
         using value_type        = Reading;
-        using difference_type    = std::ptrdiff_t;
-        using pointer           = void;
+        using difference_type   = std::ptrdiff_t;
+        using pointer           = arrow_proxy;
         using reference         = Reading;
 
+        const_iterator() noexcept = default;
         const_iterator(const Snapshot* snapshot, std::uint32_t index) noexcept
             : snapshot_(snapshot), index_(index) {}
 
         Reading operator*() const { return (*snapshot_)[index_]; }
+        arrow_proxy operator->() const { return arrow_proxy{(*snapshot_)[index_]}; }
 
         const_iterator& operator++() noexcept {
             ++index_;
@@ -309,8 +345,8 @@ public:
         }
 
     private:
-        const Snapshot* snapshot_;
-        std::uint32_t index_;
+        const Snapshot* snapshot_ = nullptr;
+        std::uint32_t index_ = 0;
     };
 
     const_iterator begin() const noexcept { return const_iterator(this, 0u); }

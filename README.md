@@ -214,10 +214,11 @@ int main() {
 `Session` and `Snapshot` are move-only handles that close/free via RAII; a
 `Snapshot` is iterable and also offers `at()` / `operator[]` and a `readings()`
 `std::vector` helper, each entry a `Reading` (`source`, `sensor`, `reading`, `unit`,
-`type`, `value`, `minimum`, `maximum`, `average`). Every native error surfaces as a
-`sensorwatch::Error` carrying the `sw_error_t` code and message (e.g.
-`SW_ERR_UNSUPPORTED_PLATFORM` off Windows). Like the Python binding it folds any
-unrecognized reading category to `ReadingType::Unknown`. It ships no compiled
+`type`, `value`, `minimum`, `maximum`, `average`). Every native (`sw_error_t`)
+failure surfaces as a `sensorwatch::Error` carrying the code and message (e.g.
+`SW_ERR_UNSUPPORTED_PLATFORM` off Windows); an out-of-range `at()` instead throws
+`std::out_of_range`. Like the Python binding it folds any unrecognized reading
+category to `ReadingType::Unknown`. It ships no compiled
 artifact — it is a source-level convenience for C/C++ consumers, the counterpart to
 the Python binding above.
 
