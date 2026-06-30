@@ -189,6 +189,8 @@ def test_closed_session_and_snapshot_are_guarded():
             _ = len(snapshot)
         with pytest.raises(SensorwatchError):
             _ = snapshot[0]
+        with pytest.raises(SensorwatchError):
+            list(snapshot)  # iteration is guarded even for an empty snapshot
     # session closed by context manager
     with pytest.raises(SensorwatchError):
         session.snapshot()

@@ -95,13 +95,19 @@ def _require_compatible_abi() -> None:
     compatible = major == EXPECTED_ABI_MAJOR and (major >= 1 or minor == EXPECTED_ABI_MINOR)
     if not compatible:
         patch = version % 100
+        # Describe the expected version the way the check actually gates: exact
+        # major.minor pre-1.0, major-only from 1.0 on.
+        expected = (
+            f"{EXPECTED_ABI_MAJOR}.x" if EXPECTED_ABI_MAJOR >= 1
+            else f"{EXPECTED_ABI_MAJOR}.{EXPECTED_ABI_MINOR}.x"
+        )
         # Raised at import time, so use ImportError (not SensorwatchError): callers
         # that guard the optional native import with `except ImportError` — the same
         # way they'd catch a missing extension — then fall back cleanly.
         raise ImportError(
             f"sensorwatch native ABI {major}.{minor}.{patch} is incompatible with "
-            f"this binding (expected {EXPECTED_ABI_MAJOR}.{EXPECTED_ABI_MINOR}.x). "
-            f"Reinstall a matching sensorwatch build."
+            f"this binding (expected {expected}). Reinstall a matching sensorwatch "
+            f"build."
         )
 
 

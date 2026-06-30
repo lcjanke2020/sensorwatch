@@ -182,8 +182,11 @@ and the library's message — e.g. `SW_ERR_SOURCE_UNAVAILABLE` when HWiNFO isn't
 running, `SW_ERR_UNSUPPORTED_PLATFORM` on non-Windows. `Session` and `Snapshot`
 are context managers, and a `Snapshot` is an immutable sequence of `Reading`s
 (`source`, `sensor`, `reading`, `unit`, `type`, `value`, `minimum`, `maximum`,
-`average`). The pure-Python reader and the CLI are unchanged — the native binding
-is an additional, optional API over the same data.
+`average`). `type` is a `ReadingType` enum following the C ABI, which reports any
+unrecognized source category as `ReadingType.UNKNOWN` (the pure-Python reader
+instead preserves the raw code as `"unknown(<N>)"`). The pure-Python reader and
+the CLI are unchanged — the native binding is an additional, optional API over the
+same data.
 
 ## Roadmap
 

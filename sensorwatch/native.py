@@ -16,7 +16,7 @@ Usage::
             print(reading.sensor, reading.reading, reading.value, reading.unit)
 
 Every non-success native return code is raised as
-:class:`~sensorwatch._native.SensorwatchError` (carrying the ``sw_error_t`` value
+:class:`~sensorwatch.native.SensorwatchError` (carrying the ``sw_error_t`` value
 and the library's error text). On non-Windows platforms the sensor source is
 unavailable, so opening a :class:`Session` raises ``SW_ERR_UNSUPPORTED_PLATFORM``
 rather than crashing; when HWiNFO is not running it raises
@@ -141,8 +141,10 @@ class Snapshot:
         )
 
     def __iter__(self) -> Iterator[Reading]:
-        for i in range(self._count):
-            yield self[i]
+        # Check eagerly so iterating a closed snapshot raises even when it is
+        # empty (an empty range would otherwise skip the per-item guard).
+        self._require_open()
+        return (self[i] for i in range(self._count))
 
     def close(self) -> None:
         """Free the native snapshot. Idempotent.
