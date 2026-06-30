@@ -36,12 +36,14 @@ sensorwatch is **Windows-only** and needs HWiNFO64 supplying the data:
    compiler needed), or from a source checkout `pip install -e .` / `uv sync`.
 
 If a prerequisite is missing you'll see one of these — they are expected, not
-crashes (see [Troubleshooting](#troubleshooting)):
+crashes (see [Troubleshooting](#troubleshooting)). A `SensorwatchError` prints as
+`[<code>] <message>` (from the C ABI); the symbolic `SW_ERR_*` name in parentheses
+below is the conceptual `sw_error_t` code, **not** part of the printed text:
 
-| Signal | Meaning |
-|--------|---------|
-| `SensorwatchError: SW_ERR_SOURCE_UNAVAILABLE` / `read_sensors()` returns `None` | HWiNFO not running, shared memory disabled, or sensors window closed |
-| `SensorwatchError: SW_ERR_UNSUPPORTED_PLATFORM` | Not running on Windows |
+| What you'll see | Meaning |
+|-----------------|---------|
+| `[-4] Sensor source is not running or not enabled` (`SW_ERR_SOURCE_UNAVAILABLE`), or `read_sensors()` returns `None` | HWiNFO not running, shared memory disabled, or sensors window closed |
+| `[-3] Backend is unavailable on this platform` (`SW_ERR_UNSUPPORTED_PLATFORM`) | Not running on Windows |
 | `ImportError` for `sensorwatch._sw_cffi` | Native extension not built — install a wheel, or use the pure-Python reader below |
 
 ## Recipe 1 — Read the current state *now*
@@ -59,7 +61,7 @@ try:
         for r in snapshot:
             print(f"{r.sensor} / {r.reading} = {r.value} {r.unit} [{r.type.name}]")
 except SensorwatchError as exc:
-    print(f"sensorwatch unavailable: {exc}")   # e.g. [-4] SW_ERR_SOURCE_UNAVAILABLE
+    print(f"sensorwatch unavailable: {exc}")   # e.g. [-4] Sensor source is not running or not enabled
 ```
 
 Each `Reading` (a frozen dataclass) has: `source`, `sensor`, `reading`, `unit`,
@@ -219,7 +221,7 @@ the artifacts from `build/`. Full details, toggles, and the linking rules:
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| `SW_ERR_SOURCE_UNAVAILABLE` / `read_sensors()` → `None` | HWiNFO not running, shared memory disabled, or sensors window closed | Start HWiNFO64, enable Settings → Shared Memory Support, open the sensors window |
-| `SW_ERR_UNSUPPORTED_PLATFORM` | Not Windows | sensorwatch reads a Windows-only shared-memory source |
+| `[-4] Sensor source is not running or not enabled` (`SW_ERR_SOURCE_UNAVAILABLE`), or `read_sensors()` → `None` | HWiNFO not running, shared memory disabled, or sensors window closed | Start HWiNFO64, enable Settings → Shared Memory Support, open the sensors window |
+| `[-3] Backend is unavailable on this platform` (`SW_ERR_UNSUPPORTED_PLATFORM`) | Not Windows | sensorwatch reads a Windows-only shared-memory source |
 | `ImportError: sensorwatch._sw_cffi ... not built` | Native extension missing | `pip install sensorwatch` (prebuilt Windows wheel), or use the pure-Python `read_sensors()` (Recipe 1) |
-| A reading's `value` is `NaN` or its `type` is `Unknown` | HWiNFO exposes some entries without a current value/known category | Skip `NaN` values; treat `Unknown`/`Other` as uncategorized |
+| A reading's `value` is `NaN`, or its category is the catch-all | HWiNFO exposes some entries without a current value / known category | Skip `NaN` values; treat the catch-all category as uncategorized. **The spelling differs by surface:** the native API's `reading.type.name` is upper-case (`OTHER` / `UNKNOWN`), while the logger JSONL and `read_sensors()` use title-case `"Other"` and `"unknown(<N>)"` for unrecognized codes (there is no literal `"Unknown"`). |

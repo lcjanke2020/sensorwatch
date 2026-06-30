@@ -50,7 +50,8 @@ and 3.13 (see the [Testing / CI scope](README.md#testing--ci-scope) note).
 Agent-facing usage guides live under [`skills/`](skills/) as portable
 **Agent Skills** bundles (a `SKILL.md` plus any helper scripts) — see
 [`skills/sensorwatch/`](skills/sensorwatch/). They document how to *use*
-sensorwatch and ship in the repo and sdist, but not the Python wheel. Keep any
+sensorwatch and live in the git repository only — their links assume the full
+source tree, so they are not packaged in the sdist or the Python wheel. Keep any
 code snippets in a `SKILL.md` in sync with the real API, and keep agent guidance
 read-only (see [`SECURITY.md`](SECURITY.md)).
 

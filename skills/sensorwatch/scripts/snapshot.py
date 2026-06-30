@@ -5,6 +5,9 @@ Prints the current hardware sensor readings (from HWiNFO64, via the sensorwatch
 native binding) as a JSON array on stdout. A quick, agent-friendly way to grab
 the live hardware state without standing up the logger.
 
+The "type" label matches the CLI logger's JSON Lines vocabulary (title-case, e.g.
+"Temperature"), so a snapshot and a logged record describe a reading the same way.
+
 Exit codes:
   0  a snapshot was printed (possibly an empty array)
   1  sensorwatch / HWiNFO is unavailable -- not Windows, HWiNFO not running with
@@ -14,7 +17,7 @@ Examples:
   python snapshot.py
   python snapshot.py --type TEMPERATURE
   python snapshot.py --match 12V
-  python snapshot.py --indent 0        # one compact line
+  python snapshot.py --indent 0        # single compact line
 """
 
 from __future__ import annotations
@@ -22,6 +25,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+
+
+def _nonnegative_int(value: str) -> int:
+    """argparse type: an int >= 0, so --indent rejects negatives up front."""
+    ivalue = int(value)
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return ivalue
 
 
 def main() -> int:
@@ -43,9 +54,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--indent",
-        type=int,
+        type=_nonnegative_int,
         default=2,
-        help="JSON indent (default 2; use 0 for one compact line).",
+        help="JSON indent in spaces (default 2). Use 0 for a single compact line.",
     )
     args = parser.parse_args()
 
@@ -62,11 +73,17 @@ def main() -> int:
         )
         return 1
 
+    # The canonical reading-type labels, shared with the pure-Python reader and
+    # the CLI logger, so this helper's "type" matches a logged record's "type".
+    from sensorwatch.hwinfo_shm import SENSOR_TYPES
+
     try:
         with Session() as session:        # raises off-Windows or if HWiNFO is down
-            # Materialize the readings while the snapshot is open; Reading objects
-            # are plain dataclasses and stay valid after it closes.
-            readings = list(session.snapshot())
+            # Materialize readings while the snapshot is open so its native
+            # allocation is freed promptly; Reading objects are plain dataclasses
+            # and stay valid afterwards.
+            with session.snapshot() as snapshot:
+                readings = list(snapshot)
     except SensorwatchError as exc:
         print(
             f"Could not read sensors: {exc}\n"
@@ -76,10 +93,10 @@ def main() -> int:
         )
         return 1
 
-    match = args.match.lower() if args.match else None
-    type_filter = args.type_filter.upper() if args.type_filter else None
+    match: str | None = args.match.lower() if args.match else None
+    type_filter: str | None = args.type_filter.upper() if args.type_filter else None
 
-    out = []
+    out: list[dict] = []
     for r in readings:
         if type_filter and r.type.name != type_filter:
             continue
@@ -90,7 +107,9 @@ def main() -> int:
                 "source": r.source,
                 "sensor": r.sensor,
                 "reading": r.reading,
-                "type": r.type.name,
+                # Title-case label (e.g. "Temperature") matching the logger's
+                # JSONL; ReadingType.UNKNOWN (255) falls back to "Unknown".
+                "type": SENSOR_TYPES.get(int(r.type), r.type.name.title()),
                 "value": r.value,
                 "min": r.minimum,
                 "max": r.maximum,
@@ -99,7 +118,7 @@ def main() -> int:
             }
         )
 
-    indent = args.indent if args.indent and args.indent > 0 else None
+    indent = args.indent or None  # 0 -> None -> single compact line
     print(json.dumps(out, indent=indent, ensure_ascii=False))
     return 0
 
