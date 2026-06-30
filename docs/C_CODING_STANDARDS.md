@@ -63,7 +63,8 @@ Use this as the compact PR-review version of the longer guidance below.
 - Add SAL annotations on public APIs so MSVC `/analyze` can reason about buffers
   and nullability.
 - Build with warnings as errors, `/sdl`, `/analyze`, AddressSanitizer, and a
-  clang-cl sanitizer/static-analysis configuration in CI once native code exists.
+  clang-cl sanitizer/static-analysis configuration in CI — the native core's CI
+  does this today; keep it green.
 - Fuzz the parser with mutated shared-memory blobs and run it under sanitizers.
 - Maintain an exported-symbol snapshot or equivalent ABI-compatibility check once
   a native library is released.

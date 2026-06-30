@@ -277,15 +277,10 @@ observability toolkit:
   interface (HWiNFO today; UPS, AIDA64, and IPMI next) with stable sensor
   identities and per-reading quality flags.
 - **Optional localhost REST service** for live queries (bound to `127.0.0.1`).
-- **Native C core** — a dependency-free Windows DLL (plus static library)
-  implementing the source-neutral C ABI in
-  [`include/sensorwatch/sensorwatch.h`](include/sensorwatch/sensorwatch.h)
-  ([`docs/C_ABI.md`](docs/C_ABI.md); standards in
-  [`docs/C_CODING_STANDARDS.md`](docs/C_CODING_STANDARDS.md)). Built with CMake —
-  see [Building the native core](#building-the-native-core-c). **Language bindings**
-  over that core: a Python binding (cffi — see
-  [Native binding](#native-binding-cffi)) and a header-only C++ binding (see
-  [C++ binding](#c-binding)) ship now; Rust is next.
+- **Rust binding** over the native C core — the dependency-free C core (Windows
+  DLL + static library, see [Building the native core](#building-the-native-core-c))
+  and its [Python](#native-binding-cffi) and [C++](#c-binding) bindings ship today;
+  a Rust binding is next.
 - **Agent integration** — an [agent skill](skills/sensorwatch/SKILL.md) for
   using sensorwatch ships now (see [Skills](#skills)); an MCP server, so agents
   can query hardware state over a protocol, is next.
@@ -297,9 +292,9 @@ components.
 
 sensorwatch reads read-only hardware data and writes local log files; it opens
 no network listeners in its current form. The full threat model — shared-memory
-attack surface, the planned REST service and agent layer, supply-chain notes —
-is in [`SECURITY.md`](SECURITY.md). Please report vulnerabilities privately (see
-that document).
+attack surface, the agent skill, the planned REST service and MCP server,
+supply-chain notes — is in [`SECURITY.md`](SECURITY.md). Please report
+vulnerabilities privately (see that document).
 
 ## Contributing
 
