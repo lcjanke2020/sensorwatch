@@ -5,8 +5,12 @@ Prints the current hardware sensor readings (from HWiNFO64, via the sensorwatch
 native binding) as a JSON array on stdout. A quick, agent-friendly way to grab
 the live hardware state without standing up the logger.
 
-The "type" label matches the CLI logger's JSON Lines vocabulary (title-case, e.g.
-"Temperature"), so a snapshot and a logged record describe a reading the same way.
+The "type" label reuses the CLI logger's vocabulary (the shared SENSOR_TYPES map),
+so for the recognized categories a snapshot and a logged record describe a reading
+the same way (e.g. "Temperature"). The one exception is the native UNKNOWN sentinel
+(an unrecognized HWiNFO category): the native binding has already collapsed the raw
+code to 255, so this helper reports a bare "unknown" rather than the logger's
+"unknown(<N>)" form, which it can no longer reconstruct.
 
 Exit codes:
   0  a snapshot was printed (possibly an empty array)
@@ -107,9 +111,11 @@ def main() -> int:
                 "source": r.source,
                 "sensor": r.sensor,
                 "reading": r.reading,
-                # Title-case label (e.g. "Temperature") matching the logger's
-                # JSONL; ReadingType.UNKNOWN (255) falls back to "Unknown".
-                "type": SENSOR_TYPES.get(int(r.type), r.type.name.title()),
+                # Logger vocabulary via the shared SENSOR_TYPES map (categories
+                # 0-8). The native UNKNOWN sentinel (255) is the only fallback:
+                # the raw HWiNFO code is already lost, so emit a bare "unknown"
+                # rather than a misleading "unknown(255)".
+                "type": SENSOR_TYPES.get(int(r.type), "unknown"),
                 "value": r.value,
                 "min": r.minimum,
                 "max": r.maximum,

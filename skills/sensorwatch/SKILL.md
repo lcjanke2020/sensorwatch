@@ -55,11 +55,11 @@ The fastest path to live readings is the native binding's `Session` →
 from sensorwatch.native import Session, SensorwatchError
 
 try:
-    with Session() as session:           # raises off-Windows or if HWiNFO is down
-        snapshot = session.snapshot()    # immutable view of all readings at one instant
-        print(len(snapshot), "readings from", snapshot.source)  # e.g. "... from HWiNFO"
-        for r in snapshot:
-            print(f"{r.sensor} / {r.reading} = {r.value} {r.unit} [{r.type.name}]")
+    with Session() as session:                # raises off-Windows or if HWiNFO is down
+        with session.snapshot() as snapshot:  # immutable view of all readings at one instant
+            print(len(snapshot), "readings from", snapshot.source)  # e.g. "... from HWiNFO"
+            for r in snapshot:
+                print(f"{r.sensor} / {r.reading} = {r.value} {r.unit} [{r.type.name}]")
 except SensorwatchError as exc:
     print(f"sensorwatch unavailable: {exc}")   # e.g. [-4] Sensor source is not running or not enabled
 ```
