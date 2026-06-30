@@ -151,11 +151,17 @@ static void test_windows_live() {
         reassigned = std::move(moved_snapshot);
         CHECK(reassigned.size() == count);
     } catch (const sw::Error& err) {
-        if (err.code() == SW_ERR_UNSUPPORTED_PLATFORM) {
-            FAILURE("Windows reported SW_ERR_UNSUPPORTED_PLATFORM");
+        // Only a genuinely absent source is a skip. Any other code (MAP_FAILED,
+        // CORRUPT_DATA, BAD_MAGIC, INTERNAL, UNSUPPORTED_PLATFORM, ...) means the
+        // wrapper or core is broken and must fail the test rather than hide behind
+        // a skip. sw_session_open reports SW_ERR_SOURCE_UNAVAILABLE when HWiNFO is
+        // not running (src/sw_session.c) — that is the no-data CI/dev case.
+        if (err.code() == SW_ERR_SOURCE_UNAVAILABLE) {
+            std::printf("[test] SKIP live snapshot (source unavailable)\n");
         } else {
-            std::printf("[test] SKIP live snapshot (source unavailable: %s)\n",
-                        err.what());
+            FAILURE("live snapshot failed with an unexpected sw::Error");
+            std::fprintf(stderr, "  unexpected code %d: %s\n",
+                         static_cast<int>(err.code()), err.what());
         }
     }
 }
@@ -164,6 +170,7 @@ static void test_unsupported_platform() {
     bool threw = false;
     try {
         sw::Session session;
+        (void)session;  // only constructed for its (throwing) side effect
         FAILURE("Session construction should throw on a non-Windows platform");
     } catch (const sw::Error& err) {
         threw = true;

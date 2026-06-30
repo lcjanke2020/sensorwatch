@@ -95,6 +95,26 @@ inline void check(sw_error_t error) {
 }
 
 /*
+ * Verify the loaded C core's ABI is compatible with the version this header was
+ * compiled against, throwing Error(SW_ERR_VERSION_MISMATCH) otherwise. Pre-1.0 a
+ * minor bump is breaking, so major.minor must match; from 1.0 on only the major
+ * gates compatibility (mirrors the Python binding's load-time guard). It matters
+ * most for a consumer linking the DLL, whose loaded core can drift from this
+ * header; a static link is already pinned at link time. Session() calls it before
+ * opening, and a DLL consumer can call it explicitly up front.
+ */
+inline void check_abi_compatibility() {
+    const std::uint32_t runtime = sw_api_version();
+    const std::uint32_t major = runtime / 10000u;
+    const std::uint32_t minor = (runtime / 100u) % 100u;
+    const bool compatible =
+        major == SW_API_VERSION_MAJOR && (major >= 1u || minor == SW_API_VERSION_MINOR);
+    if (!compatible) {
+        throw Error(SW_ERR_VERSION_MISMATCH);
+    }
+}
+
+/*
  * One reading entry, a snapshot-independent value copy (the strings are owned, so
  * a Reading outlives the Snapshot it came from). Fields and order mirror the
  * Python binding's Reading dataclass.
@@ -163,8 +183,9 @@ inline std::string query_string(string_accessor accessor,
 
 /*
  * An immutable snapshot of all readings, owning its own data copy. Move-only: the
- * moved-from handle is left inert so the snapshot is freed exactly once. All
- * accessors are const and safe to call concurrently for a live snapshot.
+ * moved-from handle is left inert (and empty) so the snapshot is freed exactly
+ * once. All accessors are const and hold no shared mutable state, so they are safe
+ * to call concurrently for a live snapshot.
  */
 class Snapshot {
 public:
@@ -178,12 +199,26 @@ public:
             throw Error(err);
         }
         count_ = count;
+        // The source is snapshot-wide; query it once here, eagerly. Doing it in the
+        // constructor (rather than a lazy mutable cache) keeps every accessor
+        // genuinely const and free of shared mutable state, so they are race-free
+        // under concurrent use. Empty for a zero-entry snapshot (the source
+        // accessor is index-gated, so there is no index to query).
+        if (count_ > 0u) {
+            try {
+                source_ = detail::query_string(sw_snapshot_get_source_name, ptr_, 0u);
+            } catch (...) {
+                sw_snapshot_free(ptr_);  // still no leak if the source query fails
+                ptr_ = nullptr;
+                throw;
+            }
+        }
     }
 
     Snapshot(Snapshot&& other) noexcept
-        : ptr_(other.ptr_), count_(other.count_),
-          source_(std::move(other.source_)), source_loaded_(other.source_loaded_) {
+        : ptr_(other.ptr_), count_(other.count_), source_(std::move(other.source_)) {
         other.ptr_ = nullptr;
+        other.count_ = 0;
     }
 
     Snapshot& operator=(Snapshot&& other) noexcept {
@@ -192,8 +227,8 @@ public:
             ptr_ = other.ptr_;
             count_ = other.count_;
             source_ = std::move(other.source_);
-            source_loaded_ = other.source_loaded_;
             other.ptr_ = nullptr;
+            other.count_ = 0;
         }
         return *this;
     }
@@ -208,9 +243,9 @@ public:
 
     /*
      * The source/backend identity (e.g. "HWiNFO"), shared by every reading.
-     * Empty for a zero-entry snapshot. Queried once and cached.
+     * Empty for a zero-entry snapshot. Queried once in the constructor.
      */
-    std::string source() const { return cached_source(); }
+    std::string source() const { return source_; }
 
     /* Build the reading at index, throwing std::out_of_range if out of bounds. */
     Reading at(std::uint32_t index) const {
@@ -220,7 +255,12 @@ public:
         return build_reading(index);
     }
 
-    /* Build the reading at index without bounds checking. */
+    /*
+     * The reading at index, without the std::out_of_range pre-check that at()
+     * performs. Unlike std::vector::operator[], a past-the-end index is not
+     * undefined behavior: the C accessors validate it, so an out-of-range access
+     * surfaces as Error(SW_ERR_INDEX_OUT_OF_RANGE).
+     */
     Reading operator[](std::uint32_t index) const { return build_reading(index); }
 
     /* Materialize all readings at once. */
@@ -233,7 +273,11 @@ public:
         return out;
     }
 
-    /* Forward iterator yielding Reading by value (range-for friendly). */
+    /*
+     * Input iterator yielding Reading by value (range-for friendly). The category
+     * is input, not forward: a by-value operator* cannot model the
+     * LegacyForwardIterator reference requirements.
+     */
     class const_iterator {
     public:
         using iterator_category = std::input_iterator_tag;
@@ -280,19 +324,9 @@ private:
         }
     }
 
-    const std::string& cached_source() const {
-        if (!source_loaded_) {
-            source_ = (count_ == 0u)
-                          ? std::string()
-                          : detail::query_string(sw_snapshot_get_source_name, ptr_, 0u);
-            source_loaded_ = true;
-        }
-        return source_;
-    }
-
     Reading build_reading(std::uint32_t index) const {
         Reading r;
-        r.source  = cached_source();
+        r.source  = source_;
         r.sensor  = detail::query_string(sw_snapshot_get_sensor_name, ptr_, index);
         r.reading = detail::query_string(sw_snapshot_get_reading_name, ptr_, index);
         r.unit    = detail::query_string(sw_snapshot_get_unit, ptr_, index);
@@ -315,8 +349,7 @@ private:
 
     sw_snapshot_t* ptr_ = nullptr;
     std::uint32_t count_ = 0;
-    mutable std::string source_;
-    mutable bool source_loaded_ = false;
+    std::string source_;
 };
 
 /*
@@ -328,6 +361,7 @@ private:
 class Session {
 public:
     Session() {
+        check_abi_compatibility();
         sw_session_t* session = nullptr;
         check(sw_session_open(&session));
         session_ = session;

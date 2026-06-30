@@ -203,7 +203,7 @@ int main() {
     sensorwatch::Session session;              // throws off Windows / if the source is down
     sensorwatch::Snapshot snapshot = session.snapshot();
     std::printf("%u readings from %s\n",
-                snapshot.size(), snapshot.source().c_str());
+                static_cast<unsigned>(snapshot.size()), snapshot.source().c_str());
     for (const sensorwatch::Reading& r : snapshot) {
         std::printf("%s / %s = %g %s\n",
                     r.sensor.c_str(), r.reading.c_str(), r.value, r.unit.c_str());

@@ -432,7 +432,10 @@ exactly once). A `Snapshot` exposes its entries as `Reading` values (`source`,
 becomes a `sensorwatch::Error` carrying the `sw_error_t` `code()` and the library's
 `sw_error_string()` text; `Session` construction throws
 `Error(SW_ERR_UNSUPPORTED_PLATFORM)` off Windows, and `at()` throws
-`std::out_of_range` past the end.
+`std::out_of_range` past the end. `Session` construction also verifies the loaded
+core's ABI (major.minor while pre-1.0, major-only from 1.0) against the header and
+throws `Error(SW_ERR_VERSION_MISMATCH)` on a mismatch — relevant when linking the
+DLL rather than the static library, which is already pinned at link time.
 
 ### Rust
 

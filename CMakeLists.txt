@@ -94,7 +94,12 @@ endif()
 # C libraries (sensorwatch_static with SW_STATIC, or the DLL). It ships no compiled
 # artifact of its own, so it is always available regardless of SW_BUILD_* toggles.
 add_library(sensorwatch_hpp INTERFACE)
-target_include_directories(sensorwatch_hpp INTERFACE include)
+target_include_directories(sensorwatch_hpp INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+# Propagate the C++17 floor to consumers so linking sensorwatch::hpp under an older
+# standard is a clear error, not a cryptic header failure. (An install/export with
+# $<INSTALL_INTERFACE:include> is a deferred follow-up.)
+target_compile_features(sensorwatch_hpp INTERFACE cxx_std_17)
 add_library(sensorwatch::hpp ALIAS sensorwatch_hpp)
 
 # --- Tests (cmocka via FetchContent) ---
