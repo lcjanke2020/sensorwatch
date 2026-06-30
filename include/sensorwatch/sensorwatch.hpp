@@ -267,11 +267,13 @@ public:
 
     /*
      * The source/backend identity (e.g. "HWiNFO"), shared by every reading. Empty
-     * for a zero-entry snapshot. Queried once in the constructor and returned by
-     * reference, valid for the snapshot's lifetime (copy it if you need it to
-     * outlive the Snapshot).
+     * for a zero-entry snapshot, and queried once in the constructor. On an lvalue
+     * Snapshot it is returned by reference (valid for the snapshot's lifetime); on
+     * an rvalue -- e.g. session.snapshot().source() -- it is returned by value, so
+     * the result can never dangle off a temporary.
      */
-    const std::string& source() const noexcept { return source_; }
+    const std::string& source() const& noexcept { return source_; }
+    std::string source() const&& { return source_; }
 
     /* Build the reading at index, throwing std::out_of_range if out of bounds. */
     Reading at(std::uint32_t index) const {

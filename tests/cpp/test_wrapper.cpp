@@ -59,6 +59,14 @@ static_assert(std::is_nothrow_move_assignable<sw::Snapshot>::value,
               "Snapshot must be nothrow move-assignable");
 static_assert(std::is_nothrow_constructible<sw::Error, sw_error_t>::value,
               "Error construction must be noexcept (holds the static error string)");
+// source() is ref-qualified: a reference from an lvalue Snapshot, a by-value copy
+// from an rvalue so `session.snapshot().source()` cannot dangle off the temporary.
+static_assert(
+    std::is_same<decltype(std::declval<sw::Snapshot&>().source()), const std::string&>::value,
+    "source() on an lvalue Snapshot must return const std::string&");
+static_assert(
+    std::is_same<decltype(std::declval<sw::Snapshot>().source()), std::string>::value,
+    "source() on an rvalue Snapshot must return std::string by value (no dangling)");
 
 static void test_error_translation() {
     const sw::Error err(SW_ERR_SOURCE_UNAVAILABLE);
