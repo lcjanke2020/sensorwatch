@@ -222,6 +222,15 @@ category to `ReadingType::Unknown`. It ships no compiled
 artifact — it is a source-level convenience for C/C++ consumers, the counterpart to
 the Python binding above.
 
+## Skills
+
+For AI coding agents, [`skills/sensorwatch/`](skills/sensorwatch/) is a portable
+**Agent Skills** bundle (`SKILL.md`) that teaches an agent to read the current
+hardware state, run the logger, and analyze the JSON Lines output. It bundles a
+one-shot [`scripts/snapshot.py`](skills/sensorwatch/scripts/snapshot.py) that
+prints a live snapshot as JSON, and `agents/openai.yaml` for Codex discovery. The
+skill uses only read-only APIs — see [`SECURITY.md`](SECURITY.md) §4.
+
 ## Roadmap
 
 sensorwatch starts as a Python monitor and grows toward a general hardware
@@ -240,8 +249,9 @@ observability toolkit:
   over that core: a Python binding (cffi — see
   [Native binding](#native-binding-cffi)) and a header-only C++ binding (see
   [C++ binding](#c-binding)) ship now; Rust is next.
-- **Agent integration** via an MCP / skill layer so AI agents can query
-  hardware state directly.
+- **Agent integration** — an [agent skill](skills/sensorwatch/SKILL.md) for
+  using sensorwatch ships now (see [Skills](#skills)); an MCP server, so agents
+  can query hardware state over a protocol, is next.
 
 See [`SECURITY.md`](SECURITY.md) for the threat model covering these planned
 components.

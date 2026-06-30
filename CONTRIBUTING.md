@@ -45,6 +45,15 @@ and 3.13 (see the [Testing / CI scope](README.md#testing--ci-scope) note).
 - **One logical change per pull request**, with a clear description of what and
   why.
 
+## Skills
+
+Agent-facing usage guides live under [`skills/`](skills/) as portable
+**Agent Skills** bundles (a `SKILL.md` plus any helper scripts) — see
+[`skills/sensorwatch/`](skills/sensorwatch/). They document how to *use*
+sensorwatch and ship in the repo and sdist, but not the Python wheel. Keep any
+code snippets in a `SKILL.md` in sync with the real API, and keep agent guidance
+read-only (see [`SECURITY.md`](SECURITY.md)).
+
 ## Releasing
 
 _(Maintainers.)_ Releases publish to [PyPI](https://pypi.org/project/sensorwatch/)
