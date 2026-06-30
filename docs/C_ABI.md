@@ -5,9 +5,9 @@ header: a Windows DLL plus a static library built with CMake, with cmocka unit
 tests and an AddressSanitizer/UBSan gate (see "Building the native core" in the
 [README](../README.md)). The ABI itself is still a **pre-1.0 draft** and may change
 during review until the first release carries a stability commitment (see
-[Evolution Policy](#evolution-policy)). A Python binding (cffi, API mode) now ships
-over this ABI — see [Binding Notes → Python](#python); C++ and Rust bindings are
-not provided yet.
+[Evolution Policy](#evolution-policy)). A Python binding (cffi, API mode) and a
+header-only C++ binding now ship over this ABI — see [Binding Notes → Python](#python)
+and [→ C++](#c); a Rust binding is not provided yet.
 
 This document defines the stable C ABI for the native sensorwatch core. The ABI is
 designed to be wrapped by Python, C++, Rust, and other languages without exposing
@@ -36,7 +36,8 @@ in [`SECURITY.md`](../SECURITY.md).
 ## Non-goals
 
 - No replacement of the current Python HWiNFO parser yet.
-- No C++ or Rust bindings yet (a Python cffi binding now ships over the ABI).
+- No Rust binding yet (a Python cffi binding and a header-only C++ binding now ship
+  over the ABI).
 - No prebuilt standalone DLL distribution or code signing yet (the Python binding
   ships as binary wheels that statically link the core into the extension).
 - No fuzzing harness yet (planned; the parser is already under ASan/UBSan).

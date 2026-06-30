@@ -1,9 +1,10 @@
 # Security Analysis: sensorwatch
 
-**Date**: 2026-06-29
+**Date**: 2026-06-30
 **Scope**: Windows hardware sensor monitoring toolkit reading HWiNFO64 shared
-memory today, with planned native C ABI/DLL, language bindings, localhost REST
-service, CLI, and AI agent integration.
+memory today through a Python package and CLI, a native C core with Python (cffi)
+and header-only C++ bindings, and a read-only agent skill; with a planned localhost
+REST service and further language bindings (Rust next).
 
 **Methodology**: Code review of the current Python implementation plus
 architectural analysis of planned components. Risk levels are calibrated to what
@@ -16,7 +17,8 @@ cloud service.
 
 **Current implementation**:
 
-- Python package and CLI, plus a native C core with a Python binding.
+- Python package and CLI, plus a native C core with Python (cffi) and header-only
+  C++ bindings.
 - Reads HWiNFO64 shared memory through `sensorwatch.hwinfo_shm` (read-only Win32
   file-mapping APIs via `ctypes`), or through `sensorwatch.native` (a cffi
   API-mode binding over the native C core).
@@ -26,13 +28,16 @@ cloud service.
   the C core statically linked in; Python imports it from the package directory,
   not via a name-based DLL search. A standalone `sensorwatch.dll` is built by
   CMake for C/C++ consumers but is not loaded by the Python package.
+- A read-only agent skill (`skills/sensorwatch/`) — documentation plus a
+  `snapshot.py` helper that calls the existing read-only API. It adds no network
+  listener and no privileged access beyond what the package already exposes.
 
 **Planned components covered by this threat model**:
 
-- Native C ABI / Windows DLL for language bindings.
-- Python, C++, Rust, and other bindings over that ABI.
-- Optional localhost REST service.
-- Read-only agent integration through an MCP/skill layer.
+- Further language bindings over the C ABI (Rust next).
+- Optional localhost REST service. (sensorwatch does not plan a separate MCP
+  server: local agents use the shipped skill over the CLI/API, and any future
+  remote, over-a-protocol access would be served by this REST service — see §4.)
 
 Sections for planned components are design requirements, not currently shipped
 attack surface.
@@ -42,9 +47,9 @@ attack surface.
 ## Table of Contents
 
 1. [Shared Memory Attack Surface](#1-shared-memory-attack-surface)
-2. [DLL Security](#2-dll-security-planned)
+2. [DLL Security](#2-dll-security)
 3. [REST Service Risks](#3-rest-service-risks-planned)
-4. [Agent Integration Security](#4-agent-integration-security-planned)
+4. [Agent Integration Security](#4-agent-integration-security)
 5. [Data Sensitivity](#5-data-sensitivity)
 6. [Supply Chain and Build Security](#6-supply-chain-and-build-security)
 7. [Privilege Escalation](#7-privilege-escalation)
@@ -276,10 +281,15 @@ honest that it is designed primarily as a single-user desktop utility.
 
 ---
 
-## 4. Agent Integration Security (planned)
+## 4. Agent Integration Security
 
-The current package does not ship an MCP server or agent skill. This section
-applies to planned read-only agent integration.
+sensorwatch's agent interface is the shipped read-only agent skill
+(`skills/sensorwatch/`) — guidance plus a `snapshot.py` helper over the existing
+read-only CLI/API; it adds no network surface. There is deliberately no separate
+MCP server: local agents use the skill, and any future remote, over-a-protocol
+access would be served by the planned localhost REST service (§3), whose own
+threat model then applies. The requirements below govern the shipped skill and any
+agent-facing surface layered on top later.
 
 ### 4.1 Prompt Injection via Sensor Data
 
@@ -505,7 +515,7 @@ change could warn when the log directory appears broadly writable/readable.
 | 5 | Consider replacing `pendulum` with stdlib `datetime` | 6.1, 8.3 | Open |
 | 6 | Document or check log-directory privacy expectations | 5.2, 8.4 | Open |
 
-### Native C ABI / DLL and Python binding
+### Native C ABI / DLL and Python/C++ bindings
 
 | # | Requirement | Section | Status |
 |---|-------------|---------|--------|
@@ -514,6 +524,7 @@ change could warn when the log directory appears broadly writable/readable.
 | 3 | Preserve copy-then-parse model; expose immutable snapshots, not raw pointers | 1.3 | Done |
 | 4 | Return explicit error codes for source unavailable vs corrupt data | 1.3 | Done |
 | 5 | Run native parser tests under sanitizers and fuzzing | 1.3, 6.2 | ASan/UBSan done; fuzzing planned |
+| 6 | Keep the C++ binding header-only (no compiled artifact, no ABI of its own) over the same `extern "C"` boundary | 2.1 | Done |
 
 ### Planned REST Service
 
@@ -525,13 +536,13 @@ change could warn when the log directory appears broadly writable/readable.
 | 4 | Keep endpoints read-only | 3.2 | Planned |
 | 5 | Use custom-header API key only if needed | 3.3 | Planned |
 
-### Planned Agent Integration
+### Agent Integration (skill shipped)
 
 | # | Requirement | Section | Status |
 |---|-------------|---------|--------|
-| 1 | Treat sensor strings as untrusted display data | 4.1 | Planned / ongoing |
-| 2 | Use structured output for agent-facing data | 4.1 | Planned |
-| 3 | Keep agent integration read-only | 4.1, 4.3 | Planned |
+| 1 | Treat sensor strings as untrusted display data | 4.1 | Done (skill) / ongoing |
+| 2 | Use structured output for agent-facing data | 4.1 | Done (skill) |
+| 3 | Keep agent integration read-only | 4.1, 4.3 | Done (skill) |
 
 ### Not Worth Doing for This Project
 
