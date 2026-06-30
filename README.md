@@ -149,10 +149,47 @@ ctest --test-dir build --output-on-failure
 MSVC is the primary toolchain; the parser core also builds with GCC/Clang
 (including MinGW) for development and CI cross-checks. Useful options:
 
+- `-DSW_BUILD_SHARED=ON|OFF` — the shared library (`sensorwatch.dll` on Windows;
+  default **ON**).
+- `-DSW_BUILD_STATIC=ON|OFF` — the static library (target `sensorwatch_static`;
+  default **ON**).
 - `-DSW_ENABLE_ASAN=ON` — AddressSanitizer (plus UBSan on GCC/Clang).
 - `-DSW_ENABLE_ANALYZE=ON` — MSVC `/analyze` static analysis (non-fatal).
 - `-DSW_BUILD_EXAMPLES=ON` — build `sw_dump`, which prints a live snapshot (run it
   with HWiNFO64 running and Shared Memory Support enabled).
+
+Both libraries build by default. To build just one — without fetching the test
+dependency (cmocka, pulled over the network) — turn tests off and name the target:
+
+```sh
+# Static library only
+cmake -B build -DSW_BUILD_TESTS=OFF -DSW_BUILD_SHARED=OFF
+cmake --build build --target sensorwatch_static
+
+# Shared library (DLL) only
+cmake -B build -DSW_BUILD_TESTS=OFF -DSW_BUILD_STATIC=OFF
+cmake --build build --target sensorwatch
+```
+
+Artifacts land in `build/` (single-config generators) or `build/<Config>/`
+(multi-config generators such as Visual Studio).
+
+### Linking against the core
+
+The export macro `SW_API` (in the public header) keys off how you link:
+
+- **Static library** — compile your own translation units with `-DSW_STATIC` so
+  the ABI is undecorated (no `dllimport`).
+- **Shared library (DLL)** — define nothing; on Windows `SW_API` resolves to
+  `dllimport` and you link the generated import library.
+
+Consuming the build tree from CMake (`add_subdirectory()` or `FetchContent`) is the
+easiest path: link the `sensorwatch_static`, `sensorwatch`, or header-only
+`sensorwatch::hpp` target and the right include directories and defines propagate
+automatically (`sensorwatch_static` carries `SW_STATIC` for you). A
+`cmake --install` plus `find_package(sensorwatch)` package export is a planned
+follow-up — until then, consume the core in-tree or link the artifacts from
+`build/` directly.
 
 Like the Python suite, the C tests feed the parser **synthetic byte buffers** (no
 live HWiNFO needed) and mirror the invariants in
@@ -222,6 +259,15 @@ category to `ReadingType::Unknown`. It ships no compiled
 artifact — it is a source-level convenience for C/C++ consumers, the counterpart to
 the Python binding above.
 
+## Skills
+
+For AI coding agents, [`skills/sensorwatch/`](skills/sensorwatch/) is a portable
+**Agent Skills** bundle (`SKILL.md`) that teaches an agent to read the current
+hardware state, run the logger, and analyze the JSON Lines output. It bundles a
+one-shot [`scripts/snapshot.py`](skills/sensorwatch/scripts/snapshot.py) that
+prints a live snapshot as JSON, and `agents/openai.yaml` for Codex discovery. The
+skill uses only read-only APIs — see [`SECURITY.md`](SECURITY.md) §4.
+
 ## Roadmap
 
 sensorwatch starts as a Python monitor and grows toward a general hardware
@@ -240,8 +286,9 @@ observability toolkit:
   over that core: a Python binding (cffi — see
   [Native binding](#native-binding-cffi)) and a header-only C++ binding (see
   [C++ binding](#c-binding)) ship now; Rust is next.
-- **Agent integration** via an MCP / skill layer so AI agents can query
-  hardware state directly.
+- **Agent integration** — an [agent skill](skills/sensorwatch/SKILL.md) for
+  using sensorwatch ships now (see [Skills](#skills)); an MCP server, so agents
+  can query hardware state over a protocol, is next.
 
 See [`SECURITY.md`](SECURITY.md) for the threat model covering these planned
 components.
