@@ -188,6 +188,39 @@ instead preserves the raw code as `"unknown(<N>)"`). The pure-Python reader and
 the CLI are unchanged — the native binding is an additional, optional API over the
 same data.
 
+## C++ binding
+
+For C and C++ consumers building against the native core directly,
+[`include/sensorwatch/sensorwatch.hpp`](include/sensorwatch/sensorwatch.hpp) is a
+header-only, C++17 RAII wrapper over the same C ABI. Include it and link the C core
+— the static library built with `SW_STATIC`, or the DLL:
+
+```cpp
+#include "sensorwatch/sensorwatch.hpp"
+#include <cstdio>
+
+int main() {
+    sensorwatch::Session session;              // throws off Windows / if the source is down
+    sensorwatch::Snapshot snapshot = session.snapshot();
+    std::printf("%u readings from %s\n",
+                snapshot.size(), snapshot.source().c_str());
+    for (const sensorwatch::Reading& r : snapshot) {
+        std::printf("%s / %s = %g %s\n",
+                    r.sensor.c_str(), r.reading.c_str(), r.value, r.unit.c_str());
+    }
+}
+```
+
+`Session` and `Snapshot` are move-only handles that close/free via RAII; a
+`Snapshot` is iterable and also offers `at()` / `operator[]` and a `readings()`
+`std::vector` helper, each entry a `Reading` (`source`, `sensor`, `reading`, `unit`,
+`type`, `value`, `minimum`, `maximum`, `average`). Every native error surfaces as a
+`sensorwatch::Error` carrying the `sw_error_t` code and message (e.g.
+`SW_ERR_UNSUPPORTED_PLATFORM` off Windows). Like the Python binding it folds any
+unrecognized reading category to `ReadingType::Unknown`. It ships no compiled
+artifact — it is a source-level convenience for C/C++ consumers, the counterpart to
+the Python binding above.
+
 ## Roadmap
 
 sensorwatch starts as a Python monitor and grows toward a general hardware
@@ -203,8 +236,9 @@ observability toolkit:
   ([`docs/C_ABI.md`](docs/C_ABI.md); standards in
   [`docs/C_CODING_STANDARDS.md`](docs/C_CODING_STANDARDS.md)). Built with CMake —
   see [Building the native core](#building-the-native-core-c). **Language bindings**
-  over that core: a Python binding ships now (cffi — see
-  [Native binding](#native-binding-cffi)); C++ and Rust are next.
+  over that core: a Python binding (cffi — see
+  [Native binding](#native-binding-cffi)) and a header-only C++ binding (see
+  [C++ binding](#c-binding)) ship now; Rust is next.
 - **Agent integration** via an MCP / skill layer so AI agents can query
   hardware state directly.
 

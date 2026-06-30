@@ -415,8 +415,24 @@ installed package, never from the current working directory or `PATH`.
 
 ### C++
 
-C++ wrappers should use RAII for session and snapshot ownership. The C ABI remains
-`extern "C"`; C++ exceptions must not cross the C boundary.
+The shipped C++ binding is **header-only**: include
+[`sensorwatch/sensorwatch.hpp`](../include/sensorwatch/sensorwatch.hpp) (C++17) and
+link one of the C libraries — the static library built with `SW_STATIC`, or the
+DLL. It ships no compiled artifact and defines no ABI of its own; the flat
+`extern "C"` ABI stays the boundary, and because the wrapper only *calls* C
+functions, its exceptions never cross back into C. In `namespace sensorwatch`,
+`Session` and `Snapshot` are move-only RAII handles that close/free
+deterministically (the moved-from handle is left inert, so each is released
+exactly once). A `Snapshot` exposes its entries as `Reading` values (`source`,
+`sensor`, `reading`, `unit`, `type`, `value`, `minimum`, `maximum`, `average`) via
+`size()`, `at()` / `operator[]`, range-based iteration, and a `readings()`
+`std::vector` helper; `source` is queried once per snapshot and cached. `type` is a
+`ReadingType` enum that folds any unrecognized source category to
+`ReadingType::Unknown` (mirroring the Python binding). Every non-`SW_OK` result
+becomes a `sensorwatch::Error` carrying the `sw_error_t` `code()` and the library's
+`sw_error_string()` text; `Session` construction throws
+`Error(SW_ERR_UNSUPPORTED_PLATFORM)` off Windows, and `at()` throws
+`std::out_of_range` past the end.
 
 ### Rust
 

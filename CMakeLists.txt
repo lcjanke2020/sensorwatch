@@ -89,6 +89,14 @@ if(SW_BUILD_STATIC OR SW_BUILD_TESTS)
     sw_set_target_flags(sensorwatch_static)
 endif()
 
+# Header-only C++ binding (include/sensorwatch/sensorwatch.hpp). An INTERFACE
+# target carrying only the include directory: consumers link this plus one of the
+# C libraries (sensorwatch_static with SW_STATIC, or the DLL). It ships no compiled
+# artifact of its own, so it is always available regardless of SW_BUILD_* toggles.
+add_library(sensorwatch_hpp INTERFACE)
+target_include_directories(sensorwatch_hpp INTERFACE include)
+add_library(sensorwatch::hpp ALIAS sensorwatch_hpp)
+
 # --- Tests (cmocka via FetchContent) ---
 if(SW_BUILD_TESTS)
     enable_testing()
@@ -141,6 +149,21 @@ if(SW_BUILD_TESTS)
         set_target_properties(sw_abi_header_cxx PROPERTIES
             CXX_STANDARD 11
             CXX_STANDARD_REQUIRED ON)
+
+        # C++17 RAII wrapper test. Builds and runs the header-only binding against
+        # the static core: links sensorwatch_static (PUBLIC SW_STATIC, so SW_API is
+        # undecorated) plus the header-only INTERFACE target. The live-snapshot path
+        # is Windows-only and self-skips without a sensor source; the non-Windows
+        # build asserts Session construction throws SW_ERR_UNSUPPORTED_PLATFORM. Held
+        # to the same /W4 /WX (MSVC) and -Wall -Wextra -Wconversion -Werror (gcc)
+        # gate as the C targets via sw_set_target_flags.
+        add_executable(test_cpp_wrapper tests/cpp/test_wrapper.cpp)
+        target_link_libraries(test_cpp_wrapper PRIVATE sensorwatch_static sensorwatch_hpp)
+        set_target_properties(test_cpp_wrapper PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON)
+        sw_set_target_flags(test_cpp_wrapper)
+        add_test(NAME test_cpp_wrapper COMMAND test_cpp_wrapper)
     else()
         message(STATUS "No C++ compiler found; skipping the C++ ABI header-compile check")
     endif()
