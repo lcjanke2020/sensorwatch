@@ -1,7 +1,9 @@
 # sensorwatch-sys
 
 Raw FFI declarations for the [sensorwatch](https://github.com/lcjanke2020/sensorwatch)
-native C ABI (`sw_*` / `SW_*`, see `include/sensorwatch/sensorwatch.h`).
+native C ABI (`sw_*` / `SW_*`). The public header ships in this crate at
+`vendor/include/sensorwatch/sensorwatch.h` (a mirror of the repo's
+`include/sensorwatch/sensorwatch.h`).
 
 **Most users want the safe wrapper, [`sensorwatch`](https://crates.io/crates/sensorwatch),
 not this crate directly.**

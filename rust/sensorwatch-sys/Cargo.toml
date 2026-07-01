@@ -1,6 +1,6 @@
 [package]
 name = "sensorwatch-sys"
-description = "Raw FFI declarations for the sensorwatch native C ABI (see include/sensorwatch/sensorwatch.h)"
+description = "Raw FFI declarations for the sensorwatch native C ABI (public header vendored at vendor/include/sensorwatch/sensorwatch.h)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
