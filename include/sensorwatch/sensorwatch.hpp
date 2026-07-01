@@ -19,6 +19,17 @@
  * library's sw_error_string() text.
  */
 
+/*
+ * C++17 floor, enforced at the header so it holds for every consumer regardless
+ * of build system or how the package was installed (the CMake sensorwatch::hpp
+ * target's cxx_std_17 feature is only present when the *installing* toolchain had
+ * a C++ compiler). _MSVC_LANG is checked because MSVC reports __cplusplus as
+ * 199711L unless /Zc:__cplusplus is set.
+ */
+#if __cplusplus < 201703L && !(defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+#  error "sensorwatch.hpp requires C++17 or later (e.g. -std=c++17 or /std:c++17)"
+#endif
+
 #include "sensorwatch/sensorwatch.h"
 
 #include <cmath>

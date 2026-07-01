@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)  # PROJECT_IS_TOP_LEVEL (used by SW_INSTALL) needs >= 3.21
 
 # VERSION tracks the C ABI draft (matches SW_API_VERSION 0.1.0 in the public
 # header), deliberately independent of the Python package version in pyproject.toml.
@@ -31,6 +31,23 @@ option(SW_BUILD_EXAMPLES "Build example programs (sw_dump)"                 OFF)
 option(SW_ENABLE_ASAN    "Build with AddressSanitizer (+UBSan on gcc/clang)" OFF)
 option(SW_ENABLE_ANALYZE "Enable MSVC /analyze static analysis (non-fatal)" OFF)
 option(SW_BUILD_FUZZ     "Build fuzz targets (follow-up; not yet provided)" OFF)
+
+# Install / package-export rules (install(), find_package(sensorwatch CONFIG)).
+# Default ON for a top-level build, OFF when consumed via add_subdirectory so an
+# outer project's `cmake --install` does not also drop sensorwatch's config.
+option(SW_INSTALL "Generate install() + find_package(sensorwatch CONFIG) rules" ${PROJECT_IS_TOP_LEVEL})
+
+# GNUInstallDirs gives CMAKE_INSTALL_{LIB,BIN,INCLUDE}DIR; included before the
+# targets below because their $<INSTALL_INTERFACE:> uses CMAKE_INSTALL_INCLUDEDIR.
+include(GNUInstallDirs)
+
+# Public include interface shared by all consumable targets: $<BUILD_INTERFACE:>
+# keeps the absolute source path out of the exported interface (install(EXPORT)
+# rejects source-tree paths); $<INSTALL_INTERFACE:> points installed consumers at
+# <prefix>/include. Declared once so the three targets stay consistent.
+set(SW_PUBLIC_INCLUDES
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # --- Sanitizers: applied globally (before any targets) so the sanitizer runtime
 #     is consistent across our code and cmocka. ---
@@ -73,9 +90,12 @@ set(SW_SOURCES
 # Shared library (the shipped DLL). SW_BUILD_DLL drives SW_API -> dllexport.
 if(SW_BUILD_SHARED)
     add_library(sensorwatch SHARED ${SW_SOURCES})
-    target_include_directories(sensorwatch PUBLIC include PRIVATE src)
+    target_include_directories(sensorwatch PUBLIC ${SW_PUBLIC_INCLUDES} PRIVATE src)
     target_compile_definitions(sensorwatch PRIVATE SW_BUILD_DLL)
     set_target_properties(sensorwatch PROPERTIES C_VISIBILITY_PRESET hidden)
+    # In-tree alias matching the exported name, so add_subdirectory and
+    # find_package consumers write the same target_link_libraries().
+    add_library(sensorwatch::sensorwatch ALIAS sensorwatch)
     sw_set_target_flags(sensorwatch)
 endif()
 
@@ -83,9 +103,12 @@ endif()
 # parser, decode helpers) and compile against an undecorated ABI (SW_STATIC).
 if(SW_BUILD_STATIC OR SW_BUILD_TESTS)
     add_library(sensorwatch_static STATIC ${SW_SOURCES})
-    target_include_directories(sensorwatch_static PUBLIC include PRIVATE src)
+    target_include_directories(sensorwatch_static PUBLIC ${SW_PUBLIC_INCLUDES} PRIVATE src)
+    # PUBLIC so it propagates through the export: a consumer linking the static
+    # lib compiles with SW_STATIC (undecorated SW_API, no dllimport).
     target_compile_definitions(sensorwatch_static PUBLIC SW_STATIC)
     set_target_properties(sensorwatch_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    add_library(sensorwatch::sensorwatch_static ALIAS sensorwatch_static)
     sw_set_target_flags(sensorwatch_static)
 endif()
 
@@ -94,17 +117,20 @@ endif()
 # C libraries (sensorwatch_static with SW_STATIC, or the DLL). It ships no compiled
 # artifact of its own, so it is always available regardless of SW_BUILD_* toggles.
 add_library(sensorwatch_hpp INTERFACE)
-target_include_directories(sensorwatch_hpp INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_include_directories(sensorwatch_hpp INTERFACE ${SW_PUBLIC_INCLUDES})
+# Export as sensorwatch::hpp (not sensorwatch::sensorwatch_hpp) to match the alias.
+set_target_properties(sensorwatch_hpp PROPERTIES EXPORT_NAME hpp)
 add_library(sensorwatch::hpp ALIAS sensorwatch_hpp)
 
-# Propagate the C++17 floor to consumers so linking sensorwatch::hpp under an older
-# standard is a clear error, not a cryptic header failure -- but only when a C++
-# compiler is available. The project is declared LANGUAGES C, and requesting
+# Propagate the C++17 floor to consumers via the target's usage requirements, so
+# linking sensorwatch::hpp under an older standard is a clear error -- but only when
+# a C++ compiler is available. The project is declared LANGUAGES C, and requesting
 # cxx_std_17 requires CXX to be enabled, so on a pure-C toolchain (or with
 # -DSW_BUILD_TESTS=OFF) this would otherwise fail to configure. enable_language(CXX)
-# here is a no-op if CXX is already enabled (e.g. by the test block below). (An
-# install/export with $<INSTALL_INTERFACE:include> is a deferred follow-up.)
+# here is a no-op if CXX is already enabled (e.g. by the test block below). This
+# feature is absent from the exported target only when the *installing* toolchain
+# had no C++ compiler; the header itself #errors below C++17 regardless, so the
+# floor is enforced for every consumer independent of install provenance.
 include(CheckLanguage)
 check_language(CXX)
 if(CMAKE_CXX_COMPILER)
@@ -192,4 +218,75 @@ if(SW_BUILD_EXAMPLES)
     add_executable(sw_dump examples/c/sw_dump.c)
     target_link_libraries(sw_dump PRIVATE sensorwatch)
     sw_set_target_flags(sw_dump)
+endif()
+
+# --- Install + find_package(sensorwatch CONFIG) export ---
+# Lets downstream projects consume an installed tree (find_package) instead of
+# only in-tree add_subdirectory/FetchContent. Exported targets, all under the
+# sensorwatch:: namespace to match the in-tree aliases:
+#   sensorwatch::sensorwatch         - shared library (DLL) + import lib
+#   sensorwatch::sensorwatch_static  - static library (carries SW_STATIC)
+#   sensorwatch::hpp                 - header-only C++17 RAII binding
+#
+# Exporting sensorwatch::hpp alone (no C core) would ship a header-only C++ binding
+# with no ABI implementation to link, so a consumer linking it hits undefined sw_*
+# references. When SW_INSTALL is on but neither C library is enabled, warn and skip
+# the export rather than produce that broken package -- a warning, not a fatal, so a
+# test-only/header-dev configure (SW_BUILD_TESTS=ON with both cores off) still works.
+if(SW_INSTALL AND NOT SW_BUILD_SHARED AND NOT SW_BUILD_STATIC)
+    message(WARNING
+        "SW_INSTALL is ON but neither SW_BUILD_SHARED nor SW_BUILD_STATIC is enabled; "
+        "skipping install/export (a package exporting only sensorwatch::hpp has no ABI "
+        "implementation to link). Enable a C core, or set SW_INSTALL=OFF to silence this.")
+elseif(SW_INSTALL)
+    include(CMakePackageConfigHelpers)
+
+    # Only export the consumable targets that are actually enabled. sensorwatch_static
+    # is keyed on the SW_BUILD_STATIC option, not "was it built" -- it is also built
+    # for the tests (SW_BUILD_STATIC OR SW_BUILD_TESTS) but is only *shipped* when the
+    # option is on. The header-only interface target is always installable.
+    set(_sw_install_targets sensorwatch_hpp)
+    if(SW_BUILD_SHARED)
+        list(APPEND _sw_install_targets sensorwatch)
+    endif()
+    if(SW_BUILD_STATIC)
+        list(APPEND _sw_install_targets sensorwatch_static)
+    endif()
+
+    install(TARGETS ${_sw_install_targets}
+        EXPORT  sensorwatchTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}   # static lib + Windows import .lib
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}   # .so / .dylib
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})  # .dll
+        # No INCLUDES DESTINATION: the include dir is already carried by the
+        # $<INSTALL_INTERFACE:> genexes on the targets above.
+
+    # Public headers: sensorwatch.h (C ABI) + sensorwatch.hpp (C++ binding).
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/sensorwatch
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+    set(SW_INSTALL_CMAKEDIR ${CMAKE_INSTALL_LIBDIR}/cmake/sensorwatch)
+
+    configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/sensorwatchConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/sensorwatchConfig.cmake
+        INSTALL_DESTINATION ${SW_INSTALL_CMAKEDIR})
+
+    # SameMinorVersion: pre-1.0 the C ABI may change on a minor bump, so major.minor
+    # must match (mirrors check_abi_compatibility() in sensorwatch.hpp). Switch to
+    # SameMajorVersion at 1.0.
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/sensorwatchConfigVersion.cmake
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMinorVersion)
+
+    install(EXPORT sensorwatchTargets
+        FILE      sensorwatchTargets.cmake
+        NAMESPACE sensorwatch::
+        DESTINATION ${SW_INSTALL_CMAKEDIR})
+
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/sensorwatchConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/sensorwatchConfigVersion.cmake
+        DESTINATION ${SW_INSTALL_CMAKEDIR})
 endif()

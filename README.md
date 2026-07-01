@@ -183,13 +183,42 @@ The export macro `SW_API` (in the public header) keys off how you link:
 - **Shared library (DLL)** — define nothing; on Windows `SW_API` resolves to
   `dllimport` and you link the generated import library.
 
-Consuming the build tree from CMake (`add_subdirectory()` or `FetchContent`) is the
-easiest path: link the `sensorwatch_static`, `sensorwatch`, or header-only
-`sensorwatch::hpp` target and the right include directories and defines propagate
-automatically (`sensorwatch_static` carries `SW_STATIC` for you). A
-`cmake --install` plus `find_package(sensorwatch)` package export is a planned
-follow-up — until then, consume the core in-tree or link the artifacts from
-`build/` directly.
+From CMake, consume the namespaced targets — the include directories and defines
+propagate automatically (`sensorwatch::sensorwatch_static` carries `SW_STATIC` for
+you), so you write the same `target_link_libraries()` whichever way you consume it:
+
+| Target | Library |
+|--------|---------|
+| `sensorwatch::sensorwatch` | shared library (DLL + import lib) |
+| `sensorwatch::sensorwatch_static` | static library (defines `SW_STATIC`) |
+| `sensorwatch::hpp` | header-only C++17 binding (propagates `cxx_std_17`) |
+
+**In-tree** (`add_subdirectory()` or `FetchContent`): the targets are defined
+directly.
+
+**Installed tree** (`find_package`): install once, then consume from any project.
+
+```sh
+cmake -B build -DSW_BUILD_TESTS=OFF
+cmake --build build
+cmake --install build --prefix /path/to/prefix
+```
+
+```cmake
+find_package(sensorwatch CONFIG REQUIRED)
+# The header-only C++ binding supplies no ABI implementation of its own, so pair it
+# with a C core (the static lib here; sensorwatch::sensorwatch links the DLL instead):
+target_link_libraries(app PRIVATE sensorwatch::hpp sensorwatch::sensorwatch_static)
+# A pure-C app links a C library directly:
+#   target_link_libraries(app PRIVATE sensorwatch::sensorwatch_static)  # or sensorwatch::sensorwatch (DLL)
+```
+
+Point CMake at the prefix with `-DCMAKE_PREFIX_PATH=/path/to/prefix` when configuring
+the consumer. The install rules are gated behind `-DSW_INSTALL` (default **ON** for a
+top-level build, **OFF** under `add_subdirectory`); the version file uses
+`SameMinorVersion` compatibility, matching the pre-1.0 ABI policy (a minor bump is
+breaking until 1.0). `tests/consumer/` is a minimal `find_package` project used as the
+CI install smoke test.
 
 Like the Python suite, the C tests feed the parser **synthetic byte buffers** (no
 live HWiNFO needed) and mirror the invariants in

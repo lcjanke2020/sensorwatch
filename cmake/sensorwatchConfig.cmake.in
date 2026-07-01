@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+# sensorwatch has no external runtime/link dependencies (the C core links only the
+# platform C runtime + Win32 system libraries, which the toolchain auto-links, and
+# cmocka is test-only), so no find_dependency() calls are needed here.
+
+include("${CMAKE_CURRENT_LIST_DIR}/sensorwatchTargets.cmake")
+
+check_required_components(sensorwatch)

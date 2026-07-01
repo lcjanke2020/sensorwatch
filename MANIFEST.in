@@ -7,6 +7,9 @@
 graft src
 graft include
 include CMakeLists.txt
+# CMake package-config template, so a CMake install/find_package export can be
+# built from the sdist too (not just the git tree).
+graft cmake
 
 # Ship the test suite so the sdist is self-checking (cibuildwheel and downstream
 # packagers run it from the unpacked tree).

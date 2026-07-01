@@ -211,11 +211,12 @@ cmake --build build --target sensorwatch_static   # or --target sensorwatch for 
 ```
 
 Compile consumers of the **static** library with `-DSW_STATIC`; for the **DLL**,
-define nothing (on Windows `SW_API` resolves to `dllimport`). There is no
-`cmake --install` / `find_package(sensorwatch)` yet — consume the build tree from
-CMake (`add_subdirectory` / `FetchContent`, linking `sensorwatch_static`,
-`sensorwatch`, or `sensorwatch::hpp`, which propagate the right defines) or link
-the artifacts from `build/`. Full details, toggles, and the linking rules:
+define nothing (on Windows `SW_API` resolves to `dllimport`). From CMake, link the
+namespaced targets — `sensorwatch::sensorwatch_static`, `sensorwatch::sensorwatch`,
+or header-only `sensorwatch::hpp` — which propagate the right includes and defines.
+Consume them either in-tree (`add_subdirectory` / `FetchContent`) or from an
+installed tree via `cmake --install` + `find_package(sensorwatch CONFIG REQUIRED)`
+(the same target names apply). Full details, toggles, and the linking rules:
 [README → Building the native core](../../README.md#building-the-native-core-c).
 
 ## Troubleshooting
