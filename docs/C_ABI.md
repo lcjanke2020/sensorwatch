@@ -443,7 +443,7 @@ out-of-range `at()` throws `std::out_of_range`, and an allocation failure throws
 handling. From CMake the binding is the `sensorwatch::hpp` target (it propagates
 `cxx_std_17`), consumed either in-tree or from an installed tree via
 `find_package(sensorwatch CONFIG)` — see
-[README → Building the native core](../../README.md#building-the-native-core-c).
+[README → Building the native core](../README.md#building-the-native-core-c).
 
 ### Rust
 

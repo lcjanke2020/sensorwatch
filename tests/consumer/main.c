@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 int main(void) {
-    printf("sensorwatch C consumer OK, ABI=%u\n", sw_api_version());
+    /* Cast for %u: sw_api_version() returns uint32_t (matches examples/c/sw_dump.c). */
+    printf("sensorwatch C consumer OK, ABI=%u\n", (unsigned)sw_api_version());
     return 0;
 }

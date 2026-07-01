@@ -7,6 +7,7 @@
 
 int main() {
     sensorwatch::check_abi_compatibility();  // throws sensorwatch::Error on mismatch
-    std::printf("sensorwatch C++ consumer OK, ABI=%u\n", sw_api_version());
+    // Cast for %u: sw_api_version() returns uint32_t (matches examples/c/sw_dump.c).
+    std::printf("sensorwatch C++ consumer OK, ABI=%u\n", static_cast<unsigned>(sw_api_version()));
     return 0;
 }
