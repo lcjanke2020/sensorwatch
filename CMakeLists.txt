@@ -227,7 +227,18 @@ endif()
 #   sensorwatch::sensorwatch         - shared library (DLL) + import lib
 #   sensorwatch::sensorwatch_static  - static library (carries SW_STATIC)
 #   sensorwatch::hpp                 - header-only C++17 RAII binding
-if(SW_INSTALL)
+#
+# Exporting sensorwatch::hpp alone (no C core) would ship a header-only C++ binding
+# with no ABI implementation to link, so a consumer linking it hits undefined sw_*
+# references. When SW_INSTALL is on but neither C library is enabled, warn and skip
+# the export rather than produce that broken package -- a warning, not a fatal, so a
+# test-only/header-dev configure (SW_BUILD_TESTS=ON with both cores off) still works.
+if(SW_INSTALL AND NOT SW_BUILD_SHARED AND NOT SW_BUILD_STATIC)
+    message(WARNING
+        "SW_INSTALL is ON but neither SW_BUILD_SHARED nor SW_BUILD_STATIC is enabled; "
+        "skipping install/export (a package exporting only sensorwatch::hpp has no ABI "
+        "implementation to link). Enable a C core, or set SW_INSTALL=OFF to silence this.")
+elseif(SW_INSTALL)
     include(CMakePackageConfigHelpers)
 
     # Only export the consumable targets that are actually enabled. sensorwatch_static
