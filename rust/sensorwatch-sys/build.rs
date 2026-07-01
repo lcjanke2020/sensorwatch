@@ -16,7 +16,7 @@
 //
 // The C is compiled on EVERY platform, not gated behind cfg(windows). The core is
 // portable: its session layer returns SW_ERR_UNSUPPORTED_PLATFORM off Windows
-// (src/sw_session.c), just as the Python and C++ bindings rely on. Compiling it
+// (vendor/src/sw_session.c), just as the Python and C++ bindings rely on. Compiling it
 // everywhere is what lets the safe `sensorwatch` crate *link* and return
 // Error::UnsupportedPlatform on non-Windows, rather than failing to link — the
 // behavior the acceptance criteria require.

@@ -219,6 +219,37 @@ jobs:
             exit 1
           fi
 
+  # Release-readiness guard: keep the published crate green and version-consistent before
+  # release day, not just at `cargo publish` time.
+  #   (1) Assert the wrapper's exact `=x.y.z` pin on sensorwatch-sys matches the workspace
+  #       version, so a version bump that forgets the pin fails here (a PR-time error)
+  #       instead of half-publishing the release (sys uploaded, wrapper rejected).
+  #   (2) Dry-run publish sensorwatch-sys: packages it and runs the verify build from the
+  #       *extracted* tarball, so a broken `include` list or a non-building vendored source
+  #       is caught here. The wrapper can't be dry-run'd until sensorwatch-sys is in the
+  #       index (its `=x.y.z` dep resolves from crates.io), so only the -sys crate runs.
+  crates-package-check:
+    name: crates package check (dry-run)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Assert wrapper pin matches the workspace version
+        run: |
+          ws_ver=$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name=="sensorwatch-sys") | .version')
+          pin=$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name=="sensorwatch") | .dependencies[] | select(.name=="sensorwatch-sys") | .req')
+          echo "workspace sensorwatch-sys version: $ws_ver ; wrapper pin: $pin"
+          if [ "$pin" != "=$ws_ver" ]; then
+            echo "::error::rust/sensorwatch/Cargo.toml pins sensorwatch-sys = \"$pin\" but the workspace version is $ws_ver. Bump the pin to \"=$ws_ver\" (see CONTRIBUTING \"Releasing the Rust crates\")."
+            exit 1
+          fi
+      - name: Dry-run publish sensorwatch-sys (packages + verify build from the tarball)
+        run: cargo publish --dry-run -p sensorwatch-sys
+
   # Verify the declared MSRV (rust-version = 1.82, the floor for bindgen's
   # `unsafe extern` blocks) actually builds — the `rust` job above uses the
   # runner's default stable, which would hide an accidental newer-than-1.82

@@ -19,6 +19,13 @@ on:
 permissions:
   contents: read
 
+# Serialize crate releases: if two `rust-v*` releases ever fire close together, run them
+# one at a time. Never cancel an in-flight publish — a half-completed ordered publish
+# (sys uploaded, wrapper not) is worse than waiting.
+concurrency:
+  group: publish-crates
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: Publish crates (OIDC trusted publishing)
