@@ -89,3 +89,55 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
           ctest --test-dir build --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
+
+  # Consumer smoke: install the package to a prefix and build a standalone project
+  # that consumes it via find_package(sensorwatch CONFIG) -- proves cmake --install
+  # + the exported sensorwatch:: targets work for a downstream project, not just an
+  # in-tree add_subdirectory. Tests off so cmocka is not fetched; the consumer is
+  # build-only (configure + build, not run).
+  consumer-smoke-linux:
+    name: consumer smoke (ubuntu, gcc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Build + install to prefix
+        run: |
+          cmake -B build -DSW_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          cmake --install build --prefix "$PWD/_prefix"
+      - name: Build consumer against the installed package
+        run: |
+          cmake -S tests/consumer -B build-consumer \
+            -DCMAKE_PREFIX_PATH="$PWD/_prefix" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-consumer -j
+
+  consumer-smoke-windows:
+    name: consumer smoke (windows, msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      # One step: the DevShell PATH does not persist across steps (see native-windows).
+      - name: Install + build consumer (MSVC + Ninja)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          if (-not $vs) { throw "No Visual Studio installation found" }
+          Write-Host "Using Visual Studio at: $vs"
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -DevCmdArguments '-arch=x64 -host_arch=x64' -SkipAutomaticLocation | Out-Null
+          $env:PATH = "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;" + $env:PATH
+          # Forward slashes: backslashes in a -D cache path get mangled.
+          $prefix = (Join-Path $PWD '_prefix') -replace '\\','/'
+          cmake -B build -G Ninja -DSW_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build build
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          cmake --install build --prefix $prefix
+          if ($LASTEXITCODE -ne 0) { throw "install failed" }
+          # Quote the -D: an unquoted -DCMAKE_PREFIX_PATH=$prefix is not expanded by pwsh.
+          cmake -S tests/consumer -B build-consumer -G Ninja "-DCMAKE_PREFIX_PATH=$prefix" -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw "consumer configure failed" }
+          cmake --build build-consumer
+          if ($LASTEXITCODE -ne 0) { throw "consumer build failed" }
