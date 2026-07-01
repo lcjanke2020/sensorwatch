@@ -288,6 +288,43 @@ category to `ReadingType::Unknown`. It ships no compiled
 artifact — it is a source-level convenience for C/C++ consumers, the counterpart to
 the Python binding above.
 
+## Rust binding
+
+The [`rust/`](rust) directory is a two-crate Cargo workspace over the same C ABI —
+the conventional `-sys` split:
+
+- **`sensorwatch-sys`** — raw FFI. Its `build.rs` compiles the C core straight into
+  the crate (with `SW_STATIC`), so there is no separate DLL to locate, and the raw
+  declarations are pre-generated with `bindgen` and checked in, so building needs
+  only a C compiler — never libclang.
+- **`sensorwatch`** — a safe, RAII wrapper.
+
+```rust
+use sensorwatch::Session;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::new()?;   // Err off Windows, or if HWiNFO is down
+    let snapshot = session.snapshot()?;  // an immutable view of all readings
+    println!("{} readings from {}", snapshot.len(), snapshot.source());
+    for reading in &snapshot {
+        let r = reading?;
+        println!("{} / {} = {} {} [{:?}]", r.sensor, r.reading, r.value, r.unit, r.kind);
+    }
+    Ok(())
+}
+```
+
+`Session` and `Snapshot` are move-only handles freed by `Drop` — Rust's ownership
+makes the close/free exactly-once, never-double-free property automatic. A
+`Snapshot` yields `Reading`s (`source`, `sensor`, `reading`, `unit`, `kind`,
+`value`, `minimum`, `maximum`, `average`) via `get()`, iteration, and `to_vec()`.
+Every native (`sw_error_t`) failure surfaces as an `Error` carrying the `code()` and
+message (e.g. `Error::UnsupportedPlatform` off Windows, `Error::SourceUnavailable`
+when HWiNFO isn't running); `kind` is a `ReadingType` that folds any unrecognized
+category to `Unknown`, like the other bindings. Build and test with
+`cargo test` from `rust/`. Publishing to `crates.io` is a separate follow-up
+(LEO-326).
+
 ## Skills
 
 For AI coding agents, [`skills/sensorwatch/`](skills/sensorwatch/) is a portable
@@ -306,14 +343,14 @@ observability toolkit:
   interface (HWiNFO today; UPS, AIDA64, and IPMI next) with stable sensor
   identities and per-reading quality flags.
 - **Optional localhost REST service** for live queries (bound to `127.0.0.1`).
-- **Rust binding** over the native C core — the dependency-free C core (Windows
-  DLL + static library, see [Building the native core](#building-the-native-core-c))
-  and its [Python](#native-binding-cffi) and [C++](#c-binding) bindings ship today;
-  a Rust binding is next.
 - **Agent integration** — AI agents use sensorwatch through the shipped
-  [agent skill](skills/sensorwatch/SKILL.md) over the CLI and Python/C/C++ APIs
+  [agent skill](skills/sensorwatch/SKILL.md) over the CLI and Python/C/C++/Rust APIs
   (see [Skills](#skills)), not a bespoke MCP server. If remote, over-a-protocol
   access is ever needed, it would come through the localhost REST service above.
+
+The [Python](#native-binding-cffi), [C++](#c-binding), and [Rust](#rust-binding)
+bindings over the dependency-free C core (Windows DLL + static library, see
+[Building the native core](#building-the-native-core-c)) all ship today.
 
 See [`SECURITY.md`](SECURITY.md) for the threat model covering these planned
 components.

@@ -111,6 +111,75 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/_prefix" -DCMAKE_BUILD_TYPE=Release
           cmake --build build-consumer -j
 
+  # Rust bindings: the two-crate workspace (sensorwatch-sys raw FFI + sensorwatch
+  # safe wrapper) under rust/. build.rs compiles the C core straight into the -sys
+  # crate via cc (MSVC on Windows, gcc on Linux — both auto-discovered, no Dev Shell
+  # needed for amd64). On ubuntu the tests assert Error::UnsupportedPlatform (the
+  # graceful non-Windows path); on windows the live-snapshot test self-skips when
+  # HWiNFO is not running. No libclang here — the FFI bindings are checked in; the
+  # separate bindgen-drift job re-generates them and fails on any drift.
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Toolchain info
+        run: |
+          rustup component add clippy rustfmt
+          rustup show
+          cargo --version
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy (-D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --workspace --verbose
+      - name: Test
+        run: cargo test --workspace --verbose
+
+  # Regenerate the checked-in FFI bindings and fail if they drift from the header.
+  # The Rust analog of the C++ header-compile check / cffi API-mode drift guard,
+  # relocated to CI so consumers never need libclang. Pins BOTH tools so the output
+  # is byte-reproducible: bindgen 0.72.1 + libclang 18.1.1 (via the PyPI wheel, no
+  # admin). Runs in the VS Dev Shell so clang (msvc target) finds stddef.h/stdint.h.
+  bindgen-drift:
+    name: bindgen drift check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - name: Install pinned bindgen-cli
+        run: cargo install bindgen-cli --version 0.72.1 --locked
+      - name: Regenerate bindings and check for drift
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Pinned libclang (no admin) from the PyPI wheel; clang-sys reads LIBCLANG_PATH.
+          uv venv .libclang-venv
+          uv pip install --python .libclang-venv libclang==18.1.1
+          $env:LIBCLANG_PATH = (Resolve-Path '.libclang-venv/Lib/site-packages/clang/native').Path
+          Write-Host "LIBCLANG_PATH=$env:LIBCLANG_PATH"
+          # Dev Shell so the msvc-target clang resolves the C standard headers.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          if (-not $vs) { throw "No Visual Studio installation found" }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -DevCmdArguments '-arch=x64 -host_arch=x64' -SkipAutomaticLocation | Out-Null
+          bash rust/sensorwatch-sys/regen-bindings.sh
+          if ($LASTEXITCODE -ne 0) { throw "bindgen regeneration failed" }
+          # Any change means the committed bindings are stale (or hand-edited).
+          git diff --exit-code -- rust/sensorwatch-sys/src/bindings.rs
+          if ($LASTEXITCODE -ne 0) {
+            throw "rust/sensorwatch-sys/src/bindings.rs is out of date; run rust/sensorwatch-sys/regen-bindings.sh and commit the result"
+          }
+
   consumer-smoke-windows:
     name: consumer smoke (windows, msvc)
     runs-on: windows-latest

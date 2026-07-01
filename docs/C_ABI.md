@@ -5,9 +5,9 @@ header: a Windows DLL plus a static library built with CMake, with cmocka unit
 tests and an AddressSanitizer/UBSan gate (see "Building the native core" in the
 [README](../README.md)). The ABI itself is still a **pre-1.0 draft** and may change
 during review until the first release carries a stability commitment (see
-[Evolution Policy](#evolution-policy)). A Python binding (cffi, API mode) and a
-header-only C++ binding now ship over this ABI — see [Binding Notes → Python](#python)
-and [→ C++](#c); a Rust binding is not provided yet.
+[Evolution Policy](#evolution-policy)). Python (cffi, API mode), header-only C++,
+and Rust bindings now ship over this ABI — see [Binding Notes → Python](#python),
+[→ C++](#c), and [→ Rust](#rust).
 
 This document defines the stable C ABI for the native sensorwatch core. The ABI is
 designed to be wrapped by Python, C++, Rust, and other languages without exposing
@@ -36,10 +36,9 @@ in [`SECURITY.md`](../SECURITY.md).
 ## Non-goals
 
 - No replacement of the current Python HWiNFO parser yet.
-- No Rust binding yet (a Python cffi binding and a header-only C++ binding now ship
-  over the ABI).
 - No prebuilt standalone DLL distribution or code signing yet (the Python binding
-  ships as binary wheels that statically link the core into the extension).
+  ships as binary wheels that statically link the core into the extension; the Rust
+  `-sys` crate likewise compiles the core straight in).
 - No fuzzing harness yet (planned; the parser is already under ASan/UBSan).
 - No public exposure of HWiNFO shared-memory layout structs.
 - No filesystem logging API in the core ABI.
@@ -447,10 +446,33 @@ handling. From CMake the binding is the `sensorwatch::hpp` target (it propagates
 
 ### Rust
 
-Rust bindings can generate declarations with `bindgen` or maintain small manual
-FFI declarations. Handles should be wrapped in `Drop` types. Query functions that
-fill caller buffers can be exposed as safe `String`-returning methods after a
-length query.
+The shipped Rust bindings live under [`rust/`](../rust) as a two-crate workspace,
+the conventional `-sys` split that isolates the unsafe surface:
+
+- **`sensorwatch-sys`** — the raw `extern "C"` declarations. The FFI is
+  **pre-generated with `bindgen` and checked in**
+  ([`src/bindings.rs`](../rust/sensorwatch-sys/src/bindings.rs)), so building the
+  crate never needs libclang; regeneration is an out-of-band maintainer step
+  ([`regen-bindings.sh`](../rust/sensorwatch-sys/regen-bindings.sh)) and a CI
+  `bindgen-drift` job re-runs it and `git diff --exit-code`s the result, so header
+  drift fails the build (the analog of the cffi API-mode / C++ header-compile
+  check, relocated to CI). Its `build.rs` compiles the C core straight into the
+  crate with `SW_STATIC` — a single artifact, no separate DLL, sidestepping the
+  search-order risk in [`SECURITY.md`](../SECURITY.md) §2.1. The core is compiled on
+  every platform (it returns `SW_ERR_UNSUPPORTED_PLATFORM` off Windows), so the
+  crate links everywhere.
+- **`sensorwatch`** — a safe RAII wrapper. `Session` and `Snapshot` are move-only
+  handles freed by `Drop` (Rust's ownership makes the close/free exactly-once,
+  never-double-free property automatic, with no moved-from state to guard). A
+  `Snapshot` yields `Reading` values (`source`, `sensor`, `reading`, `unit`, `kind`,
+  `value`, `minimum`, `maximum`, `average`) via `get()`, iteration, and a `to_vec()`
+  helper, reading strings through the ABI's length-query-then-copy contract. `kind`
+  is a `ReadingType` enum that folds unrecognized categories to `Unknown` (mirroring
+  the Python/C++ bindings). Every non-`SW_OK` result becomes an `Error` carrying the
+  `sw_error_t` `code()` and the library's `sw_error_string()` text; `Session::new()`
+  first checks the loaded core's ABI (major.minor while pre-1.0), then opens the
+  source — returning `Error::UnsupportedPlatform` off Windows. `crates.io` publishing
+  is a separate follow-up (LEO-326).
 
 ---
 

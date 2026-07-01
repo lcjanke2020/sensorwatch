@@ -2,9 +2,9 @@
 
 **Date**: 2026-06-30
 **Scope**: Windows hardware sensor monitoring toolkit reading HWiNFO64 shared
-memory today through a Python package and CLI, a native C core with Python (cffi)
-and header-only C++ bindings, and a read-only agent skill; with a planned localhost
-REST service and further language bindings (Rust next).
+memory today through a Python package and CLI, a native C core with Python (cffi),
+header-only C++, and Rust bindings, and a read-only agent skill; with a planned
+localhost REST service.
 
 **Methodology**: Code review of the current Python implementation plus
 architectural analysis of planned components. Risk levels are calibrated to what
@@ -17,8 +17,8 @@ cloud service.
 
 **Current implementation**:
 
-- Python package and CLI, plus a native C core with Python (cffi) and header-only
-  C++ bindings.
+- Python package and CLI, plus a native C core with Python (cffi), header-only
+  C++, and Rust bindings.
 - Reads HWiNFO64 shared memory through `sensorwatch.hwinfo_shm` (read-only Win32
   file-mapping APIs via `ctypes`), or through `sensorwatch.native` (a cffi
   API-mode binding over the native C core).
@@ -34,7 +34,6 @@ cloud service.
 
 **Planned components covered by this threat model**:
 
-- Further language bindings over the C ABI (Rust next).
 - Optional localhost REST service. (sensorwatch does not plan a separate MCP
   server: local agents use the shipped skill over the CLI/API, and any future
   remote, over-a-protocol access would be served by this REST service — see §4.)
@@ -193,10 +192,12 @@ Python binding
 Windows searches multiple directories. An attacker who can place a malicious DLL
 in a searched directory can execute code in the caller process.
 
-**The shipped Python binding avoids this by construction**: `sensorwatch.native`
-compiles the C core into its own extension module (`SW_STATIC`), so no separate
-DLL is loaded and there is no name-based search to hijack. The mitigations below
-apply to C/C++ consumers of the standalone CMake-built `sensorwatch.dll`.
+**The shipped Python and Rust bindings avoid this by construction**:
+`sensorwatch.native` compiles the C core into its own extension module
+(`SW_STATIC`), and the Rust `sensorwatch-sys` crate's `build.rs` compiles it into
+the crate the same way — so neither loads a separate DLL and there is no name-based
+search to hijack. The mitigations below apply to C/C++ consumers of the standalone
+CMake-built `sensorwatch.dll`.
 
 **Mitigations**:
 
@@ -515,16 +516,17 @@ change could warn when the log directory appears broadly writable/readable.
 | 5 | Consider replacing `pendulum` with stdlib `datetime` | 6.1, 8.3 | Open |
 | 6 | Document or check log-directory privacy expectations | 5.2, 8.4 | Open |
 
-### Native C ABI / DLL and Python/C++ bindings
+### Native C ABI / DLL and Python/C++/Rust bindings
 
 | # | Requirement | Section | Status |
 |---|-------------|---------|--------|
-| 1 | Avoid name-based DLL search in the Python binding (static-link the core into the extension) | 2.1, 2.2 | Done (cffi binding) |
+| 1 | Avoid name-based DLL search in the Python and Rust bindings (static-link the core into the extension/crate) | 2.1, 2.2 | Done (cffi + Rust `-sys`) |
 | 2 | Keep native core runtime dependency-free beyond system libraries | 2.1, 6.1 | Done |
 | 3 | Preserve copy-then-parse model; expose immutable snapshots, not raw pointers | 1.3 | Done |
 | 4 | Return explicit error codes for source unavailable vs corrupt data | 1.3 | Done |
 | 5 | Run native parser tests under sanitizers and fuzzing | 1.3, 6.2 | ASan/UBSan done; fuzzing planned |
 | 6 | Keep the C++ binding header-only (no compiled artifact, no ABI of its own) over the same `extern "C"` boundary | 2.1 | Done |
+| 7 | Keep the Rust `-sys` FFI auditable: checked-in bindgen output with a CI drift check, no libclang at build time | 2.1 | Done |
 
 ### Planned REST Service
 

@@ -1,0 +1,8 @@
+# Keep the checked-in bindgen output line-ending-stable so the CI bindgen-drift
+# diff is deterministic across Windows and Linux runners (whose git autocrlf
+# defaults differ, and where bindgen may emit CRLF vs LF). git normalizes this
+# file to LF for storage and comparison on every platform.
+/rust/sensorwatch-sys/src/bindings.rs text eol=lf
+
+# Shell scripts must stay LF to run under bash (including Git Bash on Windows).
+*.sh text eol=lf

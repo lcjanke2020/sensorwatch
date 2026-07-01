@@ -1,0 +1,14 @@
+[package]
+name = "sensorwatch"
+description = "Safe, idiomatic Rust bindings for reading hardware sensors through the sensorwatch native core (Windows / HWiNFO shared memory)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["hardware", "sensors", "monitoring", "hwinfo", "ffi"]
+categories = ["api-bindings", "hardware-support"]
+
+[dependencies]
+sensorwatch-sys = { path = "../sensorwatch-sys", version = "0.1.0" }
