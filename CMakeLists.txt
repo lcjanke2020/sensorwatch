@@ -41,6 +41,14 @@ option(SW_INSTALL "Generate install() + find_package(sensorwatch CONFIG) rules" 
 # targets below because their $<INSTALL_INTERFACE:> uses CMAKE_INSTALL_INCLUDEDIR.
 include(GNUInstallDirs)
 
+# Public include interface shared by all consumable targets: $<BUILD_INTERFACE:>
+# keeps the absolute source path out of the exported interface (install(EXPORT)
+# rejects source-tree paths); $<INSTALL_INTERFACE:> points installed consumers at
+# <prefix>/include. Declared once so the three targets stay consistent.
+set(SW_PUBLIC_INCLUDES
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
 # --- Sanitizers: applied globally (before any targets) so the sanitizer runtime
 #     is consistent across our code and cmocka. ---
 if(SW_ENABLE_ASAN)
@@ -82,14 +90,7 @@ set(SW_SOURCES
 # Shared library (the shipped DLL). SW_BUILD_DLL drives SW_API -> dllexport.
 if(SW_BUILD_SHARED)
     add_library(sensorwatch SHARED ${SW_SOURCES})
-    # $<BUILD_INTERFACE:> keeps the absolute source path out of the exported
-    # interface (install(EXPORT) rejects source-tree paths); $<INSTALL_INTERFACE:>
-    # points installed consumers at <prefix>/include.
-    target_include_directories(sensorwatch
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-        PRIVATE src)
+    target_include_directories(sensorwatch PUBLIC ${SW_PUBLIC_INCLUDES} PRIVATE src)
     target_compile_definitions(sensorwatch PRIVATE SW_BUILD_DLL)
     set_target_properties(sensorwatch PROPERTIES C_VISIBILITY_PRESET hidden)
     # In-tree alias matching the exported name, so add_subdirectory and
@@ -102,11 +103,7 @@ endif()
 # parser, decode helpers) and compile against an undecorated ABI (SW_STATIC).
 if(SW_BUILD_STATIC OR SW_BUILD_TESTS)
     add_library(sensorwatch_static STATIC ${SW_SOURCES})
-    target_include_directories(sensorwatch_static
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-        PRIVATE src)
+    target_include_directories(sensorwatch_static PUBLIC ${SW_PUBLIC_INCLUDES} PRIVATE src)
     # PUBLIC so it propagates through the export: a consumer linking the static
     # lib compiles with SW_STATIC (undecorated SW_API, no dllimport).
     target_compile_definitions(sensorwatch_static PUBLIC SW_STATIC)
@@ -120,20 +117,20 @@ endif()
 # C libraries (sensorwatch_static with SW_STATIC, or the DLL). It ships no compiled
 # artifact of its own, so it is always available regardless of SW_BUILD_* toggles.
 add_library(sensorwatch_hpp INTERFACE)
-target_include_directories(sensorwatch_hpp INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_include_directories(sensorwatch_hpp INTERFACE ${SW_PUBLIC_INCLUDES})
 # Export as sensorwatch::hpp (not sensorwatch::sensorwatch_hpp) to match the alias.
 set_target_properties(sensorwatch_hpp PROPERTIES EXPORT_NAME hpp)
 add_library(sensorwatch::hpp ALIAS sensorwatch_hpp)
 
-# Propagate the C++17 floor to consumers so linking sensorwatch::hpp under an older
-# standard is a clear error, not a cryptic header failure -- but only when a C++
-# compiler is available. The project is declared LANGUAGES C, and requesting
+# Propagate the C++17 floor to consumers via the target's usage requirements, so
+# linking sensorwatch::hpp under an older standard is a clear error -- but only when
+# a C++ compiler is available. The project is declared LANGUAGES C, and requesting
 # cxx_std_17 requires CXX to be enabled, so on a pure-C toolchain (or with
 # -DSW_BUILD_TESTS=OFF) this would otherwise fail to configure. enable_language(CXX)
-# here is a no-op if CXX is already enabled (e.g. by the test block below). (An
-# install/export with $<INSTALL_INTERFACE:include> is a deferred follow-up.)
+# here is a no-op if CXX is already enabled (e.g. by the test block below). This
+# feature is absent from the exported target only when the *installing* toolchain
+# had no C++ compiler; the header itself #errors below C++17 regardless, so the
+# floor is enforced for every consumer independent of install provenance.
 include(CheckLanguage)
 check_language(CXX)
 if(CMAKE_CXX_COMPILER)

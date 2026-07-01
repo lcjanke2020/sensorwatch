@@ -206,7 +206,11 @@ cmake --install build --prefix /path/to/prefix
 
 ```cmake
 find_package(sensorwatch CONFIG REQUIRED)
-target_link_libraries(app PRIVATE sensorwatch::hpp)  # or the C libraries
+# The header-only C++ binding supplies no ABI implementation of its own, so pair it
+# with a C core (the static lib here; sensorwatch::sensorwatch links the DLL instead):
+target_link_libraries(app PRIVATE sensorwatch::hpp sensorwatch::sensorwatch_static)
+# A pure-C app links a C library directly:
+#   target_link_libraries(app PRIVATE sensorwatch::sensorwatch_static)  # or sensorwatch::sensorwatch (DLL)
 ```
 
 Point CMake at the prefix with `-DCMAKE_PREFIX_PATH=/path/to/prefix` when configuring
