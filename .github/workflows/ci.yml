@@ -155,7 +155,16 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      # Cache the compiled bindgen binary (keyed on the pinned version) so the
+      # ~2-3 min `cargo install` build only runs on the first miss, not every PR.
+      - name: Cache bindgen-cli
+        id: cache-bindgen
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.cargo/bin/bindgen.exe
+          key: bindgen-cli-0.72.1-${{ runner.os }}
       - name: Install pinned bindgen-cli
+        if: steps.cache-bindgen.outputs.cache-hit != 'true'
         run: cargo install bindgen-cli --version 0.72.1 --locked
       - name: Regenerate bindings and check for drift
         shell: pwsh
@@ -179,6 +188,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "rust/sensorwatch-sys/src/bindings.rs is out of date; run rust/sensorwatch-sys/regen-bindings.sh and commit the result"
           }
+
+  # Verify the declared MSRV (rust-version = 1.82, the floor for bindgen's
+  # `unsafe extern` blocks) actually builds — the `rust` job above uses the
+  # runner's default stable, which would hide an accidental newer-than-1.82
+  # feature. `cargo check --all-targets` runs build.rs (so the C core is compiled
+  # via cc) and type-checks the crates and their tests on 1.82.
+  rust-msrv:
+    name: rust MSRV (1.82)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Install Rust 1.82.0
+        run: |
+          rustup toolchain install 1.82.0 --profile minimal
+          rustup override set 1.82.0
+          rustc --version
+      - name: Check on MSRV
+        run: cargo +1.82.0 check --workspace --all-targets --locked
 
   consumer-smoke-windows:
     name: consumer smoke (windows, msvc)

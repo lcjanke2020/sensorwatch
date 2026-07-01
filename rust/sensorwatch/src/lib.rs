@@ -258,7 +258,12 @@ pub fn check_abi_compatibility() -> Result<()> {
 /// The strings are owned, so a `Reading` outlives the [`Snapshot`] it came from.
 /// Fields and order mirror the Python/C++ bindings' reading shape (the ABI's `type`
 /// is spelled `kind` here, since `type` is a Rust keyword).
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Equality is NaN-reflexive on the scalar fields: the C core copies raw doubles out
+/// of the source buffer, so a `Reading` may carry NaN, and a derived `PartialEq`
+/// (where `NaN != NaN`) would make such a `Reading` compare unequal to itself. This
+/// mirrors the C++ binding's `detail::scalar_equal`.
+#[derive(Debug, Clone)]
 pub struct Reading {
     /// The source/backend identity shared by every reading (e.g. `"HWiNFO"`).
     pub source: String,
@@ -278,6 +283,26 @@ pub struct Reading {
     pub maximum: f64,
     /// The average value observed by the source.
     pub average: f64,
+}
+
+/// Scalar equality that stays reflexive for NaN (`NaN == NaN` here), so a
+/// NaN-carrying [`Reading`] compares equal to itself. Mirrors the C++ binding.
+fn scalar_eq(a: f64, b: f64) -> bool {
+    a == b || (a.is_nan() && b.is_nan())
+}
+
+impl PartialEq for Reading {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.sensor == other.sensor
+            && self.reading == other.reading
+            && self.unit == other.unit
+            && self.kind == other.kind
+            && scalar_eq(self.value, other.value)
+            && scalar_eq(self.minimum, other.minimum)
+            && scalar_eq(self.maximum, other.maximum)
+            && scalar_eq(self.average, other.average)
+    }
 }
 
 // Pointers to the scalar / string snapshot accessors, so build_reading can share
@@ -307,7 +332,10 @@ fn query_string(
         check(code)?;
         return Err(Error::Internal); // unreachable: SW_OK from a length query breaks the contract
     }
-    if needed > MAX_STRING_BYTES {
+    // The contract guarantees `needed >= 1` (it counts the NUL); a 0 here is a
+    // contract violation, and a value past the cap signals a fault, not a real
+    // string worth allocating for. Both surface as CorruptData.
+    if needed == 0 || needed > MAX_STRING_BYTES {
         return Err(Error::CorruptData);
     }
     let mut buffer = vec![0u8; needed];
@@ -327,15 +355,26 @@ fn query_string(
 
 /// An immutable snapshot of all readings, owning its own data copy.
 ///
-/// Move-only (no `Clone`), freed by [`Drop`]. All accessors take `&self`; the type
-/// is not `Sync`, so the ABI's "queries are safe on a live snapshot" holds without
-/// exposing it to unsynchronized cross-thread use. Extract [`Reading`]s (which are
-/// owned and `Send`) to move data across threads.
+/// Move-only (no `Clone`), freed by [`Drop`]. It is both [`Send`] and [`Sync`]: the
+/// snapshot owns an immutable copy of its data (the C core copies the source bytes
+/// into snapshot-owned memory and exposes only read-only queries), and the C ABI
+/// documents its query functions as safe to call concurrently on a live snapshot —
+/// so a `Snapshot` can be shared across threads for parallel reads.
 pub struct Snapshot {
     ptr: *mut sys::sw_snapshot_t,
     len: u32,
     source: String,
 }
+
+// SAFETY: A Snapshot owns an immutable, self-contained copy of the readings; every
+// accessor is `&self` and read-only, and the C ABI documents snapshot queries as
+// safe to call concurrently on a live snapshot ("thread-safe for a live immutable
+// snapshot"). sw_snapshot_free runs exactly once, via Drop, on the sole owner. So
+// sharing `&Snapshot` across threads (Sync) and moving it between threads (Send) are
+// both sound. The raw pointer only makes the type conservatively !Send/!Sync by
+// default; these impls restore the thread-safety the ABI actually guarantees.
+unsafe impl Send for Snapshot {}
+unsafe impl Sync for Snapshot {}
 
 impl Snapshot {
     /// Adopt a snapshot returned by `sw_snapshot_take`.
@@ -507,9 +546,22 @@ impl<'a> IntoIterator for &'a Snapshot {
 /// Move-only, closed by [`Drop`]. [`new`](Session::new) verifies the ABI and opens
 /// the source, returning [`Error::UnsupportedPlatform`] off Windows or
 /// [`Error::SourceUnavailable`] when the source is not running.
+///
+/// A `Session` is [`Send`] (it can be moved to another thread) but deliberately not
+/// [`Sync`]: the C ABI requires callers to synchronize concurrent use of one
+/// session, and [`snapshot`](Session::snapshot) takes `&mut self`, so each call
+/// needs exclusive access.
 pub struct Session {
     ptr: *mut sys::sw_session_t,
 }
+
+// SAFETY: A Session owns its handle uniquely; the underlying Win32 file mapping is
+// process-global rather than thread-affine, so moving the handle to another thread
+// and using it there (Send) is sound. It is intentionally NOT Sync: the ABI marks a
+// session as session-bound (callers must synchronize concurrent use), and snapshot()
+// takes &mut self. Adding only `Send` leaves the type !Sync (the raw pointer already
+// makes it so), which is exactly the intended Send + !Sync.
+unsafe impl Send for Session {}
 
 impl Session {
     /// Open a session for the default sensor source.

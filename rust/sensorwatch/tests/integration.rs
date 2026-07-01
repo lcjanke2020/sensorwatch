@@ -7,18 +7,48 @@
 //! test asserts `Session::new()` reports `UnsupportedPlatform`.
 
 use sensorwatch::{
-    abi_version, check_abi_compatibility, sys, Error, Reading, ReadingType, Session,
+    abi_version, check_abi_compatibility, sys, Error, Reading, ReadingType, Session, Snapshot,
 };
 
-// `Reading` (and the value types) are owned and thread-safe, so data can be
-// extracted from a `!Send` `Snapshot` and moved across threads.
+// Thread-safety markers, asserted at compile time. The owned value types are
+// Send + Sync; an immutable Snapshot is Send + Sync (the ABI documents its queries
+// as safe to call concurrently on a live snapshot); a Session is Send but not Sync
+// (the ABI requires synchronizing concurrent use of one session).
+fn assert_send<T: Send>() {}
 fn assert_send_sync<T: Send + Sync>() {}
 
 #[test]
-fn value_types_are_send_sync() {
+fn thread_safety_markers() {
     assert_send_sync::<Reading>();
     assert_send_sync::<Error>();
     assert_send_sync::<ReadingType>();
+    assert_send_sync::<Snapshot>();
+    assert_send::<Session>();
+}
+
+#[test]
+fn reading_equality_is_nan_reflexive() {
+    // The C core copies raw doubles, so a Reading may carry NaN. Equality must stay
+    // reflexive (mirrors the C++ binding); a derived PartialEq would make NaN != NaN
+    // and could make the live-snapshot assert_eq! checks flaky.
+    let a = Reading {
+        source: "HWiNFO".to_string(),
+        sensor: "S".to_string(),
+        reading: "R".to_string(),
+        unit: String::new(),
+        kind: ReadingType::Temperature,
+        value: f64::NAN,
+        minimum: f64::NAN,
+        maximum: 0.0,
+        average: 1.0,
+    };
+    let b = a.clone();
+    assert_eq!(a, b); // a NaN-carrying Reading equals its clone...
+    assert_eq!(a, a.clone());
+
+    let mut c = a.clone();
+    c.value = 2.0; // ...but a finite value differs from a NaN one
+    assert_ne!(a, c);
 }
 
 #[test]
