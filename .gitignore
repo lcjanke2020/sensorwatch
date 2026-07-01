@@ -21,6 +21,9 @@ build/
 /Release/
 wheelhouse/
 
+# Rust (cargo build output). Cargo.lock IS committed for reproducible CI builds.
+/rust/target/
+
 # Tooling / editor
 .claude/
 *.un~

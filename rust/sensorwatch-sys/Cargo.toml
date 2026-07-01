@@ -1,0 +1,21 @@
+[package]
+name = "sensorwatch-sys"
+description = "Raw FFI declarations for the sensorwatch native C ABI (see include/sensorwatch/sensorwatch.h)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+# `links` reserves the native library name so at most one copy of the C core is
+# linked into any final artifact, and lets downstream -sys-style crates find us.
+# The core is compiled *into* this crate by build.rs; there is no external lib.
+links = "sensorwatch"
+build = "build.rs"
+
+# The FFI declarations are checked in (src/bindings.rs); bindgen is NOT a build
+# dependency, so building this crate needs only a C compiler, never libclang.
+# Regeneration is an out-of-band maintainer step — see regen-bindings.sh and the
+# CI `bindgen-drift` job.
+[build-dependencies]
+cc = "1.2"

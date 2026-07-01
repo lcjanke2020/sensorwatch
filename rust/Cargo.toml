@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["sensorwatch-sys", "sensorwatch"]
+
+# Shared metadata for both crates. crates.io publishing (name reservation, OIDC
+# trusted publishing, the two-crate ordered publish) is tracked separately in
+# LEO-326; these fields are filled in now so that follow-up is packaging-only.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/lcjanke2020/sensorwatch"
+authors = ["Leonard Janke"]
+# bindgen emits `unsafe extern "C"` blocks (stabilized in Rust 1.82), so that is
+# the effective floor for the -sys crate and hence the workspace.
+rust-version = "1.82"
