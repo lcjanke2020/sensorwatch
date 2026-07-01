@@ -7,8 +7,14 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+readme = "README.md"
 keywords = ["hardware", "sensors", "monitoring", "hwinfo", "ffi"]
 categories = ["api-bindings", "hardware-support"]
+# Ship the library, docs, and license only — not the integration tests.
+include = ["src/lib.rs", "README.md", "LICENSE"]
 
 [dependencies]
-sensorwatch-sys = { path = "../sensorwatch-sys", version = "0.1.0" }
+# `path` is used for local workspace development; `cargo publish` ignores it and
+# depends on the exact published version. The `=` pin keeps the safe wrapper and the
+# raw -sys crate in lockstep (they are released together, versions in step).
+sensorwatch-sys = { path = "../sensorwatch-sys", version = "=0.1.0" }

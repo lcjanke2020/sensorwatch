@@ -1,0 +1,79 @@
+name: Publish to crates.io
+
+# Fires when a GitHub Release tagged `rust-vX.Y.Z` is published, and publishes the two
+# Rust crates to crates.io via OIDC trusted publishing — no stored CARGO_REGISTRY_TOKEN.
+# The `rust-v` tag prefix keeps Rust releases independent from the Python package's PyPI
+# releases (tagged `vX.Y.Z`), which fire .github/workflows/publish.yml; each workflow
+# guards on the other's tag so a release only touches its own registry.
+#
+# Prerequisites (one-time, configured on crates.io by the maintainer — see CONTRIBUTING
+# "Releasing the Rust crates"):
+#   - Both crate names claimed by an initial manual publish (crates.io has no
+#     pending-publisher flow, so the crate must exist before the repo can be linked).
+#   - A Trusted Publisher on EACH crate (sensorwatch-sys and sensorwatch): owner
+#     lcjanke2020, repo sensorwatch, workflow publish-crates.yml, environment release.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Serialize crate releases: if two `rust-v*` releases ever fire close together, run them
+# one at a time. Never cancel an in-flight publish — a half-completed ordered publish
+# (sys uploaded, wrapper not) is worse than waiting.
+concurrency:
+  group: publish-crates
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish crates (OIDC trusted publishing)
+    # Only Rust releases. Plain `vX.Y.Z` releases are the Python package (publish.yml).
+    if: ${{ startsWith(github.event.release.tag_name, 'rust-v') }}
+    runs-on: ubuntu-latest  # verify build compiles the vendored C with gcc; no Windows lib is linked.
+    environment: release    # safe with a blank crates.io environment field; set it to `release` there to add a protection gate.
+    permissions:
+      id-token: write   # required: crates-io-auth-action exchanges the GHA OIDC token for a short-lived crates.io token
+      contents: read
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Toolchain info
+        run: |
+          rustup component add clippy rustfmt
+          rustup show
+          cargo --version
+      # Gate: publish only code that clears the same bar as CI (mirrors the `rust` job).
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy (-D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked --verbose
+      - name: Authenticate to crates.io (OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18  # v1.0.5
+      # Ordered publish: the -sys crate first, then the wrapper, which depends on the
+      # exact `=x.y.z` just published. cargo waits for each publish to land in the index
+      # before returning; the retry loop is belt-and-suspenders for the wrapper in case
+      # the sys crate has not propagated to the resolver by the time it runs.
+      - name: Publish sensorwatch-sys
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p sensorwatch-sys
+      - name: Publish sensorwatch
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if cargo publish -p sensorwatch; then
+              exit 0
+            fi
+            echo "wrapper publish attempt $attempt failed (sensorwatch-sys may not be indexed yet); retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::sensorwatch failed to publish after 5 attempts"
+          exit 1

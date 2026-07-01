@@ -70,6 +70,11 @@ read-only (see [`SECURITY.md`](SECURITY.md)).
 
 ## Releasing
 
+The Python package and the Rust crates release independently, on distinct tags:
+`vX.Y.Z` → PyPI, `rust-vX.Y.Z` → crates.io. Each workflow ignores the other's tag.
+
+### Python package (PyPI)
+
 _(Maintainers.)_ Releases publish to [PyPI](https://pypi.org/project/sensorwatch/)
 automatically via GitHub Actions OIDC **trusted publishing** — no stored token,
 no manual upload. Publishing the GitHub Release fires
@@ -106,6 +111,64 @@ without touching real PyPI. Configure a matching pending publisher on
 environment `testpypi`), then run the **Publish to TestPyPI (dry run)** workflow
 from the Actions tab (it's manually triggered and safely repeatable). TestPyPI
 and PyPI are fully independent registries, so each needs its own publisher.
+
+### Rust crates (crates.io)
+
+_(Maintainers.)_ The Rust crates (`sensorwatch-sys` + `sensorwatch`, under `rust/`)
+publish to [crates.io](https://crates.io/crates/sensorwatch) via GitHub Actions OIDC
+**trusted publishing** — no stored `CARGO_REGISTRY_TOKEN`. A GitHub Release tagged
+`rust-vX.Y.Z` fires
+[`.github/workflows/publish-crates.yml`](.github/workflows/publish-crates.yml), which
+runs the fmt/clippy/test gate and then publishes `sensorwatch-sys` first, then the
+`sensorwatch` wrapper (which pins the exact `=X.Y.Z`).
+
+```sh
+# 1. Bump the workspace version in rust/Cargo.toml ([workspace.package] version) AND
+#    the wrapper's exact pin (rust/sensorwatch/Cargo.toml: sensorwatch-sys = "=X.Y.Z"),
+#    then refresh the lock:
+( cd rust && cargo update -p sensorwatch-sys -p sensorwatch )
+
+# 2. master is branch-protected, so land the bump via a PR:
+git switch -c rust-release-vX.Y.Z
+git commit -am "release: rust-vX.Y.Z"
+git push -u origin rust-release-vX.Y.Z
+gh pr create --fill
+#    ...then, once CI is green and approved:
+gh pr merge --squash --delete-branch
+
+# 3. Cut the release on master — creates the rust-vX.Y.Z tag and fires the workflow:
+gh release create rust-vX.Y.Z --target master --generate-notes
+```
+
+**One-time setup before the first release.** crates.io has no "pending publisher" flow
+(unlike PyPI), so the crates must exist before the repo can be linked. Log in to
+crates.io (via GitHub), create a publish-scoped API token, then claim both names with a
+single manual publish (validate the tarball with `--dry-run` first):
+
+```sh
+cd rust
+cargo publish --dry-run -p sensorwatch-sys
+cargo publish -p sensorwatch-sys     # claims the name; wait for the index, then:
+cargo publish -p sensorwatch
+```
+
+Then add a **Trusted Publisher** to **each** crate on crates.io (crate → Settings →
+Trusted Publishing): owner `lcjanke2020`, repo `sensorwatch`, workflow
+`publish-crates.yml`, environment `release` (blank also works; setting it to `release`
+lets you gate releases behind a GitHub `release` environment protection rule).
+
+**Keeping the vendored C core in sync.** `sensorwatch-sys` ships a copy of the C core
+under `rust/sensorwatch-sys/vendor/` so the published crate builds from source without
+the rest of the repo. It must stay a verbatim mirror of `src/` + `include/`; the CI
+`vendor-sync` job enforces this. After changing any C source or the public header,
+re-copy and commit:
+
+```sh
+rm -rf rust/sensorwatch-sys/vendor
+mkdir -p rust/sensorwatch-sys/vendor/src rust/sensorwatch-sys/vendor/include/sensorwatch
+cp src/*.c src/*.h rust/sensorwatch-sys/vendor/src/
+cp include/sensorwatch/sensorwatch.h rust/sensorwatch-sys/vendor/include/sensorwatch/
+```
 
 ## Reporting bugs
 

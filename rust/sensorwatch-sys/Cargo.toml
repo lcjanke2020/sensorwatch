@@ -1,12 +1,25 @@
 [package]
 name = "sensorwatch-sys"
-description = "Raw FFI declarations for the sensorwatch native C ABI (see include/sensorwatch/sensorwatch.h)"
+description = "Raw FFI declarations for the sensorwatch native C ABI (public header vendored at vendor/include/sensorwatch/sensorwatch.h)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+readme = "README.md"
+# Ship only what a from-source build needs: the vendored C core, the checked-in FFI
+# bindings, build.rs, and the crate docs/license. Maintainer-only tooling
+# (regen-bindings.sh, wrapper.h) is deliberately kept out of the published tarball.
+# Verify the result with `cargo package --list -p sensorwatch-sys`.
+include = [
+    "build.rs",
+    "src/lib.rs",
+    "src/bindings.rs",
+    "vendor/**",
+    "README.md",
+    "LICENSE",
+]
 # `links` reserves the native library name so at most one copy of the C core is
 # linked into any final artifact, and lets downstream -sys-style crates find us.
 # The core is compiled *into* this crate by build.rs; there is no external lib.

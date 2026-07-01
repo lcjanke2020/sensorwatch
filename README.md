@@ -321,9 +321,11 @@ makes the close/free exactly-once, never-double-free property automatic. A
 Every native (`sw_error_t`) failure surfaces as an `Error` carrying the `code()` and
 message (e.g. `Error::UnsupportedPlatform` off Windows, `Error::SourceUnavailable`
 when HWiNFO isn't running); `kind` is a `ReadingType` that folds any unrecognized
-category to `Unknown`, like the other bindings. Build and test with
-`cargo test` from `rust/`. Publishing to `crates.io` is a separate follow-up
-(LEO-326).
+category to `Unknown`, like the other bindings. Build and test the workspace with
+`cargo test` from `rust/`. The crates publish to
+[crates.io](https://crates.io/crates/sensorwatch) via OIDC trusted publishing (see
+[CONTRIBUTING](CONTRIBUTING.md#releasing)); once published, add them with
+`cargo add sensorwatch` (the safe wrapper pulls in `sensorwatch-sys`).
 
 ## Skills
 
