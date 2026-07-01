@@ -46,7 +46,7 @@ mkdir -p src
   --no-layout-tests \
   --no-doc-comments \
   -- \
-  -I ../../include \
+  -I vendor/include \
   --target=x86_64-pc-windows-msvc
 
 # Line endings: bindgen may emit CRLF on Windows and LF on Linux, but the file is

@@ -189,6 +189,36 @@ jobs:
             throw "rust/sensorwatch-sys/src/bindings.rs is out of date; run rust/sensorwatch-sys/regen-bindings.sh and commit the result"
           }
 
+  # Keep the vendored C core (rust/sensorwatch-sys/vendor/**) a verbatim mirror of the
+  # canonical src/ + include/. sensorwatch-sys ships that copy so `cargo publish`
+  # produces a self-contained crate — cargo only packages files under the crate dir, so
+  # build.rs compiles from vendor/, never ../../src. This job re-copies the canonical
+  # sources and fails on any drift: the same checked-in-plus-CI-diff guard used for the
+  # generated bindings above, and the reason build.rs can trust the vendored tree.
+  # Plain file copy + git diff, so no toolchain is needed.
+  vendor-sync:
+    name: vendor sync check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Re-copy canonical C core into the vendored mirror
+        # MUST stay byte-identical to the copy documented in CONTRIBUTING "Releasing"
+        # (and used to create the tree) so a clean checkout round-trips to no diff.
+        run: |
+          rm -rf rust/sensorwatch-sys/vendor
+          mkdir -p rust/sensorwatch-sys/vendor/src rust/sensorwatch-sys/vendor/include/sensorwatch
+          cp src/*.c src/*.h rust/sensorwatch-sys/vendor/src/
+          cp include/sensorwatch/sensorwatch.h rust/sensorwatch-sys/vendor/include/sensorwatch/
+      - name: Check for drift
+        # Stage first so an ADDED or REMOVED vendored file is caught too, not just an
+        # edit (a bare `git diff` ignores untracked files).
+        run: |
+          git add -A rust/sensorwatch-sys/vendor
+          if ! git diff --cached --exit-code -- rust/sensorwatch-sys/vendor; then
+            echo "::error::rust/sensorwatch-sys/vendor drifted from canonical src/ + include/. Re-copy per CONTRIBUTING \"Releasing\" and commit the result."
+            exit 1
+          fi
+
   # Verify the declared MSRV (rust-version = 1.82, the floor for bindgen's
   # `unsafe extern` blocks) actually builds — the `rust` job above uses the
   # runner's default stable, which would hide an accidental newer-than-1.82

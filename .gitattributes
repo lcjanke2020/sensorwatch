@@ -6,3 +6,9 @@
 
 # Shell scripts must stay LF to run under bash (including Git Bash on Windows).
 *.sh text eol=lf
+
+# The vendored C core (a verbatim mirror of src/ + include/, published inside the
+# sensorwatch-sys crate) is pinned to LF so the CI `vendor-sync` diff is deterministic
+# across Windows and Linux runners regardless of a contributor's autocrlf setting —
+# same rationale as the bindings.rs rule above. The canonical sources are already LF.
+/rust/sensorwatch-sys/vendor/** text eol=lf

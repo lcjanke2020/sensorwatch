@@ -1,11 +1,18 @@
 // Build script for sensorwatch-sys.
 //
-// Compiles the sensorwatch C core (../../src) straight into this -sys crate as a
-// static archive, with SW_STATIC defined so SW_API is undecorated. This is the
-// "static library into the crate" approach: a single self-contained artifact, no
+// Compiles the sensorwatch C core (vendored under vendor/) straight into this -sys
+// crate as a static archive, with SW_STATIC defined so SW_API is undecorated. This is
+// the "static library into the crate" approach: a single self-contained artifact, no
 // separate DLL to locate at runtime — which sidesteps the DLL search-order risk in
 // SECURITY.md §2.1 entirely, exactly as the Python cffi binding (which likewise
 // compiles src/*.c into its extension) and the C++/CMake static path do.
+//
+// The C is *vendored* (vendor/src, vendor/include) rather than read from the repo's
+// canonical ../../src + ../../include, because `cargo publish` only packages files
+// beneath the crate directory: a published sensorwatch-sys must carry its own copy of
+// the sources to build on a consumer machine. The vendored tree is a verbatim mirror
+// of the canonical core, kept in lockstep by the CI `vendor-sync` job
+// (git diff --exit-code); building always uses vendor/, in-repo and published alike.
 //
 // The C is compiled on EVERY platform, not gated behind cfg(windows). The core is
 // portable: its session layer returns SW_ERR_UNSUPPORTED_PLATFORM off Windows
@@ -31,14 +38,12 @@ const SOURCES: &[&str] = &[
 ];
 
 fn main() {
-    // CARGO_MANIFEST_DIR is rust/sensorwatch-sys; the repo root is two levels up.
+    // The vendored C core lives under <crate>/vendor (see the module comment); this
+    // is what makes the published crate self-contained.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("sensorwatch-sys must live at <repo>/rust/sensorwatch-sys");
-    let src_dir = repo_root.join("src");
-    let include_dir = repo_root.join("include");
+    let vendor_dir = manifest_dir.join("vendor");
+    let src_dir = vendor_dir.join("src");
+    let include_dir = vendor_dir.join("include");
 
     let mut build = cc::Build::new();
     build

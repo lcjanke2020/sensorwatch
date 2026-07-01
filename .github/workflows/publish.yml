@@ -10,6 +10,10 @@ name: Publish to PyPI
 # sdist lets other platforms build from source. The publish step runs on Linux
 # because pypa/gh-action-pypi-publish is a Docker action.
 #
+# This is the PyPI (Python package) release, tagged `vX.Y.Z`. The Rust crates release
+# on `rust-vX.Y.Z` tags via publish-crates.yml; the build jobs below skip those so a
+# Rust release never touches PyPI.
+#
 # Prerequisites (one-time, configured on PyPI by the maintainer):
 #   - A trusted publisher for this repo: owner/repo, workflow `publish.yml`,
 #     environment `pypi`. See CONTRIBUTING.md "Releasing".
@@ -23,6 +27,8 @@ permissions:
 jobs:
   build-wheels:
     name: Build Windows wheels (cibuildwheel)
+    # Skip Rust crate releases (rust-vX.Y.Z) — those publish to crates.io, not PyPI.
+    if: ${{ !startsWith(github.event.release.tag_name, 'rust-v') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -45,6 +51,8 @@ jobs:
 
   build-sdist:
     name: Build sdist + test gate
+    # Skip Rust crate releases (rust-vX.Y.Z) — those publish to crates.io, not PyPI.
+    if: ${{ !startsWith(github.event.release.tag_name, 'rust-v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0

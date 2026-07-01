@@ -420,6 +420,15 @@ publishing with PEP 740 attestations covering every uploaded file (wheels and th
 sdist); `uv.lock` pins the build toolchain. The sdist stays buildable from source
 for platforms without a prebuilt wheel.
 
+The Rust crates (`sensorwatch-sys` + `sensorwatch`) publish to crates.io the same
+tokenless way — GitHub Actions OIDC trusted publishing (`rust-lang/crates-io-auth-action`),
+no stored `CARGO_REGISTRY_TOKEN`, gated on a reviewed `rust-v*` release and the
+fmt/clippy/test suite. `sensorwatch-sys` vendors the C core (`vendor/`, a CI-enforced
+verbatim mirror of `src/` + `include/`) so consumers build the same audited sources
+from crates.io; `Cargo.lock` is committed. crates.io has no built-in PEP 740 / SLSA
+attestation equivalent — build provenance (e.g. `cargo-auditable`, GitHub artifact
+attestation) is a possible future addition, not yet wired.
+
 ---
 
 ## 7. Privilege Escalation
