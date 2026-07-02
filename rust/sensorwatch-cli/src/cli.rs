@@ -31,8 +31,13 @@ pub struct SnapshotArgs {
     #[arg(long, value_name = "SUBSTRING")]
     pub r#match: Option<String>,
 
-    /// JSON indentation in spaces; 0 prints a single compact line.
-    #[arg(long, default_value_t = 2, value_name = "N")]
+    /// JSON indentation in spaces, 0 to 16; 0 prints a single compact line.
+    #[arg(
+        long,
+        default_value_t = 2,
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(..=16)
+    )]
     pub indent: u32,
 }
 

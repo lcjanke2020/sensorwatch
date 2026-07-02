@@ -36,13 +36,25 @@ fn unknown_type_is_a_usage_error() {
 }
 
 #[test]
-fn negative_or_non_integer_indent_is_a_usage_error() {
+fn out_of_range_or_non_integer_indent_is_a_usage_error() {
     assert_eq!(
         sensorwatch(&["snapshot", "--indent=-3"]).status.code(),
         Some(2)
     );
     assert_eq!(
         sensorwatch(&["snapshot", "--indent", "x"]).status.code(),
+        Some(2)
+    );
+    // The clap layer caps indentation (0..=16), so a huge value is a clean
+    // usage error rather than an attempted enormous allocation in render().
+    assert_eq!(
+        sensorwatch(&["snapshot", "--indent", "17"]).status.code(),
+        Some(2)
+    );
+    assert_eq!(
+        sensorwatch(&["snapshot", "--indent", "4000000000"])
+            .status
+            .code(),
         Some(2)
     );
 }
@@ -68,7 +80,7 @@ fn help_and_version_exit_zero() {
     assert_eq!(sensorwatch(&["--help"]).status.code(), Some(0));
     let version = sensorwatch(&["--version"]);
     assert_eq!(version.status.code(), Some(0));
-    assert!(stdout(&version).contains("0.1.0"));
+    assert!(stdout(&version).contains(env!("CARGO_PKG_VERSION")));
 }
 
 #[cfg(not(windows))]

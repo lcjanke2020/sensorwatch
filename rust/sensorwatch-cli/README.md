@@ -17,7 +17,7 @@ One-shot live sensor readings as a JSON array on stdout:
 sensorwatch snapshot                        # all readings
 sensorwatch snapshot --type TEMPERATURE     # one reading type (case-insensitive)
 sensorwatch snapshot --match 12V            # substring over sensor/reading names
-sensorwatch snapshot --indent 0             # compact single line (default indent: 2)
+sensorwatch snapshot --indent 0             # compact single line (default 2, max 16)
 ```
 
 Each element has the keys `source, sensor, reading, type, value, min, max,
@@ -31,7 +31,7 @@ serialize as `null` (valid JSON; the Python helper printed bare `NaN`).
 |------|---------|
 | 0 | Snapshot printed (possibly an empty array `[]`) |
 | 1 | Sensor source unavailable (HWiNFO64 not running / shared memory disabled) or platform unsupported (not Windows) — message on stderr |
-| 2 | Usage error (unknown flag or subcommand, invalid `--type`, negative `--indent`) |
+| 2 | Usage error (unknown flag or subcommand, invalid `--type`, `--indent` outside 0–16) |
 
 A live read requires Windows with HWiNFO64's *Shared Memory Support* enabled;
 everywhere else the binary builds and exits `1` with a clear message. Logging

@@ -82,13 +82,14 @@ cd rust && cargo build --release -p sensorwatch-cli
 
 It exits `0` after printing (possibly an empty array), `1` with a clear message
 when sensorwatch/HWiNFO is unavailable, and `2` on a usage error (an unknown
-`--type` or a negative `--indent`). Non-finite values are emitted as `null`
-(valid JSON).
+`--type` or an `--indent` outside 0–16). Non-finite values are emitted as
+`null` (valid JSON).
 
 **Python fallback.** Without a Rust toolchain,
 [`scripts/snapshot.py`](scripts/snapshot.py) prints the same JSON shape with
-the same flags and exit codes (one difference: it emits bare `NaN` for
-non-finite values, which most JSON parsers reject):
+the same flags and exit codes (differences: it emits bare `NaN` for non-finite
+values, which most JSON parsers reject, and it accepts any non-negative
+`--indent`):
 
 ```sh
 python skills/sensorwatch/scripts/snapshot.py --type TEMPERATURE
