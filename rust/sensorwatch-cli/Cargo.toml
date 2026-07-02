@@ -1,0 +1,43 @@
+[package]
+name = "sensorwatch-cli"
+description = "Command-line interface for sensorwatch (binary: `sensorwatch`) — read live hardware sensor data through the safe Rust binding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+# Repo-only for now: publishing to crates.io for `cargo install` is a later,
+# explicit step (ROADMAP Phase 3). Keeping this crate out of the registry also
+# keeps the crates-package-check job and the ordered two-crate publish
+# (publish-crates.yml) untouched.
+publish = false
+
+[[bin]]
+name = "sensorwatch"
+path = "src/main.rs"
+
+[dependencies]
+# Path-only: this crate is never published, so there is no `=x.y.z` pin to keep
+# in lockstep with the workspace version (unlike the wrapper's pin on -sys).
+sensorwatch = { path = "../sensorwatch" }
+
+# The full Phase-1 CLI dependency set is established here (LEO-333) so MSRV and
+# resolution surprises surface in this small PR, not mid-series. Used by
+# `snapshot` today: clap, serde, serde_json, log, env_logger. Reserved for the
+# next subcommands (ROADMAP Phase 1): toml + jiff (`log` config and
+# timestamps), ctrlc (graceful shutdown for `log`/`watch`).
+# clap is capped at 4.5.57, the last patch whose tree stays on edition 2021
+# (clap 4.6, and clap_builder >= 4.5.58 via clap_lex 1.x, are edition 2024 —
+# see the toml note).
+clap = { version = ">=4.5, <4.5.58", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
+# toml is capped below 0.9: the 0.9 family (serde_spanned 1.x) is edition
+# 2024, which the MSRV toolchain (1.82) cannot parse.
+toml = "0.8"
+jiff = "0.2"
+ctrlc = { version = "3.4", features = ["termination"] }

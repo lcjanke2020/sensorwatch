@@ -446,8 +446,10 @@ handling. From CMake the binding is the `sensorwatch::hpp` target (it propagates
 
 ### Rust
 
-The shipped Rust bindings live under [`rust/`](../rust) as a two-crate workspace,
-the conventional `-sys` split that isolates the unsafe surface:
+The shipped Rust bindings live under [`rust/`](../rust) in a Cargo workspace
+whose two binding crates form the conventional `-sys` split that isolates the
+unsafe surface (the workspace also hosts the repo-only CLI crate,
+`sensorwatch-cli`):
 
 - **`sensorwatch-sys`** — the raw `extern "C"` declarations. The FFI is
   **pre-generated with `bindgen` and checked in**

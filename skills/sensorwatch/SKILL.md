@@ -69,19 +69,30 @@ Each `Reading` (a frozen dataclass) has: `source`, `sensor`, `reading`, `unit`,
 `ReadingType` members: `NONE, TEMPERATURE, VOLTAGE, FAN, CURRENT, POWER, CLOCK,
 USAGE, OTHER, UNKNOWN`.
 
-**One-shot helper.** [`scripts/snapshot.py`](scripts/snapshot.py) wraps the above
-and prints the readings as a JSON array — handy for a quick read or to pipe
-elsewhere:
+**One-shot CLI.** The Rust CLI's `snapshot` subcommand prints the readings as a
+JSON array — handy for a quick read or to pipe elsewhere. Build it once from
+the repo's `rust/` directory, then:
 
 ```sh
-python skills/sensorwatch/scripts/snapshot.py                 # all readings, as JSON
-python skills/sensorwatch/scripts/snapshot.py --type TEMPERATURE
-python skills/sensorwatch/scripts/snapshot.py --match 12V
+cd rust && cargo build --release -p sensorwatch-cli
+./target/release/sensorwatch snapshot                        # all readings, as JSON
+./target/release/sensorwatch snapshot --type TEMPERATURE
+./target/release/sensorwatch snapshot --match 12V --indent 0
 ```
 
 It exits `0` after printing (possibly an empty array), `1` with a clear message
 when sensorwatch/HWiNFO is unavailable, and `2` on a usage error (an unknown
-`--type` or a negative `--indent`).
+`--type` or a negative `--indent`). Non-finite values are emitted as `null`
+(valid JSON).
+
+**Python fallback.** Without a Rust toolchain,
+[`scripts/snapshot.py`](scripts/snapshot.py) prints the same JSON shape with
+the same flags and exit codes (one difference: it emits bare `NaN` for
+non-finite values, which most JSON parsers reject):
+
+```sh
+python skills/sensorwatch/scripts/snapshot.py --type TEMPERATURE
+```
 
 **Pure-Python fallback.** If the compiled native extension isn't available, the
 `sensorwatch.hwinfo_shm` reader gets the same data with no compiled dependency
@@ -114,8 +125,10 @@ sensorwatch --config config.toml --verbose
 ```
 
 It writes `logs/sensors_YYYY-MM-DD.jsonl` (a new file each local day; old files
-are pruned per `retention_days`). The only flags are `--config/-c` and
-`--verbose/-v` — there are no subcommands.
+are pruned per `retention_days`). The Python logger's only flags are
+`--config/-c` and `--verbose/-v` — it has no subcommands. (The Rust
+`sensorwatch` binary is a separate, subcommand-based CLI; today it ships
+`snapshot`, Recipe 1.)
 
 `config.toml` schema (every key is optional; defaults shown):
 
@@ -226,4 +239,4 @@ installed tree via `cmake --install` + `find_package(sensorwatch CONFIG REQUIRED
 | `[-4] Sensor source is not running or not enabled` (`SW_ERR_SOURCE_UNAVAILABLE`), or `read_sensors()` → `None` | HWiNFO not running, shared memory disabled, or sensors window closed | Start HWiNFO64, enable Settings → Shared Memory Support, open the sensors window |
 | `[-3] Backend is unavailable on this platform` (`SW_ERR_UNSUPPORTED_PLATFORM`) | Not Windows | sensorwatch reads a Windows-only shared-memory source |
 | `ImportError: sensorwatch._sw_cffi ... not built` | Native extension missing | `pip install sensorwatch` (prebuilt Windows wheel), or use the pure-Python `read_sensors()` (Recipe 1) |
-| A reading's `value` is `NaN`, or its category is the catch-all | HWiNFO exposes some entries without a current value / known category | Skip `NaN` values; treat the catch-all category as uncategorized. **The spelling differs by surface:** the native API's `reading.type.name` is upper-case (`OTHER` / `UNKNOWN`), while the logger JSONL and `read_sensors()` use title-case `"Other"` and `"unknown(<N>)"` for unrecognized codes (there is no literal `"Unknown"`). |
+| A reading's `value` is `NaN`, or its category is the catch-all | HWiNFO exposes some entries without a current value / known category | Skip `NaN` values; treat the catch-all category as uncategorized. **The spelling differs by surface:** the native API's `reading.type.name` is upper-case (`OTHER` / `UNKNOWN`), while the logger JSONL and `read_sensors()` use title-case `"Other"` and `"unknown(<N>)"` for unrecognized codes (there is no literal `"Unknown"`); the `snapshot` JSON (Rust CLI and Python helper) uses the same title-case labels with a bare `"unknown"`. |
