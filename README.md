@@ -339,7 +339,9 @@ skill uses only read-only APIs — see [`SECURITY.md`](SECURITY.md) §4.
 ## Roadmap
 
 sensorwatch starts as a Python monitor and grows toward a general hardware
-observability toolkit:
+observability toolkit. The extended roadmap — the phased plan (Rust CLI, an
+event-driven monitoring agent), open design questions, and non-goals — lives in
+[`ROADMAP.md`](ROADMAP.md). In brief:
 
 - **Source-adapter architecture** — pluggable sensor sources behind one
   interface (HWiNFO today; UPS, AIDA64, and IPMI next) with stable sensor
