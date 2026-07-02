@@ -57,6 +57,10 @@ and commit the result, or the CI `bindgen-drift` job will fail.
   in [`SECURITY.md`](SECURITY.md).
 - **One logical change per pull request**, with a clear description of what and
   why.
+- **Run the [pre-merge checklist](PRE-MERGE-CHECKLIST.md)** before requesting
+  review — especially its documentation-currency section. Stale docs are the
+  most common review finding, and the checklist's table maps each kind of
+  change to the doc surfaces it touches.
 
 ## Skills
 
