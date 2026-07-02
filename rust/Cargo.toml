@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["sensorwatch-sys", "sensorwatch"]
+members = ["sensorwatch-sys", "sensorwatch", "sensorwatch-cli"]
 
-# Shared metadata for both crates. crates.io publishing (name reservation, OIDC
+# Shared metadata for the workspace members. crates.io publishing (name reservation, OIDC
 # trusted publishing, the two-crate ordered publish) is tracked separately in
 # LEO-326; these fields are filled in now so that follow-up is packaging-only.
 [workspace.package]
