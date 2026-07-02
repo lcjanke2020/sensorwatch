@@ -29,6 +29,9 @@ currents, power, fan speeds, clocks, and usage.
 - **Optional native binding** (`sensorwatch.native`) — a cffi wrapper over the
   bundled C core that reads the same data through the native parser (see
   [Native binding](#native-binding-cffi)).
+- **Rust CLI** (`rust/sensorwatch-cli`, binary `sensorwatch`) — the first step
+  of the Rust port: a one-shot `snapshot` subcommand printing live readings as
+  JSON, with type and substring filters (see [Rust binding](#rust-binding)).
 
 ## Requirements
 
@@ -66,6 +69,14 @@ sensorwatch --config config.toml --verbose
 
 If HWiNFO64 is not running (or shared memory is disabled), sensorwatch logs a
 warning and keeps trying — start HWiNFO and readings begin flowing.
+
+For a one-shot reading instead of a logger loop, the Rust CLI (repo-built; see
+[Rust binding](#rust-binding)) prints a live snapshot as JSON:
+
+```sh
+cd rust && cargo build --release -p sensorwatch-cli
+./target/release/sensorwatch snapshot --type TEMPERATURE
+```
 
 ## Running from WSL-2
 
@@ -290,14 +301,18 @@ the Python binding above.
 
 ## Rust binding
 
-The [`rust/`](rust) directory is a two-crate Cargo workspace over the same C ABI —
-the conventional `-sys` split:
+The [`rust/`](rust) directory is a Cargo workspace over the same C ABI — two
+published crates in the conventional `-sys` split, plus the repo-only CLI:
 
 - **`sensorwatch-sys`** — raw FFI. Its `build.rs` compiles the C core straight into
   the crate (with `SW_STATIC`), so there is no separate DLL to locate, and the raw
   declarations are pre-generated with `bindgen` and checked in, so building needs
   only a C compiler — never libclang.
 - **`sensorwatch`** — a safe, RAII wrapper.
+- **`sensorwatch-cli`** — the `sensorwatch` command-line binary on top of the safe
+  wrapper; repo-only (`publish = false`), currently a one-shot `snapshot`
+  subcommand (`cargo run -p sensorwatch-cli -- snapshot` from `rust/`, exit codes
+  and JSON shape in [`rust/sensorwatch-cli/README.md`](rust/sensorwatch-cli/README.md)).
 
 ```rust
 use sensorwatch::Session;
@@ -331,9 +346,10 @@ category to `Unknown`, like the other bindings. Build and test the workspace wit
 
 For AI coding agents, [`skills/sensorwatch/`](skills/sensorwatch/) is a portable
 **Agent Skills** bundle (`SKILL.md`) that teaches an agent to read the current
-hardware state, run the logger, and analyze the JSON Lines output. It bundles a
-one-shot [`scripts/snapshot.py`](skills/sensorwatch/scripts/snapshot.py) that
-prints a live snapshot as JSON, and `agents/openai.yaml` for Codex discovery. The
+hardware state, run the logger, and analyze the JSON Lines output. Its
+read-the-current-state recipe uses the Rust CLI's `snapshot` subcommand, with the
+bundled [`scripts/snapshot.py`](skills/sensorwatch/scripts/snapshot.py) as a
+no-Rust-toolchain fallback, and `agents/openai.yaml` provides Codex discovery. The
 skill uses only read-only APIs — see [`SECURITY.md`](SECURITY.md) §4.
 
 ## Roadmap

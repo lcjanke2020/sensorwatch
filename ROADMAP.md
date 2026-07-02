@@ -21,6 +21,7 @@ nothing below depends on a later phase to be useful.
 | Python binding (cffi, API mode) | Shipped — `sensorwatch.native` |
 | C++ binding (header-only, C++17 RAII) | Shipped — [`include/sensorwatch/sensorwatch.hpp`](include/sensorwatch/sensorwatch.hpp) |
 | Rust bindings (`-sys` crate + safe wrapper) | Shipped — [crates.io](https://crates.io/crates/sensorwatch), OIDC trusted publishing |
+| Rust CLI — `snapshot` subcommand | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
 | CMake `install()` / `find_package(sensorwatch CONFIG)` export | Shipped |
 | Agent skill (portable Agent Skills bundle) | Shipped — [`skills/sensorwatch/`](skills/sensorwatch/) |
 | CI: Ubuntu + Windows, sanitizers, ABI/vendor drift gates, MSRV check | Shipped — [`ci.yml`](.github/workflows/ci.yml) |
@@ -57,9 +58,10 @@ reader documents the shared-memory format end to end.
 
 Each step ships independently:
 
-1. **`snapshot`** — one-shot live readings as JSON, with type and substring
-   filters. *Usable outcome:* instant health checks and shell scripting,
-   replacing the skill's bundled Python helper.
+1. **`snapshot`** — *shipped* ([`rust/sensorwatch-cli`](rust/sensorwatch-cli/))
+   — one-shot live readings as JSON, with type and substring filters. *Usable
+   outcome:* instant health checks and shell scripting, replacing the skill's
+   bundled Python helper (kept as a no-toolchain fallback for now).
 2. **`log`** — the logger loop, byte-compatible with the Python logger's JSONL
    output so existing analyses work unchanged over directories that mix
    old and new files. *Usable outcome:* a single static binary replaces the
@@ -154,9 +156,11 @@ Design decisions we have deliberately left open, in case you'd like to weigh in
 (issues and PRs welcome):
 
 - **Binary naming.** The Rust binary wants the `sensorwatch` name, which the
-  Python console script currently owns. Likely resolution: drop the Python
-  entry point (the module stays runnable via `python -m sensorwatch`); the
-  alternative is a distinct binary name.
+  Python console script currently owns. The collision now exists in-tree — the
+  repo-built Rust binary already takes the name, though nothing installs it
+  onto `PATH` yet. Likely resolution: drop the Python entry point (the module
+  stays runnable via `python -m sensorwatch`); the alternative is a distinct
+  binary name. Decided with the Phase 1 docs handoff (LEO-342).
 - **Notification transports.** The notify adapter ships with email first;
   which push channels (ntfy, Pushover, others) earn built-in adapters, and
   whether a "critical" tier warrants acknowledge-required semantics.

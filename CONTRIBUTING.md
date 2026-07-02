@@ -120,7 +120,8 @@ and PyPI are fully independent registries, so each needs its own publisher.
 
 _(Maintainers.)_ The Rust crates (`sensorwatch-sys` + `sensorwatch`, under `rust/`)
 publish to [crates.io](https://crates.io/crates/sensorwatch) via GitHub Actions OIDC
-**trusted publishing** — no stored `CARGO_REGISTRY_TOKEN`. A GitHub Release tagged
+**trusted publishing** — no stored `CARGO_REGISTRY_TOKEN`. (The CLI crate,
+`sensorwatch-cli`, is `publish = false` and is not part of crate releases.) A GitHub Release tagged
 `rust-vX.Y.Z` fires
 [`.github/workflows/publish-crates.yml`](.github/workflows/publish-crates.yml), which
 runs the fmt/clippy/test gate and then publishes `sensorwatch-sys` first, then the
