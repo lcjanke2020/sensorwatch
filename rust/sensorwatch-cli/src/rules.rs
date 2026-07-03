@@ -19,7 +19,7 @@
 //! second pass that AGGREGATES every violation — an author fixing a rules
 //! file wants the full list once, not one error per attempt.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::labels::CANONICAL_LABELS;
 
@@ -70,6 +70,14 @@ impl RuleSet {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.rules.is_empty()
+    }
+
+    /// Drop rules for which `f` returns `false`, in place. The `watch`
+    /// command applies its `--rule`/`--min-severity` filters this way, before
+    /// building the [`crate::engine::Engine`], so the engine only ever tracks
+    /// state for rules that can still fire.
+    pub(crate) fn retain(&mut self, f: impl FnMut(&Rule) -> bool) {
+        self.rules.retain(f);
     }
 }
 
@@ -128,7 +136,7 @@ impl Matcher {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum RuleKind {
     Threshold,
@@ -140,12 +148,25 @@ pub(crate) enum RuleKind {
     SourceUnavailable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Severity {
     Info,
     Warning,
     Critical,
+}
+
+impl Severity {
+    /// Total order for the `--min-severity` filter: info < warning < critical.
+    /// An explicit rank (rather than `derive(Ord)`) is self-documenting and
+    /// does not silently depend on variant declaration order.
+    pub(crate) fn rank(self) -> u8 {
+        match self {
+            Severity::Info => 0,
+            Severity::Warning => 1,
+            Severity::Critical => 2,
+        }
+    }
 }
 
 /// The per-reading field a comparison reads — the JSONL key vocabulary.
@@ -999,5 +1020,48 @@ mod tests {
         assert!(rendered.contains("invalid rules config:"), "{rendered}");
         assert!(rendered.contains("'op'"), "{rendered}");
         assert!(rendered.contains("'threshold'"), "{rendered}");
+    }
+
+    // ---- LEO-336 additions: severity rank, retain, serde vocab ----
+
+    #[test]
+    fn severity_rank_orders_info_below_warning_below_critical() {
+        assert!(Severity::Info.rank() < Severity::Warning.rank());
+        assert!(Severity::Warning.rank() < Severity::Critical.rank());
+        assert_eq!(Severity::Info.rank(), 0);
+        assert_eq!(Severity::Critical.rank(), 2);
+    }
+
+    #[test]
+    fn retain_keeps_rules_by_name() {
+        let mut set = parse(&format!(
+            "{THRESHOLD_RULE}\n[[rules]]\nname = \"other\"\nkind = \"source-unavailable\"\n"
+        ))
+        .expect("rules parse");
+        assert_eq!(set.rules().len(), 2);
+        set.retain(|r| r.name == "psu-12v-sag");
+        assert_eq!(set.rules().len(), 1);
+        assert_eq!(set.rules()[0].name, "psu-12v-sag");
+    }
+
+    #[test]
+    fn rule_kind_serializes_kebab_case() {
+        assert_eq!(
+            serde_json::to_string(&RuleKind::SourceUnavailable).unwrap(),
+            "\"source-unavailable\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RuleKind::Threshold).unwrap(),
+            "\"threshold\""
+        );
+    }
+
+    #[test]
+    fn severity_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&Severity::Critical).unwrap(),
+            "\"critical\""
+        );
+        assert_eq!(serde_json::to_string(&Severity::Info).unwrap(), "\"info\"");
     }
 }

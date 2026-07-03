@@ -90,6 +90,79 @@ as `null` (Python wrote bare `NaN`, which most JSON parsers reject).
 | 1 | Platform unsupported (not Windows), log directory could not be prepared, or the signal handler could not be installed — message on stderr |
 | 2 | Usage error (unknown flag, missing `--config` value) |
 
+## `watch`
+
+Evaluate the config's [`[[rules]]`](../../README.md#alert-rules-rules) against
+live (or replayed) samples and turn the first firing rule into a structured
+JSON event — the agent wake-up primitive. Two modes:
+
+```sh
+# One-shot (default): block until a rule fires (exit 10) or --timeout elapses (exit 0)
+sensorwatch watch --timeout 3600
+sensorwatch watch --spool-dir ./spool          # also drop each event as an atomic file
+
+# Follow: run until interrupted, logging sensors and appending events to daily files
+sensorwatch watch --follow
+
+# Replay recorded logs instead of the live source (runs on any platform)
+sensorwatch watch --replay logs/sensors_2026-02-18.jsonl
+```
+
+Flags: `--config/-c`, `--verbose/-v` (as `log`); `--follow`; `--timeout
+<SECONDS>` (one-shot heartbeat, conflicts with `--follow`, inert with
+`--replay`); `--rule <NAME>` (repeatable, exact match — unknown name is a usage
+error); `--min-severity <info|warning|critical>`; `--spool-dir <PATH>`;
+`--replay <FILE>` (repeatable).
+
+**Modes.** One-shot prints exactly one event to stdout and exits `10` on the
+first fire; a `--timeout` with no fire exits `0` (an agent heartbeat). Follow
+never prints to stdout — it appends every fired *and* cleared event to
+`<log_dir>/events_YYYY-MM-DD.jsonl` (same rotation/retention as the sensor
+log), and, when live, also logs sensors to `sensors_YYYY-MM-DD.jsonl`. Both
+modes spool each event when `--spool-dir` is set.
+
+**Replay.** `--replay` is best-effort over recorded logs: unreadable files and
+malformed lines are warned to stderr and skipped, and an exhausted or
+all-invalid replay exits `0` — the same as a live "all quiet", so watch stderr
+to tell a typo'd path from a genuine no-fire. Event-file rotation still keys off
+the wall clock, so under `--follow --replay` historical events (which carry their
+own sample `timestamp`) land in *today's* `events_*.jsonl`; replay follow is a
+testing/backfill mode, not a historical re-log, and writes no `sensors_*.jsonl`.
+
+**Event.** One compact JSON line, schema-versioned and ~1 KB, e.g.:
+
+```json
+{"schema_version":1,"seq":42,"id":"psu-12v-sag-42","rule":"psu-12v-sag","type":"threshold","severity":"critical","state":"fired","timestamp":"2026-02-18T08:00:20.000000-05:00","sensor":"MEG Ai1600T","reading":"+12V","value":11.4,"unit":"V","threshold":11.6,"samples_in_violation":2}
+```
+
+**Sequence & spool.** A monotonic `seq` is persisted to `<log_dir>/watch.seq`
+before each event is emitted (so a crash skips a number, never reuses one) and
+survives restarts. Spool files are `{seq:010}-{slug}.json`, written atomically
+(temp name, then rename) so an agent globbing `*.json` never sees a partial
+file. `watch` never deletes spool files — cleanup is the consuming agent's job.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Clean: `--timeout` elapsed with no event (heartbeat), or `--replay` exhausted |
+| 1 | Fatal: an existing config could not be read, the state/log/spool directory or seq-store could not be *prepared*, the signal handler could not be installed, or `watch.seq` could not be persisted — message on stderr |
+| 2 | Usage error: invalid or zero `[[rules]]`, zero rules after filters, or an unknown `--rule` name |
+| 10 | One-shot: a rule fired (its JSON event is on stdout) |
+| 130 | Interrupted by a signal (both modes, including Windows Ctrl-C) — unlike `log`, which exits `0` |
+
+Exit `1` is *preparation* plus the `watch.seq` anchor only. A failed per-record
+`events_`/spool **write** in follow mode is warned on stderr and swallowed, not
+fatal: the watcher stays up under disk pressure, and because `seq` is persisted
+first and is monotonic (not dense), a lost write leaves a visible gap the agent's
+ack cursor reconciles against rather than crashing the monitor.
+
+Source loss is **not** an exit code — it surfaces as the `source-unavailable`
+rule kind in an event. `--replay` runs on any platform; live watching needs
+Windows with HWiNFO64 (off Windows the live source only yields "unavailable",
+so only `source-unavailable` rules can fire). Full contract and the five-layer
+monitoring architecture: [docs/agent-monitoring.md](../../docs/agent-monitoring.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

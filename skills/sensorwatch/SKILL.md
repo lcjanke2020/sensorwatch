@@ -4,9 +4,11 @@ description: >-
   Read live hardware sensor readings (temperatures, voltages, fan speeds,
   currents, power, clocks, usage) from a Windows PC with sensorwatch — query the
   current state through its Python/C/C++ API, run the CLI logger to collect
-  history as JSON Lines, and analyze the logged data. Use when an agent needs the
-  current hardware state, or historical sensor trends, on a Windows machine
-  running HWiNFO64 with Shared Memory Support enabled.
+  history as JSON Lines, watch declarative alert rules and dispatch on the
+  structured JSON events they emit, and analyze the logged data. Use when an
+  agent needs the current hardware state, deterministic hardware alerting, or
+  historical sensor trends, on a Windows machine running HWiNFO64 with Shared
+  Memory Support enabled.
 license: MIT
 ---
 
@@ -15,9 +17,9 @@ license: MIT
 [sensorwatch](https://github.com/lcjanke2020/sensorwatch) is a lightweight
 hardware-sensor monitor for Windows. It reads HWiNFO64's shared-memory feed and
 exposes every sensor HWiNFO sees — temperatures, voltages, currents, power, fan
-speeds, clocks, and usage. This skill covers the three things an agent typically
-wants: **read the current state now**, **collect history**, and **analyze the
-logs**.
+speeds, clocks, and usage. This skill covers the four things an agent typically
+wants: **read the current state now**, **collect history**, **watch for alert
+events**, and **analyze the logs**.
 
 > **Read-only.** sensorwatch only *reads* hardware data and *writes* local log
 > files — it never controls hardware and opens no network listeners. Do not make
@@ -174,7 +176,73 @@ Example — capture only one PSU's sensors:
 include = ["MEG Ai1600T"]
 ```
 
-## Recipe 3 — Analyze the logged data
+## Recipe 3 — Watch for alert events (deterministic alerting)
+
+To be *notified* when hardware crosses a line — instead of polling readings
+yourself — use the Rust CLI's **`watch`** subcommand. It evaluates declarative
+`[[rules]]` in `config.toml` against live samples and emits a structured JSON
+event when a rule fires. Detection is deterministic native code; an agent is
+woken only once something has provably happened. **This is the wake-up
+primitive an agent monitor arms** — the full five-layer architecture is in
+[`docs/agent-monitoring.md`](../../docs/agent-monitoring.md).
+
+> **Rust CLI only.** Unlike Recipes 1–2, `watch` has **no Python fallback** —
+> the rule engine lives in the Rust CLI. Build it once as in Recipe 1.
+
+Add rules to `config.toml`. The section is validated **strictly**: `watch`
+exits `2` on any invalid rule (the `log` subcommand ignores it entirely):
+
+```toml
+[[rules]]
+name = "psu-12v-sag"
+kind = "threshold"       # threshold | rate | stale | missing | source-unavailable
+sensor = "MEG Ai1600T"
+reading = "+12V"
+type = "Voltage"
+metric = "value"         # value | min | max | avg
+op = "<"                 # > | >= | < | <=
+threshold = 11.6
+clear = 11.8             # hysteresis re-arm level (omit = clears at threshold)
+for_samples = 3          # consecutive violating samples before firing
+severity = "critical"    # info | warning | critical
+```
+
+Then arm it. **One-shot** (default) blocks until the first firing rule, prints
+one event, and exits `10`; a `--timeout` with no fire exits `0` (a heartbeat).
+**Follow** runs until interrupted, appending fired *and* cleared events to
+daily `events_YYYY-MM-DD.jsonl` files:
+
+```sh
+./target/release/sensorwatch watch --timeout 3600           # one-shot with a heartbeat deadline
+./target/release/sensorwatch watch --spool-dir ./spool      # also drop each event as an atomic file
+./target/release/sensorwatch watch --follow                 # stream events to daily files
+./target/release/sensorwatch watch --replay logs/sensors_2026-02-18.jsonl   # test rules on recorded logs (any OS)
+```
+
+The **exit code is the signal** — arm `watch` and dispatch on how it exits:
+
+| Code | Meaning | Agent action |
+|------|---------|--------------|
+| 10 | A rule fired (one-shot; JSON event on stdout) | Triage the event, then re-arm |
+| 0 | Heartbeat timeout / replay exhausted | "All quiet" — re-arm |
+| 2 | Invalid or zero rules, or an unknown `--rule` | Fix the config; do not re-arm blindly |
+| 1 | Fatal (state/spool/source could not be prepared) | Surface the stderr message |
+| 130 | Interrupted by a signal | Shutting down |
+
+Each event is one compact, schema-versioned JSON line (~1 KB):
+
+```json
+{"schema_version":1,"seq":42,"id":"psu-12v-sag-42","rule":"psu-12v-sag","type":"threshold","severity":"critical","state":"fired","timestamp":"2026-02-18T08:00:20.000000-05:00","sensor":"MEG Ai1600T","reading":"+12V","value":11.4,"unit":"V","threshold":11.6,"samples_in_violation":2}
+```
+
+`seq` is monotonic and persisted (an agent's ack cursor keys off it, never wall
+clock); `id` is `"{rule}-{seq}"`. Source loss is **not** an exit code — it
+arrives as a `source-unavailable` event, so dispatch on event *content*. Off
+Windows the live source only reports "unavailable" (there is no HWiNFO), so
+only `source-unavailable` rules can fire there; `--replay` evaluates rules over
+recorded logs on any platform.
+
+## Recipe 4 — Analyze the logged data
 
 Each log line is one sample: a `timestamp` plus a `sensors` array. This is the
 **generic** shape the logger emits:

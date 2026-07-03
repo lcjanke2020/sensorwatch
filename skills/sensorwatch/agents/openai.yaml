@@ -9,4 +9,5 @@ default_prompt: |
   Use the sensorwatch skill to read the current hardware sensor state on this
   Windows machine -- temperatures, voltages, fan speeds, and power. Read SKILL.md
   in this folder first for the prerequisites (Windows + HWiNFO64 with Shared
-  Memory Support) and the read-now / collect-history / analyze-logs recipes.
+  Memory Support) and the read-now / collect-history / watch-alerts /
+  analyze-logs recipes.

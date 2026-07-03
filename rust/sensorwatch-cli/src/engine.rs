@@ -36,6 +36,7 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
 use jiff::Timestamp;
+use serde::Serialize;
 
 use crate::rules::{Metric, Rule, RuleKind, RuleSet, Severity};
 use crate::source::{Sample, SampleReading, Tick};
@@ -70,7 +71,8 @@ pub(crate) struct Transition {
     pub samples_in_violation: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum TransitionState {
     Fired,
     Cleared,
