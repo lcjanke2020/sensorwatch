@@ -64,7 +64,12 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
         let shutdown = Arc::clone(&shutdown);
         if let Err(err) = ctrlc::set_handler(move || {
             let (lock, cvar) = &*shutdown;
-            *lock.lock().unwrap() = true;
+            // Recover from a poisoned lock (a panic while holding it) so a
+            // shutdown request is always deliverable — panicking inside the
+            // signal-handler thread would be the worst place for it.
+            *lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
             cvar.notify_all();
         }) {
             eprintln!("Could not install the shutdown signal handler: {err}");
@@ -95,7 +100,11 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
     // interval_seconds is already >= 1 from config; keep Python's defensive
     // guard anyway.
     let interval = Duration::from_secs(config.interval_seconds.max(1) as u64);
-    while !*shutdown.0.lock().unwrap() {
+    while !*shutdown
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
         match collect_live() {
             Ok(readings) => {
                 let now = Zoned::now();
@@ -155,16 +164,27 @@ fn wait_for_shutdown(shutdown: &(Mutex<bool>, Condvar), interval: Duration) -> b
     // (>= 1) accepts, and it overflows Instant arithmetic. Degrade to "sleep
     // until shutdown" instead of panicking, like the Python loop survives it.
     let deadline = Instant::now().checked_add(interval);
-    let mut flagged = lock.lock().unwrap();
+    // Poisoned-lock recovery mirrors the ctrlc handler: the flag is a plain
+    // bool, always safe to read, and shutdown must stay deliverable.
+    let mut flagged = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     while !*flagged {
         match deadline {
             Some(deadline) => {
                 let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                     return false;
                 };
-                flagged = cvar.wait_timeout(flagged, remaining).unwrap().0;
+                flagged = cvar
+                    .wait_timeout(flagged, remaining)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
             }
-            None => flagged = cvar.wait(flagged).unwrap(),
+            None => {
+                flagged = cvar
+                    .wait(flagged)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
     }
     true
