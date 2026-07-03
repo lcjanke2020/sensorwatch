@@ -127,25 +127,52 @@ impl Config {
         })
     }
 
+    /// Build the reusable matcher, lowercasing the patterns once. The config
+    /// keeps them as configured (the startup log prints them verbatim, like
+    /// Python); the filter holds the normalized copies the hot path needs.
+    pub(crate) fn sensor_filter(&self) -> SensorFilter {
+        SensorFilter {
+            include: self
+                .sensor_include
+                .iter()
+                .map(|p| p.to_lowercase())
+                .collect(),
+            exclude: self
+                .sensor_exclude
+                .iter()
+                .map(|p| p.to_lowercase())
+                .collect(),
+        }
+    }
+}
+
+/// The include/exclude filters with patterns pre-lowercased, so per-reading
+/// matching allocates only the sensor name's lowercase form.
+pub(crate) struct SensorFilter {
+    include: Vec<String>,
+    exclude: Vec<String>,
+}
+
+impl SensorFilter {
     /// Check a sensor name against the include/exclude filters:
     /// case-insensitive substring matches, an empty include list includes
     /// everything, and exclude always applies after include.
-    pub(crate) fn matches_sensor(&self, sensor_name: &str) -> bool {
+    pub(crate) fn matches(&self, sensor_name: &str) -> bool {
         let name_lower = sensor_name.to_lowercase();
 
-        if !self.sensor_include.is_empty()
+        if !self.include.is_empty()
             && !self
-                .sensor_include
+                .include
                 .iter()
-                .any(|pat| name_lower.contains(&pat.to_lowercase()))
+                .any(|pat| name_lower.contains(pat.as_str()))
         {
             return false;
         }
 
         !self
-            .sensor_exclude
+            .exclude
             .iter()
-            .any(|pat| name_lower.contains(&pat.to_lowercase()))
+            .any(|pat| name_lower.contains(pat.as_str()))
     }
 }
 
@@ -292,40 +319,43 @@ mod tests {
         assert_eq!(clean_str_list("k", Some(&v)), vec!["a", "b"]);
     }
 
-    // ---- matches_sensor (ports TestMatchesSensor) ----
+    // ---- sensor_filter().matches (ports TestMatchesSensor) ----
 
-    fn config_with_filters(include: &[&str], exclude: &[&str]) -> Config {
+    fn filter_of(include: &[&str], exclude: &[&str]) -> SensorFilter {
         Config {
             sensor_include: include.iter().map(|s| s.to_string()).collect(),
             sensor_exclude: exclude.iter().map(|s| s.to_string()).collect(),
             ..Config::default()
         }
+        .sensor_filter()
     }
 
     #[test]
     fn matches_empty_include_matches_all() {
-        let config = config_with_filters(&[], &[]);
-        assert!(config.matches_sensor("Anything At All"));
+        let filter = filter_of(&[], &[]);
+        assert!(filter.matches("Anything At All"));
     }
 
     #[test]
     fn matches_include_is_case_insensitive_substring() {
-        let config = config_with_filters(&["meg ai"], &[]);
-        assert!(config.matches_sensor("MEG Ai1600T"));
-        assert!(!config.matches_sensor("Corsair RM850"));
+        // Upper-case pattern vs mixed-case name pins the pattern-side
+        // normalization done once in sensor_filter().
+        let filter = filter_of(&["MEG AI"], &[]);
+        assert!(filter.matches("MEG Ai1600T"));
+        assert!(!filter.matches("Corsair RM850"));
     }
 
     #[test]
     fn matches_exclude_is_case_insensitive_substring() {
-        let config = config_with_filters(&[], &["gpu"]);
-        assert!(!config.matches_sensor("GPU Hot Spot"));
-        assert!(config.matches_sensor("CPU Package"));
+        let filter = filter_of(&[], &["gpu"]);
+        assert!(!filter.matches("GPU Hot Spot"));
+        assert!(filter.matches("CPU Package"));
     }
 
     #[test]
     fn matches_exclude_wins_over_include() {
-        let config = config_with_filters(&["psu"], &["psu"]);
-        assert!(!config.matches_sensor("PSU +12V"));
+        let filter = filter_of(&["psu"], &["psu"]);
+        assert!(!filter.matches("PSU +12V"));
     }
 
     // ---- from_toml_str / load (ports TestConfigLoad) ----

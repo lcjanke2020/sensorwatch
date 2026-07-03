@@ -100,6 +100,8 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
     // interval_seconds is already >= 1 from config; keep Python's defensive
     // guard anyway.
     let interval = Duration::from_secs(config.interval_seconds.max(1) as u64);
+    // Lowercase the filter patterns once, outside the sampling loop.
+    let filter = config.sensor_filter();
     while !*shutdown
         .0
         .lock()
@@ -110,7 +112,7 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
                 let now = Zoned::now();
                 let entries: Vec<LogEntry<'_>> = readings
                     .iter()
-                    .filter(|r| config.matches_sensor(&r.sensor))
+                    .filter(|r| filter.matches(&r.sensor))
                     .map(LogEntry::from)
                     .collect();
                 if entries.is_empty() {
