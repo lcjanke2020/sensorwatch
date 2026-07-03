@@ -180,7 +180,8 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn live_source_off_windows_yields_unavailable_with_parseable_timestamp() {
-        let tick = LiveSource.next_tick().expect("live source always yields");
+        let mut source = LiveSource;
+        let tick = source.next_tick().expect("live source always yields");
         match tick {
             Tick::Unavailable { raw_timestamp, .. } => {
                 assert!(
