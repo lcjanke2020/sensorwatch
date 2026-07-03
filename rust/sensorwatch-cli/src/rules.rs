@@ -267,18 +267,8 @@ fn validate(raw: &RawRule, index: usize) -> Result<Rule, Vec<String>> {
         errors.push(format!("{label}: 'name' must not be empty"));
     }
 
-    let Some(kind) = raw.kind else {
-        errors.push(format!("{label}: missing required field 'kind'"));
-        return Err(errors);
-    };
-    let value_based = matches!(kind, RuleKind::Threshold | RuleKind::Rate);
-
-    // Matchers. threshold/rate compare values against one number, so a rule
-    // matching everything would compare across mixed units — always a config
-    // bug. stale/missing are unit-agnostic and may be matcher-less ("any
-    // previously-seen reading vanishes/freezes"). source-unavailable is
-    // about the source, not a reading: configured matchers would be silently
-    // meaningless, and strict parsing says so instead.
+    // Kind-independent checks run BEFORE the kind gate, so a rule missing
+    // its 'kind' still gets its other problems reported in the same pass.
     let sensor = matcher_pattern(&raw.sensor, "sensor", &label, &mut errors);
     let reading = matcher_pattern(&raw.reading, "reading", &label, &mut errors);
     let type_matcher = match raw.type_.as_deref() {
@@ -294,6 +284,57 @@ fn validate(raw: &RawRule, index: usize) -> Result<Rule, Vec<String>> {
             }
         },
     };
+
+    for (value, field) in [(raw.threshold, "threshold"), (raw.clear, "clear")] {
+        if let Some(v) = value {
+            if !v.is_finite() {
+                errors.push(format!("{label}: '{field}' must be finite (got {v})"));
+            }
+        }
+    }
+
+    // Hysteresis must sit on the recovery side of the threshold; equality is
+    // allowed and degenerates to exactly "no hysteresis". This ordering also
+    // guarantees a clearing sample can never simultaneously be a violation.
+    if let (Some(op), Some(threshold), Some(clear)) = (raw.op, raw.threshold, raw.clear) {
+        if threshold.is_finite() && clear.is_finite() {
+            let ok = match op {
+                Op::Gt | Op::Ge => clear <= threshold,
+                Op::Lt | Op::Le => clear >= threshold,
+            };
+            if !ok {
+                errors.push(format!(
+                    "{label}: 'clear' must be on the recovery side of 'threshold' \
+                     (op '{}' requires clear {} threshold)",
+                    op_symbol(op),
+                    match op {
+                        Op::Gt | Op::Ge => "<=",
+                        Op::Lt | Op::Le => ">=",
+                    },
+                ));
+            }
+        }
+    }
+
+    let for_samples = raw.for_samples.unwrap_or(1);
+    if !(1..=MAX_SAMPLES).contains(&for_samples) {
+        errors.push(format!(
+            "{label}: 'for_samples' must be between 1 and {MAX_SAMPLES} (got {for_samples})"
+        ));
+    }
+
+    let Some(kind) = raw.kind else {
+        errors.push(format!("{label}: missing required field 'kind'"));
+        return Err(errors);
+    };
+    let value_based = matches!(kind, RuleKind::Threshold | RuleKind::Rate);
+
+    // Matchers. threshold/rate compare values against one number, so a rule
+    // matching everything would compare across mixed units — always a config
+    // bug. stale/missing are unit-agnostic and may be matcher-less ("any
+    // previously-seen reading vanishes/freezes"). source-unavailable is
+    // about the source, not a reading: configured matchers would be silently
+    // meaningless, and strict parsing says so instead.
     match kind {
         RuleKind::Threshold | RuleKind::Rate => {
             // Keyed off what was WRITTEN, not what validated: a present-but-
@@ -346,44 +387,6 @@ fn validate(raw: &RawRule, index: usize) -> Result<Rule, Vec<String>> {
                 ));
             }
         }
-    }
-
-    for (value, field) in [(raw.threshold, "threshold"), (raw.clear, "clear")] {
-        if let Some(v) = value {
-            if !v.is_finite() {
-                errors.push(format!("{label}: '{field}' must be finite (got {v})"));
-            }
-        }
-    }
-
-    // Hysteresis must sit on the recovery side of the threshold; equality is
-    // allowed and degenerates to exactly "no hysteresis". This ordering also
-    // guarantees a clearing sample can never simultaneously be a violation.
-    if let (Some(op), Some(threshold), Some(clear)) = (raw.op, raw.threshold, raw.clear) {
-        if threshold.is_finite() && clear.is_finite() {
-            let ok = match op {
-                Op::Gt | Op::Ge => clear <= threshold,
-                Op::Lt | Op::Le => clear >= threshold,
-            };
-            if !ok {
-                errors.push(format!(
-                    "{label}: 'clear' must be on the recovery side of 'threshold' \
-                     (op '{}' requires clear {} threshold)",
-                    op_symbol(op),
-                    match op {
-                        Op::Gt | Op::Ge => "<=",
-                        Op::Lt | Op::Le => ">=",
-                    },
-                ));
-            }
-        }
-    }
-
-    let for_samples = raw.for_samples.unwrap_or(1);
-    if !(1..=MAX_SAMPLES).contains(&for_samples) {
-        errors.push(format!(
-            "{label}: 'for_samples' must be between 1 and {MAX_SAMPLES} (got {for_samples})"
-        ));
     }
 
     match (kind, raw.window_samples) {
@@ -950,6 +953,18 @@ mod tests {
             "[[rules]]\nname = \"r\"\nkind = \"threshold\"\nsensor = \"  \"\nop = \">\"\nthreshold = 1.0\n",
         );
         assert!(errors.iter().any(|e| e.contains("'sensor'")), "{errors:?}");
+    }
+
+    #[test]
+    fn kind_independent_errors_aggregate_even_when_kind_is_missing() {
+        // The kind gate must not eat the rest of the report: a rule missing
+        // its 'kind' still gets its blank matcher and non-finite threshold
+        // reported in the same pass.
+        let errors = invalid("[[rules]]\nname = \"r\"\nsensor = \"  \"\nthreshold = inf\n");
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("'sensor'")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("finite")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("'kind'")), "{errors:?}");
     }
 
     #[test]

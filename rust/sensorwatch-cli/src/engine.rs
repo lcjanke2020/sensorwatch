@@ -43,7 +43,7 @@ use crate::source::{Sample, SampleReading, Tick};
 /// A fired-or-cleared edge for one rule (and series, where applicable) —
 /// everything the `watch` event payload needs except the persisted sequence
 /// number, which the command layer owns.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct Transition {
     pub rule: String,
     pub kind: RuleKind,
@@ -74,6 +74,35 @@ pub(crate) struct Transition {
 pub(crate) enum TransitionState {
     Fired,
     Cleared,
+}
+
+/// Payload equality that stays reflexive for NaN (`Some(NaN) == Some(NaN)`
+/// here), so a transition carrying a NaN payload — a stale rule firing on
+/// repeated nulls — compares equal to its twin from an identical replay.
+/// Mirrors the NaN-reflexive `PartialEq` on the safe wrapper's `Reading`.
+fn payload_eq(a: Option<f64>, b: Option<f64>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a == b || (a.is_nan() && b.is_nan()),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+impl PartialEq for Transition {
+    fn eq(&self, other: &Self) -> bool {
+        self.rule == other.rule
+            && self.kind == other.kind
+            && self.severity == other.severity
+            && self.state == other.state
+            && self.raw_timestamp == other.raw_timestamp
+            && self.timestamp == other.timestamp
+            && self.sensor == other.sensor
+            && self.reading == other.reading
+            && payload_eq(self.value, other.value)
+            && self.unit == other.unit
+            && payload_eq(self.threshold, other.threshold)
+            && self.samples_in_violation == other.samples_in_violation
+    }
 }
 
 pub(crate) struct Engine {
@@ -342,9 +371,12 @@ fn evaluate_rate(
     let current = select_metric(rule.metric, reading);
     let width = rule.window_samples.expect("validated: rate has a window") as usize - 1;
     let delta = if series.window.len() == width {
-        // Oldest first: front is the value `width` samples back. A NaN
-        // anywhere in the span makes the delta NaN — unevaluable, like any
-        // other NaN (a delta across an unknown is unknowable).
+        // Oldest first: front is the value `width` samples back. Only the
+        // two ENDPOINTS enter the delta: a NaN at either end makes it NaN
+        // (unevaluable), but a NaN strictly inside the window is invisible —
+        // "changed by X over the window" is computable from known endpoints,
+        // and poisoning the whole window would blind the rule for W samples
+        // after every NaN blip.
         Some(current - series.window.front().copied().unwrap_or(f64::NAN))
     } else {
         None
@@ -947,6 +979,36 @@ mod tests {
     }
 
     #[test]
+    fn rate_nan_inside_the_window_does_not_block_endpoint_evaluation() {
+        // Pins the endpoint semantics the code comment promises: only the
+        // delta's two endpoints can make it unevaluable. A NaN strictly
+        // inside the window is invisible — the rule stays live across a
+        // one-sample blip instead of going blind for a whole window.
+        let mut engine = engine(
+            r#"
+            [[rules]]
+            name = "temp-spike"
+            kind = "rate"
+            sensor = "psu"
+            op = ">"
+            threshold = 15.0
+            window_samples = 3
+            "#,
+        );
+        let out = run(
+            &mut engine,
+            vec![
+                sample(1, vec![r("PSU", "Temp", 10.0)]),
+                sample(2, vec![r("PSU", "Temp", f64::NAN)]), // mid-window blip
+                sample(3, vec![r("PSU", "Temp", 30.0)]),     // 30 - 10 = 20: fires
+                sample(4, vec![r("PSU", "Temp", 31.0)]),     // 31 - NaN: unevaluable, holds
+            ],
+        );
+        assert_eq!(states(&out), vec![(3, TransitionState::Fired)]);
+        assert_eq!(out[0].1.value, Some(20.0));
+    }
+
+    #[test]
     fn rate_series_absence_resets_the_window() {
         let mut engine = engine(
             r#"
@@ -1498,11 +1560,29 @@ mod tests {
             kind = "source-unavailable"
             for_samples = 2
         "#;
+        // The dead NaN rail makes the stale rule fire with a NaN payload,
+        // so this equality also exercises the NaN-reflexive Transition
+        // comparison (derived PartialEq would report two identical replays
+        // as differing).
         let stream = || {
             vec![
-                sample(1, vec![r("CPU", "Temp", 95.0), r("PSU", "+12V", 12.0)]),
+                sample(
+                    1,
+                    vec![
+                        r("CPU", "Temp", 95.0),
+                        r("PSU", "+12V", 12.0),
+                        r("PSU", "Null Rail", f64::NAN),
+                    ],
+                ),
                 unavailable(2),
-                sample(3, vec![r("CPU", "Temp", 95.0), r("PSU", "+12V", 12.0)]),
+                sample(
+                    3,
+                    vec![
+                        r("CPU", "Temp", 95.0),
+                        r("PSU", "+12V", 12.0),
+                        r("PSU", "Null Rail", f64::NAN),
+                    ],
+                ),
                 unavailable(4),
                 unavailable(5),
                 sample(6, vec![r("CPU", "Temp", 84.0), r("PSU", "+12V", 12.0)]),
@@ -1514,6 +1594,12 @@ mod tests {
         let out_a: Vec<Transition> = run(&mut a, stream()).into_iter().map(|(_, t)| t).collect();
         let out_b: Vec<Transition> = run(&mut b, stream()).into_iter().map(|(_, t)| t).collect();
         assert!(!out_a.is_empty());
+        assert!(
+            out_a
+                .iter()
+                .any(|t| t.value.is_some_and(f64::is_nan) && t.state == TransitionState::Fired),
+            "the stream must produce a NaN-payload transition: {out_a:?}"
+        );
         assert_eq!(out_a, out_b);
     }
 

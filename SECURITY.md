@@ -23,6 +23,10 @@ cloud service.
   file-mapping APIs via `ctypes`), or through `sensorwatch.native` (a cffi
   API-mode binding over the native C core).
 - Writes local JSON Lines log files.
+- Reads those JSON Lines files back as **untrusted input** (the Rust CLI's
+  rule-engine replay source): line length is bounded, malformed lines are
+  counted and skipped rather than trusted, and the parser is exercised
+  against synthetic adversarial lines in the test suite.
 - Opens no network listeners.
 - The binary wheel ships a compiled cffi extension (`sensorwatch._sw_cffi`) with
   the C core statically linked in; Python imports it from the package directory,
