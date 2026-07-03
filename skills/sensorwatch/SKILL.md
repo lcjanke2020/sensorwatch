@@ -129,8 +129,9 @@ It writes `logs/sensors_YYYY-MM-DD.jsonl` (a new file each local day; old files
 are pruned per `retention_days` on startup and at each rollover), warns once
 and keeps retrying if HWiNFO's shared memory is unavailable, and shuts down
 cleanly on Ctrl+C / Ctrl+Break / console close. Exit codes: `0` after a
-signal-requested shutdown, `1` off-Windows or when the log directory cannot be
-prepared, `2` on usage errors. Config lookup: the `--config/-c` path, else
+signal-requested shutdown, `1` off-Windows or when startup fails (the log
+directory cannot be prepared, or the shutdown signal handler cannot be
+installed), `2` on usage errors. Config lookup: the `--config/-c` path, else
 `config.toml` in the current directory, else built-in defaults.
 
 **Python fallback.** Without a Rust toolchain, the frozen Python logger does
