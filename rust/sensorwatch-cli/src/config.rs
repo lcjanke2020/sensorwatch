@@ -48,8 +48,10 @@ impl Config {
             }
             // Python silently falls through here; a typo'd --config quietly
             // ignoring your file is a footgun, so warn (output is unchanged).
+            // The fallback chain may still find ./config.toml, so don't claim
+            // "defaults" — name the lookup instead.
             log::warn!(
-                "Config file {} not found; falling back to defaults",
+                "Config file {} not found; falling back to the default config lookup",
                 path.display()
             );
         }
