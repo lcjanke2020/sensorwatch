@@ -151,13 +151,21 @@ fn collect_live() -> sensorwatch::Result<Vec<Reading>> {
 /// loop guards against spurious wakeups.
 fn wait_for_shutdown(shutdown: &(Mutex<bool>, Condvar), interval: Duration) -> bool {
     let (lock, cvar) = shutdown;
-    let deadline = Instant::now() + interval;
+    // An absurd interval_seconds is a valid TOML integer the config floor
+    // (>= 1) accepts, and it overflows Instant arithmetic. Degrade to "sleep
+    // until shutdown" instead of panicking, like the Python loop survives it.
+    let deadline = Instant::now().checked_add(interval);
     let mut flagged = lock.lock().unwrap();
     while !*flagged {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return false;
-        };
-        flagged = cvar.wait_timeout(flagged, remaining).unwrap().0;
+        match deadline {
+            Some(deadline) => {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return false;
+                };
+                flagged = cvar.wait_timeout(flagged, remaining).unwrap().0;
+            }
+            None => flagged = cvar.wait(flagged).unwrap(),
+        }
     }
     true
 }
@@ -536,6 +544,36 @@ mod tests {
             );
         }
         assert_eq!(file_names(&dir).len(), 2, "exactly the two golden files");
+    }
+
+    #[test]
+    fn wait_times_out_and_reports_no_shutdown() {
+        let shutdown = (Mutex::new(false), Condvar::new());
+        assert!(!wait_for_shutdown(&shutdown, Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn wait_survives_absurd_interval_when_already_flagged() {
+        // interval_seconds = i64::MAX passes the config floor; the deadline
+        // computation must not panic on Instant overflow.
+        let shutdown = (Mutex::new(false), Condvar::new());
+        *shutdown.0.lock().unwrap() = true;
+        assert!(wait_for_shutdown(&shutdown, Duration::from_secs(u64::MAX)));
+    }
+
+    #[test]
+    fn wait_without_a_deadline_wakes_on_the_shutdown_signal() {
+        // The overflowed-deadline branch: no timeout, woken only by the
+        // condvar — exactly what the ctrlc handler delivers.
+        let shutdown = Arc::new((Mutex::new(false), Condvar::new()));
+        let waker = Arc::clone(&shutdown);
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            *waker.0.lock().unwrap() = true;
+            waker.1.notify_all();
+        });
+        assert!(wait_for_shutdown(&shutdown, Duration::from_secs(u64::MAX)));
+        handle.join().unwrap();
     }
 
     #[test]
