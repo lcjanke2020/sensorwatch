@@ -24,10 +24,15 @@ wheelhouse/
 # Rust (cargo build output). Cargo.lock IS committed for reproducible CI builds.
 /rust/target/
 
-# Tooling / editor
+# Tooling / editor. All of .claude/ stays local: this is a public repo, so a
+# committed settings.json would override the model choice of anyone who clones it.
+# The local model pin is a symlink into the private settings share (LEO-345).
 .claude/
 *.un~
 *~
 
-# Internal planning (not published)
+# Agent session working files (LEO-345 flow: bookend/handoff artifacts, never committed)
 PLAN.md
+TICKET.md
+FINDINGS.md
+COST.md
