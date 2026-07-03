@@ -8,7 +8,7 @@
 //! | Code | Meaning |
 //! |------|---------|
 //! | 0    | Clean: snapshot printed; `log` clean shutdown; `watch` one-shot timeout with no event (heartbeat); `watch` replay exhausted. |
-//! | 1    | Fatal: platform/source startup failure; signal-handler install failure; state/log/spool directory or seq-store *preparation* failure; `watch.seq` persistence failure. |
+//! | 1    | Fatal: platform/source startup failure; signal-handler install failure; an existing config that cannot be read; state/log/spool directory or seq-store *preparation* failure; `watch.seq` persistence failure. |
 //! | 2    | Usage: clap errors (automatic); invalid `[[rules]]`; zero rules configured; zero rules after filters; unknown `--rule` name. |
 //! | 10   | `watch` one-shot: a rule fired (the JSON event is on stdout). |
 //! | 130  | Interrupted by signal — `watch` only, both modes, including Windows Ctrl-C (`log` keeps its documented Ctrl-C = 0). |

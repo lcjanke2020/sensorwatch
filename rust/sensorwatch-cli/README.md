@@ -146,7 +146,7 @@ file. `watch` never deletes spool files — cleanup is the consuming agent's job
 | Code | Meaning |
 |------|---------|
 | 0 | Clean: `--timeout` elapsed with no event (heartbeat), or `--replay` exhausted |
-| 1 | Fatal: the state/log/spool directory or seq-store could not be *prepared*, the signal handler could not be installed, or `watch.seq` could not be persisted — message on stderr |
+| 1 | Fatal: an existing config could not be read, the state/log/spool directory or seq-store could not be *prepared*, the signal handler could not be installed, or `watch.seq` could not be persisted — message on stderr |
 | 2 | Usage error: invalid or zero `[[rules]]`, zero rules after filters, or an unknown `--rule` name |
 | 10 | One-shot: a rule fired (its JSON event is on stdout) |
 | 130 | Interrupted by a signal (both modes, including Windows Ctrl-C) — unlike `log`, which exits `0` |

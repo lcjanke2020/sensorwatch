@@ -158,10 +158,11 @@ pub(crate) fn format_timestamp(now: &Zoned) -> String {
     )
 }
 
-/// Serialize one record from an already-rendered timestamp string, without
-/// the trailing line ending (the writer owns that, since it is
-/// platform-dependent). `watch` replay carries the log's verbatim timestamp
-/// bytes through here; the `log` command renders `now` via [`format_record`].
+/// Serialize one record from an already-rendered timestamp string, without the
+/// trailing line ending (the writer owns that, since it is platform-dependent).
+/// Taking the timestamp as a string keeps record serialization independent of
+/// how the timestamp was produced: [`format_record`] renders `now` and
+/// delegates here.
 pub(crate) fn format_record_raw(timestamp: &str, entries: &[LogEntry<'_>]) -> String {
     let mut out = Vec::new();
     let mut serializer = serde_json::Serializer::with_formatter(&mut out, PythonFormatter);

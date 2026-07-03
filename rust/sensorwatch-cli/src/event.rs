@@ -129,7 +129,16 @@ impl SeqStore {
     /// crash-safe (write a sibling `.tmp`, then rename over the file) and
     /// happens before the caller emits anywhere.
     pub(crate) fn next(&mut self) -> io::Result<u64> {
-        let next = self.last + 1;
+        // `seq` must never repeat, so a u64::MAX counter (a hand-edited or
+        // corrupt `watch.seq` parses fine) is refused rather than wrapped back
+        // to 0 — reusing a number would break every ack cursor. `watch` maps
+        // this to a fatal exit, like any other seq-persistence failure.
+        let next = self.last.checked_add(1).ok_or_else(|| {
+            io::Error::other(format!(
+                "the sequence counter in {} is at u64::MAX; refusing to wrap and reuse a number",
+                self.path.display()
+            ))
+        })?;
         let tmp = self.path.with_file_name(format!("{SEQ_FILE}.tmp"));
         std::fs::write(&tmp, format!("{next}\n"))?;
         std::fs::rename(&tmp, &self.path)?;
@@ -286,6 +295,22 @@ mod tests {
         let err = SeqStore::open(dir.path()).unwrap_err();
         assert!(err.contains("watch.seq"), "{err}");
         assert!(err.contains("corrupt"), "{err}");
+    }
+
+    #[test]
+    fn seq_store_refuses_to_wrap_at_u64_max() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("watch.seq"), format!("{}\n", u64::MAX)).unwrap();
+        let mut store = SeqStore::open(dir.path()).unwrap();
+        let err = store.next().unwrap_err();
+        assert!(err.to_string().contains("u64::MAX"), "{err}");
+        // The refusal happens before any write: no staging file, and the
+        // on-disk counter is untouched (never wrapped to 0).
+        assert!(!dir.path().join("watch.seq.tmp").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("watch.seq")).unwrap(),
+            format!("{}\n", u64::MAX)
+        );
     }
 
     #[test]
