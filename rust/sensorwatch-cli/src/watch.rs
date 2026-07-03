@@ -42,10 +42,17 @@ pub(crate) fn run(args: &WatchArgs) -> ExitCode {
     // the document a single time and feeds it to both parsers (strict rules,
     // lenient config) — the LEO-335 single-document design.
     let Some(config_path) = Config::config_path(args.config.as_deref()) else {
-        eprintln!(
-            "sensorwatch watch: no config file found (looked at the --config path, then \
-             ./config.toml); watch needs a [[rules]] section to evaluate."
-        );
+        match &args.config {
+            Some(path) => eprintln!(
+                "sensorwatch watch: no config file found (looked at {}, then ./config.toml); \
+                 watch needs a [[rules]] section to evaluate.",
+                path.display()
+            ),
+            None => eprintln!(
+                "sensorwatch watch: no config file found (looked at ./config.toml); watch \
+                 needs a [[rules]] section to evaluate."
+            ),
+        }
         return ExitCode::from(exit::USAGE);
     };
     let text = match std::fs::read_to_string(&config_path) {
@@ -348,10 +355,14 @@ fn run_follow(
             return ExitCode::SUCCESS; // replay exhausted
         };
 
+        // One wall-clock read per tick, shared by this tick's sensor row and
+        // all of its events: a tick that straddles midnight then rotates every
+        // record it produced into the same daily file, never split across two.
+        let now = Zoned::now();
+
         if is_live {
             match &tick {
                 Tick::Sample(sample) => {
-                    let now = Zoned::now();
                     let entries: Vec<LogEntry<'_>> = sample
                         .readings
                         .iter()
@@ -385,9 +396,9 @@ fn run_follow(
                 }
             };
             let json = Event::from_transition(&transition, seq).to_json();
-            // Daily event file (wall-clock rotation) then spool — never
-            // stdout in follow mode.
-            event_writer.write_raw(&json, &Zoned::now());
+            // Daily event file (rotated on this tick's `now`) then spool —
+            // never stdout in follow mode.
+            event_writer.write_raw(&json, &now);
             spool_if_configured(args, seq, &transition.rule, &json);
         }
 
