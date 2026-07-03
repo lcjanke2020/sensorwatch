@@ -115,23 +115,45 @@ else:
 
 To capture readings over time, run the logger. It's a long-running process that
 samples on an interval and appends one JSON object per sample to a daily file,
-until you stop it with Ctrl+C:
+until you stop it with Ctrl+C. The primary logger is the Rust CLI's **`log`**
+subcommand (alias: `run`) — a single static binary, byte-compatible with the
+Python logger's output. Build it once as in Recipe 1, then:
 
 ```sh
-# Use the bundled default config
-python -m sensorwatch
-
-# Or point at your own config and see per-sample debug output
-sensorwatch --config config.toml --verbose
+./target/release/sensorwatch log                             # ./config.toml if present, else defaults
+./target/release/sensorwatch log --config my.toml --verbose  # explicit config + per-sample debug output
+./target/release/sensorwatch run                             # the same subcommand, under its alias
 ```
 
 It writes `logs/sensors_YYYY-MM-DD.jsonl` (a new file each local day; old files
-are pruned per `retention_days`). The Python logger's only flags are
-`--config/-c` and `--verbose/-v` — it has no subcommands. (The Rust
-`sensorwatch` binary is a separate, subcommand-based CLI; today it ships
-`snapshot`, Recipe 1.)
+are pruned per `retention_days` on startup and at each rollover), warns once
+and keeps retrying if HWiNFO's shared memory is unavailable, and shuts down
+cleanly on Ctrl+C / Ctrl+Break / console close. Exit codes: `0` after a
+signal-requested shutdown, `1` off-Windows or when startup fails (the log
+directory cannot be prepared, or the shutdown signal handler cannot be
+installed), `2` on usage errors. Config lookup: the `--config/-c` path, else
+`config.toml` in the current directory, else built-in defaults.
 
-`config.toml` schema (every key is optional; defaults shown):
+**Python fallback.** Without a Rust toolchain, the frozen Python logger does
+the same job (flags `--config/-c` and `--verbose/-v` only — it has no
+subcommands; its default config lookup also checks next to the installed
+package):
+
+```sh
+python -m sensorwatch
+sensorwatch --config config.toml --verbose
+```
+
+**Mixing old and new files.** The Rust logger's records are byte-compatible
+with the Python logger's, with three documented divergences — all
+parse-identical for JSON consumers: unrecognized reading-type codes render as
+a bare `"unknown"` (Python wrote `"unknown(<N>)"`), timestamps always carry
+six fractional digits (pendulum omitted them at exactly zero microseconds),
+and non-finite values are written as `null` (Python wrote bare `NaN`, which
+most JSON parsers reject).
+
+`config.toml` schema — shared by both loggers (every key is optional; defaults
+shown; bad values warn and fall back to their default rather than crashing):
 
 ```toml
 [general]
@@ -240,4 +262,4 @@ installed tree via `cmake --install` + `find_package(sensorwatch CONFIG REQUIRED
 | `[-4] Sensor source is not running or not enabled` (`SW_ERR_SOURCE_UNAVAILABLE`), or `read_sensors()` → `None` | HWiNFO not running, shared memory disabled, or sensors window closed | Start HWiNFO64, enable Settings → Shared Memory Support, open the sensors window |
 | `[-3] Backend is unavailable on this platform` (`SW_ERR_UNSUPPORTED_PLATFORM`) | Not Windows | sensorwatch reads a Windows-only shared-memory source |
 | `ImportError: sensorwatch._sw_cffi ... not built` | Native extension missing | `pip install sensorwatch` (prebuilt Windows wheel), or use the pure-Python `read_sensors()` (Recipe 1) |
-| A reading's `value` is `NaN`, or its category is the catch-all | HWiNFO exposes some entries without a current value / known category | Skip `NaN` values; treat the catch-all category as uncategorized. **The spelling differs by surface:** the native API's `reading.type.name` is upper-case (`OTHER` / `UNKNOWN`), while the logger JSONL and `read_sensors()` use title-case `"Other"` and `"unknown(<N>)"` for unrecognized codes (there is no literal `"Unknown"`); the `snapshot` JSON (Rust CLI and Python helper) uses the same title-case labels with a bare `"unknown"`. |
+| A reading's `value` is `NaN`, or its category is the catch-all | HWiNFO exposes some entries without a current value / known category | Skip `NaN` values; treat the catch-all category as uncategorized. **The spelling differs by surface:** the native API's `reading.type.name` is upper-case (`OTHER` / `UNKNOWN`), while the *Python* logger JSONL and `read_sensors()` use title-case `"Other"` and `"unknown(<N>)"` for unrecognized codes (there is no literal `"Unknown"`); the Rust CLI (both `snapshot` and `log`) and the Python snapshot helper use the same title-case labels with a bare `"unknown"`. |

@@ -8,16 +8,40 @@
 #![warn(rust_2018_idioms)]
 
 mod cli;
+mod config;
+mod jsonl;
+mod labels;
+mod logger;
 mod snapshot;
+#[cfg(test)]
+mod testutil;
 
 use clap::Parser;
 
 fn main() -> std::process::ExitCode {
-    // Logging goes to stderr under RUST_LOG control, so it can never pollute
-    // the JSON contract on stdout.
-    env_logger::init();
     let cli = cli::Cli::parse();
+    // Logging goes to stderr, so it can never pollute the JSON contract on
+    // stdout. `log` defaults to info (the Python logger's startup and
+    // warning lines); `snapshot` keeps env_logger's error default; RUST_LOG
+    // overrides either default. An explicit `--verbose` pins the filter to
+    // debug and beats RUST_LOG — the flag is a direct user request, the env
+    // var may be ambient.
+    let mut builder = match &cli.command {
+        cli::Command::Log(args) if args.verbose => {
+            let mut builder = env_logger::Builder::new();
+            builder.parse_filters("debug");
+            builder
+        }
+        cli::Command::Log(_) => {
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        }
+        cli::Command::Snapshot(_) => {
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"))
+        }
+    };
+    builder.init();
     match cli.command {
         cli::Command::Snapshot(args) => snapshot::run(&args),
+        cli::Command::Log(args) => logger::run(&args),
     }
 }

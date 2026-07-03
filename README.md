@@ -29,9 +29,11 @@ currents, power, fan speeds, clocks, and usage.
 - **Optional native binding** (`sensorwatch.native`) — a cffi wrapper over the
   bundled C core that reads the same data through the native parser (see
   [Native binding](#native-binding-cffi)).
-- **Rust CLI** (`rust/sensorwatch-cli`, binary `sensorwatch`) — the first step
-  of the Rust port: a one-shot `snapshot` subcommand printing live readings as
-  JSON, with type and substring filters (see [Rust binding](#rust-binding)).
+- **Rust CLI** (`rust/sensorwatch-cli`, binary `sensorwatch`) — the Rust port
+  of the tooling: a one-shot `snapshot` subcommand printing live readings as
+  JSON with type and substring filters, and a `log` subcommand (alias `run`)
+  that replaces the Python logger loop with a single static binary,
+  byte-compatible output included (see [Rust binding](#rust-binding)).
 
 ## Requirements
 
@@ -59,6 +61,19 @@ pip install -e .          # or: uv sync
 
 ## Usage
 
+The logger loop is available in two equivalent forms. The Rust CLI (repo-built;
+see [Rust binding](#rust-binding)) is the primary one:
+
+```sh
+cd rust && cargo build --release -p sensorwatch-cli
+
+# Sample on an interval and append JSONL records to daily files
+./target/release/sensorwatch log                             # ./config.toml if present, else defaults
+./target/release/sensorwatch log --config my.toml --verbose  # or: sensorwatch run (alias)
+```
+
+The frozen Python logger does the same job without a Rust toolchain:
+
 ```sh
 # Run with the bundled default config
 python -m sensorwatch
@@ -67,14 +82,14 @@ python -m sensorwatch
 sensorwatch --config config.toml --verbose
 ```
 
-If HWiNFO64 is not running (or shared memory is disabled), sensorwatch logs a
-warning and keeps trying — start HWiNFO and readings begin flowing.
+If HWiNFO64 is not running (or shared memory is disabled), either logger warns
+once and keeps trying — start HWiNFO and readings begin flowing.
 
-For a one-shot reading instead of a logger loop, the Rust CLI (repo-built; see
-[Rust binding](#rust-binding)) prints a live snapshot as JSON:
+For a one-shot reading instead of a logger loop, the Rust CLI prints a live
+snapshot as JSON:
 
 ```sh
-cd rust && cargo build --release -p sensorwatch-cli
+# still in rust/ from the build step above
 ./target/release/sensorwatch snapshot --type TEMPERATURE
 ```
 
@@ -96,17 +111,30 @@ One JSON object per sample, written to `logs/sensors_YYYY-MM-DD.jsonl`:
 ]}
 ```
 
+The Rust `log` subcommand writes the same bytes as the Python logger, so
+analyses can mix files from either without special-casing. Three documented
+divergences, all parse-identical for JSON consumers: unrecognized reading-type
+codes render as a bare `"unknown"` (Python wrote `"unknown(<N>)"`), timestamps
+always carry six fractional digits (pendulum omitted them at exactly zero
+microseconds), and non-finite values are written as `null` (Python wrote bare
+`NaN`, which most JSON parsers reject).
+
 ## Configuration
 
-`config.toml`:
+`config.toml` — the same schema drives both loggers; every key is optional, and
+bad values warn and fall back to their default rather than crashing:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `general.interval_seconds` | `10` | Seconds between samples |
+| `general.interval_seconds` | `10` | Seconds between samples (minimum 1) |
 | `general.log_dir` | `"logs"` | Directory for JSONL output |
-| `general.retention_days` | `30` | Delete log files older than this on startup (`0` = keep all) |
+| `general.retention_days` | `30` | Delete log files older than this on startup and daily rollover (`0` = keep all) |
 | `sensors.include` | `[]` | Substring patterns to capture (empty = all sensors) |
 | `sensors.exclude` | `[]` | Substring patterns to drop (applied after include) |
+
+Lookup order: the `--config/-c` path, else `config.toml` in the current
+directory (the Python logger also checks next to the installed package), else
+the built-in defaults.
 
 Example — capture only a specific PSU's sensors:
 
@@ -310,9 +338,10 @@ published crates in the conventional `-sys` split, plus the repo-only CLI:
   only a C compiler — never libclang.
 - **`sensorwatch`** — a safe, RAII wrapper.
 - **`sensorwatch-cli`** — the `sensorwatch` command-line binary on top of the safe
-  wrapper; repo-only (`publish = false`), currently a one-shot `snapshot`
-  subcommand (`cargo run -p sensorwatch-cli -- snapshot` from `rust/`, exit codes
-  and JSON shape in [`rust/sensorwatch-cli/README.md`](rust/sensorwatch-cli/README.md)).
+  wrapper; repo-only (`publish = false`), with a one-shot `snapshot` subcommand
+  and the `log` logger loop (`cargo run -p sensorwatch-cli -- log` from `rust/`,
+  exit codes and JSON shapes in
+  [`rust/sensorwatch-cli/README.md`](rust/sensorwatch-cli/README.md)).
 
 ```rust
 use sensorwatch::Session;

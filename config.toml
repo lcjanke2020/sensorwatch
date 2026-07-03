@@ -1,3 +1,7 @@
+# Logger configuration, consumed by both `sensorwatch log` (the Rust CLI) and
+# `python -m sensorwatch` (the frozen Python logger) — same schema, same
+# lenient handling: a bad value warns and falls back to its default.
+
 [general]
 interval_seconds = 10
 log_dir = "logs"

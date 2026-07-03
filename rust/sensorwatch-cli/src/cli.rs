@@ -1,5 +1,7 @@
 //! The clap command-line surface.
 
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Read hardware sensor data published by HWiNFO64's shared-memory feed.
@@ -18,6 +20,17 @@ pub enum Command {
     /// source is unavailable or the platform is unsupported, 2 on usage
     /// errors.
     Snapshot(SnapshotArgs),
+
+    /// Run the logger loop: sample sensors on an interval and append JSON
+    /// Lines records to daily files until interrupted.
+    ///
+    /// A byte-compatible port of the Python `sensorwatch` logger: same
+    /// config schema, file layout (`<log_dir>/sensors_YYYY-MM-DD.jsonl`),
+    /// rotation and retention behavior, and record bytes. Exits 0 on a
+    /// signal-requested shutdown, 1 when the platform is unsupported or the
+    /// log directory cannot be prepared, 2 on usage errors.
+    #[command(visible_alias = "run")]
+    Log(LogArgs),
 }
 
 #[derive(Args)]
@@ -39,6 +52,19 @@ pub struct SnapshotArgs {
         value_parser = clap::value_parser!(u32).range(..=16)
     )]
     pub indent: u32,
+}
+
+#[derive(Args)]
+pub struct LogArgs {
+    /// Path to config.toml (default: ./config.toml if present, else the
+    /// built-in defaults).
+    #[arg(long, short = 'c', value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
+    /// Enable debug logging (per-sample detail on stderr; takes precedence
+    /// over RUST_LOG).
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
 }
 
 /// The `--type` filter vocabulary — the upper-case names the Python tooling

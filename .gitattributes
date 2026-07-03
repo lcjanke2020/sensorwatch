@@ -12,3 +12,9 @@
 # across Windows and Linux runners regardless of a contributor's autocrlf setting —
 # same rationale as the bindings.rs rule above. The canonical sources are already LF.
 /rust/sensorwatch-sys/vendor/** text eol=lf
+
+# The golden logger fixture is byte-compared (include_bytes!) against LogWriter
+# output in the CLI's tests; an autocrlf checkout on the Windows runner would
+# rewrite it to CRLF and break the comparison. Generated with LF by
+# tests/golden/generate_fixture.py — keep it that way on every platform.
+/rust/sensorwatch-cli/tests/golden/** text eol=lf

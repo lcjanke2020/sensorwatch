@@ -21,7 +21,7 @@ nothing below depends on a later phase to be useful.
 | Python binding (cffi, API mode) | Shipped — `sensorwatch.native` |
 | C++ binding (header-only, C++17 RAII) | Shipped — [`include/sensorwatch/sensorwatch.hpp`](include/sensorwatch/sensorwatch.hpp) |
 | Rust bindings (`-sys` crate + safe wrapper) | Shipped — [crates.io](https://crates.io/crates/sensorwatch), OIDC trusted publishing |
-| Rust CLI — `snapshot` subcommand | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
+| Rust CLI — `snapshot` + `log` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
 | CMake `install()` / `find_package(sensorwatch CONFIG)` export | Shipped |
 | Agent skill (portable Agent Skills bundle) | Shipped — [`skills/sensorwatch/`](skills/sensorwatch/) |
 | CI: Ubuntu + Windows, sanitizers, ABI/vendor drift gates, MSRV check | Shipped — [`ci.yml`](.github/workflows/ci.yml) |
@@ -62,10 +62,12 @@ Each step ships independently:
    — one-shot live readings as JSON, with type and substring filters. *Usable
    outcome:* instant health checks and shell scripting, replacing the skill's
    bundled Python helper (kept as a no-toolchain fallback for now).
-2. **`log`** — the logger loop, byte-compatible with the Python logger's JSONL
-   output so existing analyses work unchanged over directories that mix
-   old and new files. *Usable outcome:* a single static binary replaces the
-   Python process for long-running capture.
+2. **`log`** — *shipped* ([`rust/sensorwatch-cli`](rust/sensorwatch-cli/))
+   — the logger loop, byte-compatible with the Python logger's JSONL output
+   (a Python-generated golden fixture is byte-compared in the tests) so
+   existing analyses work unchanged over directories that mix old and new
+   files. *Usable outcome:* a single static binary replaces the Python
+   process for long-running capture.
 3. **Declarative alert rules + deterministic engine** — a `[[rules]]` section
    in `config.toml`: thresholds with hysteresis and debounce, rate-of-change,
    stale-reading, missing-sensor, and source-unavailable detection. Evaluation
