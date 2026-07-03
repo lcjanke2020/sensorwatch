@@ -169,8 +169,12 @@ include = ["MEG Ai1600T"]
 An optional `[[rules]]` array in the same `config.toml` drives `sensorwatch
 watch`. Unlike `[general]`/`[sensors]`, this section is validated **strictly**:
 `watch` exits `2` on any invalid rule (`log` ignores the section entirely).
-Each rule matches a set of readings and fires when its condition holds, with
-optional hysteresis (`clear`) and debounce (`for_samples`):
+Rules evaluate the **full sample stream**: the `[sensors]` include/exclude
+filter above scopes only the `sensors_*.jsonl` log, not rule evaluation, so a
+rule can fire on a reading the sensor log omits — scope each rule with its own
+`sensor`/`reading`/`type` matchers. Each rule matches a set of readings and
+fires when its condition holds, with optional hysteresis (`clear`) and debounce
+(`for_samples`):
 
 | Key | Applies to | Description |
 |-----|------------|-------------|

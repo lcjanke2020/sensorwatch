@@ -121,6 +121,14 @@ never prints to stdout — it appends every fired *and* cleared event to
 log), and, when live, also logs sensors to `sensors_YYYY-MM-DD.jsonl`. Both
 modes spool each event when `--spool-dir` is set.
 
+**Replay.** `--replay` is best-effort over recorded logs: unreadable files and
+malformed lines are warned to stderr and skipped, and an exhausted or
+all-invalid replay exits `0` — the same as a live "all quiet", so watch stderr
+to tell a typo'd path from a genuine no-fire. Event-file rotation still keys off
+the wall clock, so under `--follow --replay` historical events (which carry their
+own sample `timestamp`) land in *today's* `events_*.jsonl`; replay follow is a
+testing/backfill mode, not a historical re-log, and writes no `sensors_*.jsonl`.
+
 **Event.** One compact JSON line, schema-versioned and ~1 KB, e.g.:
 
 ```json

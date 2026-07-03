@@ -566,7 +566,7 @@ mod tests {
             e("GPU", "Nothing", "None", 1.0, 1.0, 1.0, 1.0, ""),
         ];
 
-        let mut writer = LogWriter::new(dir.path(), LOG_PREFIX,0, &ts1, "\n").unwrap();
+        let mut writer = LogWriter::new(dir.path(), LOG_PREFIX, 0, &ts1, "\n").unwrap();
         writer.write(&record1, &ts1);
         writer.write(&record2, &ts2);
         writer.write(&record3, &ts3);

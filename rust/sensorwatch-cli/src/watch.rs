@@ -51,11 +51,15 @@ pub(crate) fn run(args: &WatchArgs) -> ExitCode {
     let text = match std::fs::read_to_string(&config_path) {
         Ok(text) => text,
         Err(err) => {
+            // `config_path` only returns paths that exist, so a failure here is
+            // an I/O fault reading a present file (permissions, a vanished
+            // mount) — a preparation failure (exit 1), not a usage error. A
+            // genuinely absent config is the `None` arm above (exit 2).
             eprintln!(
                 "sensorwatch watch: could not read config {}: {err}",
                 config_path.display()
             );
-            return ExitCode::from(exit::USAGE);
+            return ExitCode::from(exit::FATAL);
         }
     };
 
@@ -216,11 +220,16 @@ fn run_one_shot(
 ) -> ExitCode {
     let is_live = args.replay.is_empty();
     let interval = Duration::from_secs(config.interval_seconds.max(1) as u64);
-    // The heartbeat deadline is computed once; an absurd timeout that
-    // overflows the Instant simply degrades to "no deadline".
-    let deadline = args
-        .timeout
-        .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
+    // The heartbeat deadline is computed once; an absurd timeout that overflows
+    // the Instant simply degrades to "no deadline". `--timeout` is inert with
+    // `--replay` — replay never waits, so a slow drain must never be mistaken
+    // for an all-quiet heartbeat and drop a provable fire.
+    let deadline = if is_live {
+        args.timeout
+            .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)))
+    } else {
+        None
+    };
 
     loop {
         if shutdown_requested(shutdown) {

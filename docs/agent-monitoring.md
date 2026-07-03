@@ -40,7 +40,11 @@ against each sample. Evaluation is **sample-count based** and consumes
 timestamps from the data stream, never the wall clock, so the same input always
 produces the same fired/cleared transitions — which is what makes rules
 testable by **replaying** recorded logs (`--replay`) on any platform, before
-any live wiring exists.
+any live wiring exists. Rules always evaluate the **full, unfiltered** sample
+stream — the `[sensors]` include/exclude filter scopes only what `watch --follow`
+writes to `sensors_*.jsonl`, never rule evaluation. A rule can therefore fire on
+a reading its neighbouring sensor log omits; give each rule its own
+`sensor`/`reading`/`type` matchers to scope what it watches.
 
 **3. Wake-up transport.** The blocking one-shot `watch` exits `10` the instant a
 rule fires and `0` on a timeout — *the exit code is the message*. A supervisor
@@ -86,7 +90,7 @@ order:
 | 13 | `threshold` | number\|null | null for non-value kinds | configured threshold |
 | 14 | `samples_in_violation` | int | always | debounce count (fired) / episode total (cleared) |
 
-Example (~250 bytes; an event is guaranteed under 1 KB by construction):
+Example (~250 bytes; a representative event is unit-tested at under 1 KB):
 
 ```json
 {"schema_version":1,"seq":42,"id":"psu-12v-sag-42","rule":"psu-12v-sag","type":"threshold","severity":"critical","state":"fired","timestamp":"2026-02-18T08:00:20.000000-05:00","sensor":"MEG Ai1600T","reading":"+12V","value":11.4,"unit":"V","threshold":11.6,"samples_in_violation":2}
@@ -137,9 +141,13 @@ silent.
 
 ## Context-budget principles
 
-The agent layer has hard size bounds *by construction*, not by convention:
+The agent layer keeps hard size bounds *by design*, not by convention:
 
-- Events are ~1 KB and fixed-shape.
+- Events are fixed-shape (14 keys) and typically ~250 bytes; a representative
+  event is unit-tested under 1 KB. The only variable-length inputs are the rule
+  name and the sensor/reading/unit strings, so short rule names keep events
+  comfortably inside a kilobyte (there is no length cap on the strings
+  themselves — a pathologically long configured name would exceed it).
 - The `report` digest (Phase 1 step 5) is size-capped.
 - Durable state is kilobyte-scale summaries.
 - The protocol forbids reading raw history — an agent never loads a day of
