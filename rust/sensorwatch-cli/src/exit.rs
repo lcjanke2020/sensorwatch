@@ -8,10 +8,16 @@
 //! | Code | Meaning |
 //! |------|---------|
 //! | 0    | Clean: snapshot printed; `log` clean shutdown; `watch` one-shot timeout with no event (heartbeat); `watch` replay exhausted. |
-//! | 1    | Fatal: platform/source startup failures; signal-handler install failure; log/spool/seq-store preparation or persistence failure. |
+//! | 1    | Fatal: platform/source startup failure; signal-handler install failure; state/log/spool directory or seq-store *preparation* failure; `watch.seq` persistence failure. |
 //! | 2    | Usage: clap errors (automatic); invalid `[[rules]]`; zero rules configured; zero rules after filters; unknown `--rule` name. |
 //! | 10   | `watch` one-shot: a rule fired (the JSON event is on stdout). |
 //! | 130  | Interrupted by signal — `watch` only, both modes, including Windows Ctrl-C (`log` keeps its documented Ctrl-C = 0). |
+//!
+//! Exit 1 covers *preparation* plus the `watch.seq` integrity anchor only.
+//! Per-record `events_`/spool **writes** are best-effort: a failure is warned
+//! and swallowed so a follow watcher survives disk pressure, and because `seq`
+//! is monotonic (not dense) a skipped event is contractually acceptable, not
+//! fatal — the visible seq gap is what ack cursors reconcile against.
 //!
 //! Source loss is deliberately NOT an exit code: it surfaces as the
 //! `source-unavailable` rule *kind* in an event, so agents dispatch on event

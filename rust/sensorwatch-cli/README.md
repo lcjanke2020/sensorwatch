@@ -146,10 +146,16 @@ file. `watch` never deletes spool files — cleanup is the consuming agent's job
 | Code | Meaning |
 |------|---------|
 | 0 | Clean: `--timeout` elapsed with no event (heartbeat), or `--replay` exhausted |
-| 1 | Fatal: the state directory, spool directory, sequence file, or signal handler could not be prepared/persisted — message on stderr |
+| 1 | Fatal: the state/log/spool directory or seq-store could not be *prepared*, the signal handler could not be installed, or `watch.seq` could not be persisted — message on stderr |
 | 2 | Usage error: invalid or zero `[[rules]]`, zero rules after filters, or an unknown `--rule` name |
 | 10 | One-shot: a rule fired (its JSON event is on stdout) |
 | 130 | Interrupted by a signal (both modes, including Windows Ctrl-C) — unlike `log`, which exits `0` |
+
+Exit `1` is *preparation* plus the `watch.seq` anchor only. A failed per-record
+`events_`/spool **write** in follow mode is warned on stderr and swallowed, not
+fatal: the watcher stays up under disk pressure, and because `seq` is persisted
+first and is monotonic (not dense), a lost write leaves a visible gap the agent's
+ack cursor reconciles against rather than crashing the monitor.
 
 Source loss is **not** an exit code — it surfaces as the `source-unavailable`
 rule kind in an event. `--replay` runs on any platform; live watching needs

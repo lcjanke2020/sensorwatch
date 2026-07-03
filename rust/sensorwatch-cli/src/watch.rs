@@ -38,7 +38,7 @@ use crate::source::{LiveSource, SampleSource, Tick};
 /// state directory and source → run the selected mode. Every early return
 /// maps onto the exit-code contract in [`crate::exit`].
 pub(crate) fn run(args: &WatchArgs) -> ExitCode {
-    // Steps 2: resolve the config path and read its text once. `watch` reads
+    // Step 2: resolve the config path and read its text once. `watch` reads
     // the document a single time and feeds it to both parsers (strict rules,
     // lenient config) — the LEO-335 single-document design.
     let Some(config_path) = Config::config_path(args.config.as_deref()) else {

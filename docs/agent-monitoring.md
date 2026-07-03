@@ -123,10 +123,18 @@ deletes spool files — cleanup is the agent's ack protocol (Phase 2).
 | Code | Meaning |
 |------|---------|
 | 0 | Clean: snapshot printed; `log` clean shutdown; `watch` one-shot timeout with no event (heartbeat); `watch` replay exhausted |
-| 1 | Fatal: platform/source startup failure; signal-handler install failure; log/spool/seq-store preparation or persistence failure |
+| 1 | Fatal: platform/source startup failure; signal-handler install failure; state/log/spool directory or seq-store *preparation* failure; `watch.seq` persistence failure |
 | 2 | Usage: clap errors; invalid `[[rules]]`; zero rules configured; zero rules after filters; unknown `--rule` name |
 | 10 | `watch` one-shot: a rule fired (the JSON event is on stdout) |
 | 130 | Interrupted by a signal — `watch` only, both modes, including Windows Ctrl-C (`log` keeps its documented Ctrl-C = 0) |
+
+Exit `1` covers *preparation* and the `watch.seq` integrity anchor only. A
+failed per-record `events_`/spool **write** is deliberately **not** fatal: it is
+warned on stderr and swallowed so a follow watcher survives disk pressure. The
+seq is already persisted before any sink is touched, so a lost write leaves a
+visible gap in an otherwise monotonic sequence — which ack cursors reconcile
+against — rather than reusing a number or crashing the monitor. `watch.seq`
+itself is the one durability guarantee; its persistence failure *is* fatal.
 
 Source loss is deliberately **not** an exit code: it surfaces as the
 `source-unavailable` rule *kind* in an event, so agents dispatch on event
