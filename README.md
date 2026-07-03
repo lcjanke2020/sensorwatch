@@ -33,9 +33,11 @@ currents, power, fan speeds, clocks, and usage.
   of the tooling: a one-shot `snapshot` subcommand printing live readings as
   JSON with type and substring filters, a `log` subcommand (alias `run`) that
   replaces the Python logger loop with a single static binary (byte-compatible
-  output included), and a `watch` subcommand that evaluates declarative
-  `[[rules]]` and emits structured JSON events for deterministic alerting (see
-  [Rust binding](#rust-binding)).
+  output included), a `watch` subcommand that evaluates declarative `[[rules]]`
+  and emits structured JSON events for deterministic alerting, and a `report`
+  subcommand that condenses logged history into a bounded JSON digest — window
+  aggregates, re-derived violations, and sampling gaps under a hard size cap —
+  for humans and LLMs alike (see [Rust binding](#rust-binding)).
 
 ## Requirements
 
@@ -114,6 +116,26 @@ with no agent involved. The full contract — event schema, exit codes, the
 five-layer monitoring architecture — is in
 [docs/agent-monitoring.md](docs/agent-monitoring.md).
 
+To review what already happened, `report` condenses logged history into one
+bounded JSON digest — the sanctioned way for an agent to read the past without
+parsing raw logs:
+
+```sh
+# What happened in the last 24 h: aggregates, violations, gaps, liveness — one call
+./target/release/sensorwatch report
+
+# A focused, pretty-printed window under an explicit byte budget
+./target/release/sensorwatch report --last 6h --match psu --indent 2 --max-bytes 4096
+```
+
+Every reading row is aggregated over the window itself (HWiNFO's source-lifetime
+`min`/`max`/`avg` are ignored as wrong for a window); violations are re-derived
+by the same deterministic engine as `watch`; `meta.samples`/`last_sample` make a
+zero-sample digest the "logger is dead" signal in a single call; and
+`--max-bytes` guarantees the output fits an agent's context budget. Full flag
+tour and the digest schema:
+[rust/sensorwatch-cli/README.md](rust/sensorwatch-cli/README.md#report).
+
 ## Running from WSL-2
 
 sensorwatch is a Windows program, but you can launch it from a WSL-2 shell via
@@ -139,6 +161,30 @@ codes render as a bare `"unknown"` (Python wrote `"unknown(<N>)"`), timestamps
 always carry six fractional digits (pendulum omitted them at exactly zero
 microseconds), and non-finite values are written as `null` (Python wrote bare
 `NaN`, which most JSON parsers reject).
+
+Agents never read those raw logs directly; `sensorwatch report` condenses a
+window of them into one bounded digest instead (`--indent 2`, abbreviated):
+
+```json
+{"schema_version":1,
+ "meta":{"window":{"since":"2026-02-18T05:00:00Z","until":"2026-02-19T17:00:00Z"},
+   "log_dir":"logs","files_scanned":2,"interval_seconds":10,"samples":8,
+   "skipped_lines":0,"first_sample":"2026-02-18T08:00:00.000000-05:00",
+   "last_sample":"2026-02-19T08:00:20.000000-05:00","series_total":2,"rules_evaluated":1,
+   "truncated":{"readings_shown":2,"readings_total":2,"violations_shown":2,
+     "violations_total":2,"gaps_shown":2,"gaps_total":2}},
+ "violations":[/* frozen watch-event objects, chronological, digest-local seq */],
+ "gaps":[{"from":"…-05:00","to":"…-05:00","seconds":120}],
+ "readings":[{"sensor":"MEG Ai1600T","reading":"+12V","type":"Voltage","unit":"V",
+   "samples":8,"non_finite":0,"first":12.0,"last":12.25,"min":11.25,"max":12.5,
+   "avg":11.9375,"delta":0.25,"in_violation":true}]}
+```
+
+Aggregates are recomputed over the window (not HWiNFO's lifetime numbers),
+violations are re-derived by the `watch` engine, sampling `gaps` flag any pause
+longer than 3× `interval_seconds`, and the whole thing is capped by
+`--max-bytes`. See
+[rust/sensorwatch-cli/README.md](rust/sensorwatch-cli/README.md#report).
 
 ## Configuration
 

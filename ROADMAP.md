@@ -87,10 +87,15 @@ Each step ships independently:
    [`docs/agent-monitoring.md`](docs/agent-monitoring.md). *Usable outcome:*
    deterministic hardware alerting with no agent involved — a shell script
    dispatching on the exit code is a complete alerting system.
-5. **`report`** — a bounded digest over logged history: per-reading window
-   aggregates, rule violations, sampling gaps, and a metadata block, under a
-   hard output-size cap. *Usable outcome:* one command answers "what happened
-   in the last 24 h" for humans and LLMs alike.
+5. **`report`** — *shipped* ([`rust/sensorwatch-cli`](rust/sensorwatch-cli/))
+   — a bounded digest over logged history: per-reading window aggregates
+   (recomputed over the window, not HWiNFO's lifetime numbers), rule violations
+   re-derived by replaying the window through the same deterministic engine,
+   sampling gaps, and a meta block that doubles as a one-call liveness check,
+   all under a hard `--max-bytes` output cap with a `--top` selector and
+   substring/type display filters. Pure file reading, so it runs on any
+   platform. *Usable outcome:* one command answers "what happened in the last
+   24 h" for humans and LLMs alike, on a fixed context budget.
 
 Phase 1 closes with a documentation pass making the Rust CLI canonical and the
 Python CLI explicitly legacy/reference.
@@ -172,9 +177,13 @@ Design decisions we have deliberately left open, in case you'd like to weigh in
 - **Notification transports.** The notify adapter ships with email first;
   which push channels (ntfy, Pushover, others) earn built-in adapters, and
   whether a "critical" tier warrants acknowledge-required semantics.
-- **Digest truncation semantics.** `report` guarantees a size cap; the exact
-  priority order of what gets dropped first as data grows deserves scrutiny
-  once real multi-week logs exist.
+- **Digest truncation semantics.** *Decided (shipped in `report`).* `--top`
+  first caps reading rows to the largest relative movers plus anything in
+  violation; if the JSON still overflows `--max-bytes`, detail is dropped
+  worst-first — lowest-ranked reading row, then smallest gap (oldest on a tie),
+  then oldest violation — while the meta block and summary always survive. Full
+  order and rationale:
+  [rust/sensorwatch-cli/README.md](rust/sensorwatch-cli/README.md#report).
 - **Adaptive heartbeat.** Whether the watch timeout should vary by schedule
   (e.g. longer overnight) — and if so, deterministically in config rather than
   by agent judgment.

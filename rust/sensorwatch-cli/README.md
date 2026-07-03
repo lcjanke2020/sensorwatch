@@ -163,6 +163,105 @@ Windows with HWiNFO64 (off Windows the live source only yields "unavailable",
 so only `source-unavailable` rules can fire). Full contract and the five-layer
 monitoring architecture: [docs/agent-monitoring.md](../../docs/agent-monitoring.md).
 
+## `report`
+
+Summarize logged history into one bounded JSON digest — the sanctioned way for
+an agent to read the past without ever parsing the raw `sensors_*.jsonl` logs.
+One call yields per-series window aggregates, re-derived rule violations,
+sampling gaps, and a meta block that doubles as a liveness check:
+
+```sh
+sensorwatch report                                   # the last 24 h, compact JSON
+sensorwatch report --last 6h --indent 2              # a 6 h window, pretty-printed
+sensorwatch report --since 2026-02-18 --until 2026-02-19   # an explicit date window
+sensorwatch report --match psu --type TEMPERATURE    # focused triage (display-only filters)
+sensorwatch report --log-dir ./logs --max-bytes 4096 --top 10
+```
+
+Flags: `--config/-c` (supplies `log_dir`, `interval_seconds`, and the
+`[[rules]]` re-derived over the window — `report` works with zero rules);
+`--since <WHEN>` and `--until <WHEN>` (an RFC 3339 instant, a local
+`YYYY-MM-DDTHH:MM:SS`, or a bare `YYYY-MM-DD` — `--since` a date is the start of
+that local day, `--until` a date is the *end*; `--until` defaults to now);
+`--last <DURATION>` (a trailing window ending at `--until` when `--since` is
+absent — `24h`, `90m`, `45s`, `7d`, compound `1d12h`, or a bare integer of
+seconds; default `24h`, conflicts with `--since`); `--max-bytes <BYTES>` (hard
+output cap, default 8192, floor 512); `--top <N>` (max reading rows before the
+cap, default 20); `--match <SUBSTRING>` (repeatable, case-insensitive over
+sensor/reading names) and `--type <TYPE>` (display filters only — same
+vocabulary as `snapshot`); `--log-dir <PATH>` (override the config's);
+`--indent <0–16>` (0 = compact; indentation counts against the cap);
+`--verbose/-v`.
+
+**Digest** (`--indent 2`, abbreviated):
+
+```json
+{"schema_version":1,
+ "meta":{"window":{"since":"2026-02-18T05:00:00Z","until":"2026-02-19T17:00:00Z"},
+   "log_dir":"logs","files_scanned":2,"interval_seconds":10,"samples":8,
+   "skipped_lines":0,"first_sample":"2026-02-18T08:00:00.000000-05:00",
+   "last_sample":"2026-02-19T08:00:20.000000-05:00","series_total":2,"rules_evaluated":1,
+   "truncated":{"readings_shown":2,"readings_total":2,"violations_shown":2,
+     "violations_total":2,"gaps_shown":2,"gaps_total":2}},
+ "violations":[/* frozen watch-event objects, chronological, with a digest-local seq */],
+ "gaps":[{"from":"2026-02-18T08:00:30.000000-05:00","to":"2026-02-18T08:02:30.000000-05:00","seconds":120}],
+ "readings":[{"sensor":"MEG Ai1600T","reading":"+12V","type":"Voltage","unit":"V",
+   "samples":8,"non_finite":0,"first":12.0,"last":12.25,"min":11.25,"max":12.5,
+   "avg":11.9375,"delta":0.25,"in_violation":true}]}
+```
+
+**Liveness in one call.** `meta.samples`, `meta.first_sample`, and
+`meta.last_sample` say whether the logger is alive and how fresh the data is: a
+zero-sample digest (empty `readings`/`violations`/`gaps`, null first/last) is
+itself the "logger is dead or the machine was off" signal — still exit `0`.
+Compare `meta.last_sample` against `meta.window.until` to see how stale the tail
+is; sampling `gaps` (any pause longer than 3× `interval_seconds`) pinpoint when
+the machine was off or the logger was down.
+
+**Window aggregates, not lifetime numbers.** Each `readings` row is folded over
+the window's own samples: `samples`, `non_finite` (nulls / NaN / ±inf, excluded
+from the math), `first`/`last`/`min`/`max`/`avg`/`delta` over the finite values,
+and `in_violation`. HWiNFO's own per-record `min`/`max`/`avg` are *source
+lifetime* extremes (since HWiNFO started), wrong for a window, and are
+deliberately ignored — reporting them would answer a different question.
+
+**Violations** are re-derived by replaying the window's samples through the
+deterministic rule engine (identical to `watch`, so the same logs yield the same
+verdicts). Each is a frozen `watch` event object. Its `seq`/`id` are
+**digest-local ordinals** (1..n per run, transition order) for human reference
+only — they are *not* the `watch` ack cursor and must never be fed to one.
+Because the engine starts fresh at the window's edge, a live watcher whose
+`for_samples` debounce lead-in predated the window may have fired on a sample
+this digest never sees; widen the window to capture the lead-in when that
+matters.
+
+**Fitting.** The digest never exceeds `--max-bytes` (the trailing newline
+excluded). `--top` first caps the reading rows to the ones with the largest
+relative movement plus anything `in_violation`; then, if the JSON still
+overflows, detail is dropped worst-first until it fits, in this order:
+
+1. the lowest-ranked reading row (from the end),
+2. else the smallest sampling gap (oldest on a tie),
+3. else the oldest violation (lowest `seq`).
+
+The `meta` block, its counters, and the summary always survive; `truncated.*`
+records exactly what was shown versus found. Only a pathologically small cap
+(e.g. `--max-bytes 512 --indent 16`) can fail to fit even the meta-only digest —
+that, and only that, is a usage error (exit `2`).
+
+`report` is **pure file reading** — no live sensor source, no HWiNFO, no
+platform gate — so it works identically on any OS wherever the logs are
+readable, and it never writes state (in particular it never touches
+`watch.seq`).
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | A digest was printed — including a zero-sample digest (the dead-logger signal) |
+| 1 | Fatal: an existing config could not be read — message on stderr |
+| 2 | Usage error: invalid `[[rules]]`, a bad `--since`/`--until`/`--last` value, `since` after `until`, or a `--max-bytes`/`--indent` combination too small to fit even the meta-only digest |
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
