@@ -68,6 +68,9 @@ Behavior, ported from the Python logger:
 - **Shutdown** — Ctrl+C, SIGTERM, and on Windows the Ctrl+Break/console-close
   events all stop the loop cleanly; a condition-variable sleep wakes instantly
   instead of polling.
+- **Logging** — startup, warning, and per-sample debug lines go to stderr,
+  never stdout; the default level is info (`RUST_LOG` can override it), and an
+  explicit `--verbose` pins debug, taking precedence over `RUST_LOG`.
 
 Records are byte-compatible with the Python logger's (Python's JSON separators
 and key order, local-offset ISO 8601 timestamps, and — on Windows — CRLF line

@@ -22,15 +22,24 @@ fn main() -> std::process::ExitCode {
     let cli = cli::Cli::parse();
     // Logging goes to stderr, so it can never pollute the JSON contract on
     // stdout. `log` defaults to info (the Python logger's startup and
-    // warning lines; debug with --verbose); `snapshot` keeps env_logger's
-    // error default. RUST_LOG overrides either.
-    let default_filter = match &cli.command {
-        cli::Command::Log(args) if args.verbose => "debug",
-        cli::Command::Log(_) => "info",
-        cli::Command::Snapshot(_) => "error",
+    // warning lines); `snapshot` keeps env_logger's error default; RUST_LOG
+    // overrides either default. An explicit `--verbose` pins the filter to
+    // debug and beats RUST_LOG — the flag is a direct user request, the env
+    // var may be ambient.
+    let mut builder = match &cli.command {
+        cli::Command::Log(args) if args.verbose => {
+            let mut builder = env_logger::Builder::new();
+            builder.parse_filters("debug");
+            builder
+        }
+        cli::Command::Log(_) => {
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        }
+        cli::Command::Snapshot(_) => {
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"))
+        }
     };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
-        .init();
+    builder.init();
     match cli.command {
         cli::Command::Snapshot(args) => snapshot::run(&args),
         cli::Command::Log(args) => logger::run(&args),

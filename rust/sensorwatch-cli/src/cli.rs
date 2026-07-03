@@ -61,7 +61,8 @@ pub struct LogArgs {
     #[arg(long, short = 'c', value_name = "PATH")]
     pub config: Option<PathBuf>,
 
-    /// Enable debug logging (per-sample detail on stderr).
+    /// Enable debug logging (per-sample detail on stderr; takes precedence
+    /// over RUST_LOG).
     #[arg(long, short = 'v')]
     pub verbose: bool,
 }
