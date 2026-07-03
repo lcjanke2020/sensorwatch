@@ -89,6 +89,7 @@ For a one-shot reading instead of a logger loop, the Rust CLI prints a live
 snapshot as JSON:
 
 ```sh
+# still in rust/ from the build step above
 ./target/release/sensorwatch snapshot --type TEMPERATURE
 ```
 
