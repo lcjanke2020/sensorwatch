@@ -75,6 +75,8 @@ impl ReplaySource {
     }
 
     /// Malformed (or oversized) lines skipped so far, across all files.
+    // `watch` does not surface this; the `report` command (LEO-337) will.
+    #[allow(dead_code)]
     pub(crate) fn skipped_lines(&self) -> u64 {
         self.skipped_lines
     }

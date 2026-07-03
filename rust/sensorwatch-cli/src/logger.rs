@@ -23,12 +23,18 @@ use crate::cli::LogArgs;
 use crate::config::Config;
 use crate::jsonl::{self, LogEntry};
 
-/// Prefix for daily log files: `<log_dir>/<LOG_PREFIX><YYYY-MM-DD>.jsonl`.
-const LOG_PREFIX: &str = "sensors_";
+/// Prefix for daily sensor-log files: `<log_dir>/<LOG_PREFIX><YYYY-MM-DD>.jsonl`.
+pub(crate) const LOG_PREFIX: &str = "sensors_";
+
+/// Prefix for daily event files written by `watch --follow`:
+/// `<log_dir>/<EVENT_PREFIX><YYYY-MM-DD>.jsonl`. Same rotation and retention
+/// machinery as the sensor log, just a second [`LogWriter`] instance with a
+/// different prefix — each writer prunes only its own files.
+pub(crate) const EVENT_PREFIX: &str = "events_";
 
 /// Line terminator matching the Python logger's text-mode writes: CRLF on
 /// Windows (where every existing file was produced), LF elsewhere.
-const LINE_ENDING: &str = if cfg!(windows) { "\r\n" } else { "\n" };
+pub(crate) const LINE_ENDING: &str = if cfg!(windows) { "\r\n" } else { "\n" };
 
 /// The logger loop, ported from `sensorwatch/__main__.py`.
 pub(crate) fn run(args: &LogArgs) -> ExitCode {
@@ -56,29 +62,17 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
         log::info!("Sensor filter (include): {:?}", config.sensor_include);
     }
 
-    let shutdown = Arc::new((Mutex::new(false), Condvar::new()));
-    {
-        // The `termination` feature covers SIGINT/SIGTERM on Unix and the
-        // CTRL_C/CTRL_BREAK/CTRL_CLOSE console events on Windows — a
-        // superset of the Python handler set (SIGINT, SIGTERM, SIGBREAK).
-        let shutdown = Arc::clone(&shutdown);
-        if let Err(err) = ctrlc::set_handler(move || {
-            let (lock, cvar) = &*shutdown;
-            // Recover from a poisoned lock (a panic while holding it) so a
-            // shutdown request is always deliverable — panicking inside the
-            // signal-handler thread would be the worst place for it.
-            *lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-            cvar.notify_all();
-        }) {
+    let shutdown = match install_shutdown_handler() {
+        Ok(shutdown) => shutdown,
+        Err(err) => {
             eprintln!("Could not install the shutdown signal handler: {err}");
             return ExitCode::from(1);
         }
-    }
+    };
 
     let mut writer = match LogWriter::new(
         &config.log_dir,
+        LOG_PREFIX,
         config.retention_days,
         &Zoned::now(),
         LINE_ENDING,
@@ -156,11 +150,35 @@ fn collect_live() -> sensorwatch::Result<Vec<Reading>> {
     snapshot.to_vec()
 }
 
+/// Install the ctrl-c / termination handler, returning the shared shutdown
+/// flag `(Mutex<bool>, Condvar)`. The handler sets the bool and notifies the
+/// condvar; poisoned-lock recovery keeps a shutdown request deliverable even
+/// after a panic. Shared by `log` and `watch` (the `watch` command maps the
+/// same signal onto exit 130 instead of a clean 0).
+pub(crate) fn install_shutdown_handler() -> Result<Arc<(Mutex<bool>, Condvar)>, ctrlc::Error> {
+    let shutdown = Arc::new((Mutex::new(false), Condvar::new()));
+    let handler_shutdown = Arc::clone(&shutdown);
+    // The `termination` feature covers SIGINT/SIGTERM on Unix and the
+    // CTRL_C/CTRL_BREAK/CTRL_CLOSE console events on Windows — a superset of
+    // the Python handler set (SIGINT, SIGTERM, SIGBREAK).
+    ctrlc::set_handler(move || {
+        let (lock, cvar) = &*handler_shutdown;
+        // Recover from a poisoned lock (a panic while holding it) so a
+        // shutdown request is always deliverable — panicking inside the
+        // signal-handler thread would be the worst place for it.
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        cvar.notify_all();
+    })?;
+    Ok(shutdown)
+}
+
 /// Sleep for `interval` or until shutdown is flagged, whichever comes first;
 /// returns whether shutdown was requested. The condition-variable wait
 /// replaces Python's 0.1 s polling loop: shutdown wakes instantly. The outer
 /// loop guards against spurious wakeups.
-fn wait_for_shutdown(shutdown: &(Mutex<bool>, Condvar), interval: Duration) -> bool {
+pub(crate) fn wait_for_shutdown(shutdown: &(Mutex<bool>, Condvar), interval: Duration) -> bool {
     let (lock, cvar) = shutdown;
     // An absurd interval_seconds is a valid TOML integer the config floor
     // (>= 1) accepts, and it overflows Instant arithmetic. Degrade to "sleep
@@ -192,9 +210,14 @@ fn wait_for_shutdown(shutdown: &(Mutex<bool>, Condvar), interval: Duration) -> b
     true
 }
 
-/// Writes sensor readings as JSON Lines with daily file rotation.
+/// Writes records as JSON Lines with daily file rotation. The `prefix`
+/// selects the file family (`sensors_` for the logger, `events_` for
+/// `watch --follow`); retention prunes only files matching this writer's own
+/// prefix, so two writers can share a `log_dir` without touching each other's
+/// files.
 pub(crate) struct LogWriter {
     log_dir: PathBuf,
+    prefix: &'static str,
     retention_days: i64,
     line_ending: &'static str,
     current_date: Option<Date>,
@@ -206,12 +229,14 @@ impl LogWriter {
     /// opened until the first write (Python opens lazily too).
     pub(crate) fn new(
         log_dir: impl Into<PathBuf>,
+        prefix: &'static str,
         retention_days: i64,
         now: &Zoned,
         line_ending: &'static str,
     ) -> std::io::Result<LogWriter> {
         let writer = LogWriter {
             log_dir: log_dir.into(),
+            prefix,
             retention_days,
             line_ending,
             current_date: None,
@@ -229,6 +254,17 @@ impl LogWriter {
         let record = jsonl::format_record(now, entries);
         if let Err(err) = self.write_record(&record, now) {
             log::warn!("Failed to write log record ({err})");
+        }
+    }
+
+    /// Write an already-formatted record (an event JSON line from
+    /// `watch --follow`), reusing this writer's rotation, line ending, and
+    /// warn-and-swallow IO discipline. A follow watcher must survive disk
+    /// pressure: `watch.seq` is the integrity anchor and the spool is the
+    /// durability path, so a dropped daily-file line is logged, not fatal.
+    pub(crate) fn write_raw(&mut self, record: &str, now: &Zoned) {
+        if let Err(err) = self.write_record(record, now) {
+            log::warn!("Failed to write event record ({err})");
         }
     }
 
@@ -266,7 +302,7 @@ impl LogWriter {
 
     fn log_path(&self, date: Date) -> PathBuf {
         // civil::Date displays as ISO `YYYY-MM-DD`.
-        self.log_dir.join(format!("{LOG_PREFIX}{date}.jsonl"))
+        self.log_dir.join(format!("{}{date}.jsonl", self.prefix))
     }
 
     /// Delete log files strictly older than `retention_days` (a file exactly
@@ -296,7 +332,7 @@ impl LogWriter {
             let name = entry.file_name();
             let Some(stem) = name
                 .to_str()
-                .and_then(|n| n.strip_prefix(LOG_PREFIX))
+                .and_then(|n| n.strip_prefix(self.prefix))
                 .and_then(|n| n.strip_suffix(".jsonl"))
             else {
                 continue;
@@ -367,7 +403,7 @@ mod tests {
     fn write_record_shape() {
         let dir = TempDir::new();
         let now = at(2026, 2, 18, 8, 17);
-        let mut writer = LogWriter::new(dir.path(), 30, &now, "\n").unwrap();
+        let mut writer = LogWriter::new(dir.path(), LOG_PREFIX, 30, &now, "\n").unwrap();
         writer.write(&[entry()], &now);
 
         let path = dir.path().join("sensors_2026-02-18.jsonl");
@@ -386,7 +422,7 @@ mod tests {
         let dir = TempDir::new();
         let day1 = at(2026, 2, 18, 23, 59);
         let day2 = at(2026, 2, 19, 0, 1);
-        let mut writer = LogWriter::new(dir.path(), 0, &day1, "\n").unwrap();
+        let mut writer = LogWriter::new(dir.path(), LOG_PREFIX, 0, &day1, "\n").unwrap();
         writer.write(&[entry()], &day1);
         writer.write(&[entry()], &day2);
 
@@ -409,7 +445,7 @@ mod tests {
         touch(&dir, "sensors_2026-05-16.jsonl"); // exactly 30 days: kept
         touch(&dir, "sensors_2026-06-14.jsonl"); // 1 day: kept
         let now = at(2026, 6, 15, 12, 0);
-        let _writer = LogWriter::new(dir.path(), 30, &now, "\n").unwrap();
+        let _writer = LogWriter::new(dir.path(), LOG_PREFIX, 30, &now, "\n").unwrap();
 
         assert_eq!(
             file_names(&dir),
@@ -425,7 +461,7 @@ mod tests {
         touch(&dir, "sensors_not-a-date.jsonl"); // unparseable stem: kept
         touch(&dir, "unrelated.jsonl"); // outside the prefix: kept
         let now = at(2026, 6, 15, 12, 0);
-        let _writer = LogWriter::new(dir.path(), 30, &now, "\n").unwrap();
+        let _writer = LogWriter::new(dir.path(), LOG_PREFIX, 30, &now, "\n").unwrap();
 
         assert_eq!(
             file_names(&dir),
@@ -439,7 +475,7 @@ mod tests {
         let dir = TempDir::new();
         touch(&dir, "sensors_1999-01-01.jsonl");
         let now = at(2026, 6, 15, 12, 0);
-        let _writer = LogWriter::new(dir.path(), 0, &now, "\n").unwrap();
+        let _writer = LogWriter::new(dir.path(), LOG_PREFIX, 0, &now, "\n").unwrap();
 
         assert_eq!(file_names(&dir), vec!["sensors_1999-01-01.jsonl"]);
     }
@@ -449,7 +485,7 @@ mod tests {
         let dir = TempDir::new();
         touch(&dir, "sensors_1999-01-01.jsonl");
         let now = at(2026, 6, 15, 12, 0);
-        let _writer = LogWriter::new(dir.path(), i64::MAX, &now, "\n").unwrap();
+        let _writer = LogWriter::new(dir.path(), LOG_PREFIX, i64::MAX, &now, "\n").unwrap();
 
         // Nothing can be older than an i64::MAX-day cutoff: no-op, no panic.
         assert_eq!(file_names(&dir), vec!["sensors_1999-01-01.jsonl"]);
@@ -462,7 +498,7 @@ mod tests {
         let dir = TempDir::new();
         let day1 = at(2026, 6, 15, 12, 0);
         let day2 = at(2026, 6, 16, 12, 0);
-        let mut writer = LogWriter::new(dir.path(), 30, &day1, "\n").unwrap();
+        let mut writer = LogWriter::new(dir.path(), LOG_PREFIX, 30, &day1, "\n").unwrap();
 
         // Planted after startup, so only a rollover cleanup can remove it.
         touch(&dir, "sensors_2026-01-01.jsonl");
@@ -478,7 +514,8 @@ mod tests {
     fn write_failure_is_warned_and_swallowed() {
         let dir = TempDir::new();
         let now = at(2026, 6, 15, 12, 0);
-        let mut writer = LogWriter::new(dir.path().join("logs"), 0, &now, "\n").unwrap();
+        let mut writer =
+            LogWriter::new(dir.path().join("logs"), LOG_PREFIX, 0, &now, "\n").unwrap();
         // Yank the directory out from under the writer: the open in
         // ensure_file fails, and write must swallow the error, not panic.
         std::fs::remove_dir_all(dir.path().join("logs")).unwrap();
@@ -529,7 +566,7 @@ mod tests {
             e("GPU", "Nothing", "None", 1.0, 1.0, 1.0, 1.0, ""),
         ];
 
-        let mut writer = LogWriter::new(dir.path(), 0, &ts1, "\n").unwrap();
+        let mut writer = LogWriter::new(dir.path(), LOG_PREFIX,0, &ts1, "\n").unwrap();
         writer.write(&record1, &ts1);
         writer.write(&record2, &ts2);
         writer.write(&record3, &ts3);
@@ -602,9 +639,53 @@ mod tests {
     fn crlf_line_ending_is_honored() {
         let dir = TempDir::new();
         let now = at(2026, 2, 18, 8, 17);
-        let mut writer = LogWriter::new(dir.path(), 0, &now, "\r\n").unwrap();
+        let mut writer = LogWriter::new(dir.path(), LOG_PREFIX, 0, &now, "\r\n").unwrap();
         writer.write(&[entry()], &now);
         let bytes = std::fs::read(dir.path().join("sensors_2026-02-18.jsonl")).unwrap();
         assert!(bytes.ends_with(b"}\r\n"));
+    }
+
+    // ---- LEO-336: prefix parameterization + write_raw ----
+
+    #[test]
+    fn write_raw_writes_event_prefixed_file() {
+        let dir = TempDir::new();
+        let now = at(2026, 2, 18, 8, 17);
+        let mut writer = LogWriter::new(dir.path(), EVENT_PREFIX, 0, &now, "\n").unwrap();
+        writer.write_raw(r#"{"seq":1}"#, &now);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("events_2026-02-18.jsonl")).unwrap(),
+            "{\"seq\":1}\n"
+        );
+    }
+
+    #[test]
+    fn retention_prunes_only_the_writers_own_prefix() {
+        let dir = TempDir::new();
+        // One stale file of each family, both older than the cutoff.
+        touch(&dir, "sensors_2020-01-01.jsonl");
+        touch(&dir, "events_2020-01-01.jsonl");
+        let now = at(2026, 6, 15, 12, 0);
+
+        // The events writer prunes only events_*, leaving the sensor log.
+        let _events = LogWriter::new(dir.path(), EVENT_PREFIX, 30, &now, "\n").unwrap();
+        assert_eq!(file_names(&dir), vec!["sensors_2020-01-01.jsonl"]);
+
+        // Symmetrically, a sensor-log writer leaves events_* untouched.
+        touch(&dir, "events_2020-02-02.jsonl");
+        let _sensors = LogWriter::new(dir.path(), LOG_PREFIX, 30, &now, "\n").unwrap();
+        assert_eq!(file_names(&dir), vec!["events_2020-02-02.jsonl"]);
+    }
+
+    #[test]
+    fn write_raw_failure_is_warned_and_swallowed() {
+        let dir = TempDir::new();
+        let now = at(2026, 6, 15, 12, 0);
+        let mut writer =
+            LogWriter::new(dir.path().join("logs"), EVENT_PREFIX, 0, &now, "\n").unwrap();
+        // Yank the directory: the open in ensure_file fails, and write_raw
+        // must swallow the error, not panic.
+        std::fs::remove_dir_all(dir.path().join("logs")).unwrap();
+        writer.write_raw(r#"{"seq":1}"#, &now);
     }
 }

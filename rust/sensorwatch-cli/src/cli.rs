@@ -31,6 +31,25 @@ pub enum Command {
     /// log directory cannot be prepared, 2 on usage errors.
     #[command(visible_alias = "run")]
     Log(LogArgs),
+
+    /// Evaluate the config's `[[rules]]` against live samples and emit a
+    /// structured JSON event when a rule fires — the agent wake-up primitive.
+    ///
+    /// Two modes. Blocking one-shot (default): wait for the first firing
+    /// rule, print one JSON event to stdout (and spool it when `--spool-dir`
+    /// is set), and exit 10; if `--timeout` elapses first, exit 0 (an agent
+    /// heartbeat). Follow mode (`--follow`): run until interrupted, logging
+    /// sensors like `log` while appending every fired and cleared event to
+    /// daily `events_YYYY-MM-DD.jsonl` files.
+    ///
+    /// Exit codes: 0 clean (timeout, or `--replay` exhausted), 10 a rule
+    /// fired (one-shot), 1 fatal (state/spool/source preparation failure), 2
+    /// usage (invalid or zero rules, unknown `--rule`), 130 interrupted by a
+    /// signal (both modes, including Windows Ctrl-C). Source loss is not an
+    /// exit code — it surfaces as a `source-unavailable` event. Off Windows
+    /// there is no live sensor source, so only `source-unavailable` rules can
+    /// fire; `--replay` evaluates rules over recorded logs on any platform.
+    Watch(WatchArgs),
 }
 
 #[derive(Args)]
@@ -65,6 +84,70 @@ pub struct LogArgs {
     /// over RUST_LOG).
     #[arg(long, short = 'v')]
     pub verbose: bool,
+}
+
+#[derive(Args)]
+pub struct WatchArgs {
+    /// Path to config.toml (default: ./config.toml if present). The rules to
+    /// evaluate live in this file's `[[rules]]` array.
+    #[arg(long, short = 'c', value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
+    /// Enable debug logging on stderr (takes precedence over RUST_LOG).
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
+
+    /// Follow mode: run until interrupted, logging sensors and appending
+    /// every fired and cleared event to daily event files. Absent = a
+    /// blocking one-shot that exits on the first firing rule.
+    #[arg(long)]
+    pub follow: bool,
+
+    /// One-shot heartbeat deadline in whole seconds: exit 0 if no rule fires
+    /// within this many seconds. Inert with `--replay` (replay never waits).
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..),
+        conflicts_with = "follow"
+    )]
+    pub timeout: Option<u64>,
+
+    /// Only evaluate the rule with this exact (case-sensitive) name;
+    /// repeatable. An unknown name is a usage error listing the available
+    /// names.
+    #[arg(long = "rule", value_name = "NAME")]
+    pub rules: Vec<String>,
+
+    /// Only evaluate rules with at least this severity.
+    #[arg(
+        long = "min-severity",
+        value_enum,
+        ignore_case = true,
+        value_name = "SEV"
+    )]
+    pub min_severity: Option<MinSeverity>,
+
+    /// Directory for atomic per-event JSON spool files (one file per event,
+    /// written temp-then-rename). Absent = no spool.
+    #[arg(long = "spool-dir", value_name = "PATH")]
+    pub spool_dir: Option<PathBuf>,
+
+    /// Evaluate rules over recorded `sensors_*.jsonl` files in argument order
+    /// instead of the live source (no pacing); repeatable. Answers "does my
+    /// rule fire on yesterday's logs?" and drives the integration tests.
+    #[arg(long, value_name = "FILE")]
+    pub replay: Vec<PathBuf>,
+}
+
+/// The `--min-severity` filter vocabulary. Mapped to `rules::Severity` in
+/// `watch.rs`, which keeps clap out of `rules.rs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum MinSeverity {
+    Info,
+    Warning,
+    Critical,
 }
 
 /// The `--type` filter vocabulary — the upper-case names the Python tooling

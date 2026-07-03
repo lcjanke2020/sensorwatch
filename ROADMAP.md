@@ -10,7 +10,7 @@ One constraint shapes the sequencing: **the project must be usable at every
 intermediate stage.** Each milestone ships something you can run on its own —
 nothing below depends on a later phase to be useful.
 
-*Last updated: 2026-07-02.*
+*Last updated: 2026-07-03.*
 
 ## Where the project is today
 
@@ -21,7 +21,7 @@ nothing below depends on a later phase to be useful.
 | Python binding (cffi, API mode) | Shipped — `sensorwatch.native` |
 | C++ binding (header-only, C++17 RAII) | Shipped — [`include/sensorwatch/sensorwatch.hpp`](include/sensorwatch/sensorwatch.hpp) |
 | Rust bindings (`-sys` crate + safe wrapper) | Shipped — [crates.io](https://crates.io/crates/sensorwatch), OIDC trusted publishing |
-| Rust CLI — `snapshot` + `log` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
+| Rust CLI — `snapshot` + `log` + `watch` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
 | CMake `install()` / `find_package(sensorwatch CONFIG)` export | Shipped |
 | Agent skill (portable Agent Skills bundle) | Shipped — [`skills/sensorwatch/`](skills/sensorwatch/) |
 | CI: Ubuntu + Windows, sanitizers, ABI/vendor drift gates, MSRV check | Shipped — [`ci.yml`](.github/workflows/ci.yml) |
@@ -78,12 +78,15 @@ Each step ships independently:
    outcome:* the rule engine is exercised end-to-end in CI via replay before
    any live wiring exists (the `watch` command below is where rules become
    user-visible).
-4. **`watch`** — the rules engine as a command. A blocking mode waits until a
-   rule fires, emits one structured JSON event (with a monotonic, persisted
-   sequence number), and exits with a distinct code; a follow mode streams
-   events to daily files. *Usable outcome:* deterministic hardware alerting
-   with no agent involved — a shell script dispatching on the exit code is a
-   complete alerting system.
+4. **`watch`** — *shipped* ([`rust/sensorwatch-cli`](rust/sensorwatch-cli/))
+   — the rules engine as a command. A blocking mode waits until a rule fires,
+   emits one structured JSON event (with a monotonic, persisted sequence
+   number), and exits with a distinct code; a follow mode streams fired and
+   cleared events to daily files. The CLI-wide exit-code contract and the
+   event schema land here, written up in
+   [`docs/agent-monitoring.md`](docs/agent-monitoring.md). *Usable outcome:*
+   deterministic hardware alerting with no agent involved — a shell script
+   dispatching on the exit code is a complete alerting system.
 5. **`report`** — a bounded digest over logged history: per-reading window
    aggregates, rule violations, sampling gaps, and a metadata block, under a
    hard output-size cap. *Usable outcome:* one command answers "what happened
@@ -127,7 +130,8 @@ process; act on its exit," which any current agent runtime provides.
 
 The architecture — *deterministic watcher → classified event → bounded digest
 → agent wake → durable state with an ack cursor* — is written up as a
-standalone design document (`docs/agent-monitoring.md`, landing with `watch`),
+standalone design document
+([`docs/agent-monitoring.md`](docs/agent-monitoring.md), shipped with `watch`),
 because it generalizes well beyond hardware: any "agent that keeps an eye on
 something" (CI, PRs, queues) has the same shape.
 

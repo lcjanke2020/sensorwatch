@@ -31,9 +31,11 @@ currents, power, fan speeds, clocks, and usage.
   [Native binding](#native-binding-cffi)).
 - **Rust CLI** (`rust/sensorwatch-cli`, binary `sensorwatch`) — the Rust port
   of the tooling: a one-shot `snapshot` subcommand printing live readings as
-  JSON with type and substring filters, and a `log` subcommand (alias `run`)
-  that replaces the Python logger loop with a single static binary,
-  byte-compatible output included (see [Rust binding](#rust-binding)).
+  JSON with type and substring filters, a `log` subcommand (alias `run`) that
+  replaces the Python logger loop with a single static binary (byte-compatible
+  output included), and a `watch` subcommand that evaluates declarative
+  `[[rules]]` and emits structured JSON events for deterministic alerting (see
+  [Rust binding](#rust-binding)).
 
 ## Requirements
 
@@ -93,6 +95,25 @@ snapshot as JSON:
 ./target/release/sensorwatch snapshot --type TEMPERATURE
 ```
 
+For deterministic alerting, `watch` evaluates the config's [alert
+rules](#alert-rules-rules) and turns the first firing rule into a structured
+JSON event — the agent wake-up primitive:
+
+```sh
+# Block until a rule fires (exit 10) or the heartbeat elapses (exit 0)
+./target/release/sensorwatch watch --timeout 3600
+
+# Or follow indefinitely, logging sensors and appending events to daily files
+./target/release/sensorwatch watch --follow
+```
+
+The **exit code is the signal**: `10` = a rule fired (its JSON event is on
+stdout), `0` = clean timeout ("all quiet — re-arm"), `2` = a config/usage
+error. A shell script dispatching on that code is a complete alerting system,
+with no agent involved. The full contract — event schema, exit codes, the
+five-layer monitoring architecture — is in
+[docs/agent-monitoring.md](docs/agent-monitoring.md).
+
 ## Running from WSL-2
 
 sensorwatch is a Windows program, but you can launch it from a WSL-2 shell via
@@ -142,6 +163,46 @@ Example — capture only a specific PSU's sensors:
 [sensors]
 include = ["MEG Ai1600T"]
 ```
+
+### Alert rules (`[[rules]]`)
+
+An optional `[[rules]]` array in the same `config.toml` drives `sensorwatch
+watch`. Unlike `[general]`/`[sensors]`, this section is validated **strictly**:
+`watch` exits `2` on any invalid rule (`log` ignores the section entirely).
+Each rule matches a set of readings and fires when its condition holds, with
+optional hysteresis (`clear`) and debounce (`for_samples`):
+
+| Key | Applies to | Description |
+|-----|------------|-------------|
+| `name` | all | Unique rule name; the event `id` derives from it (required) |
+| `kind` | all | `threshold` \| `rate` \| `stale` \| `missing` \| `source-unavailable` (required) |
+| `sensor` | matchers | Case-insensitive substring on the sensor name (optional) |
+| `reading` | matchers | Case-insensitive substring on the reading name (optional) |
+| `type` | matchers | Exact canonical type label, e.g. `Temperature` (optional) |
+| `metric` | threshold, rate | Which field to compare: `value` \| `min` \| `max` \| `avg` |
+| `op` | threshold, rate | `>` \| `>=` \| `<` \| `<=` |
+| `threshold` | threshold, rate | The compared-against value |
+| `clear` | threshold | Hysteresis re-arm level (omit = clears at `threshold`) |
+| `for_samples` | all | Consecutive violating samples before firing (debounce) |
+| `window_samples` | rate | Trailing window size, in samples, for the delta |
+| `severity` | all | `info` \| `warning` \| `critical` |
+
+```toml
+[[rules]]
+name = "psu-12v-sag"
+kind = "threshold"
+sensor = "MEG Ai1600T"
+reading = "+12V"
+type = "Voltage"
+metric = "value"
+op = "<"
+threshold = 11.6
+clear = 11.8          # re-arms only after recovering past 11.8 V
+for_samples = 3       # fire on the 3rd consecutive violating sample
+severity = "critical"
+```
+
+The root [`config.toml`](config.toml) carries a fuller commented example.
 
 ## Testing / CI scope
 
@@ -338,9 +399,9 @@ published crates in the conventional `-sys` split, plus the repo-only CLI:
   only a C compiler — never libclang.
 - **`sensorwatch`** — a safe, RAII wrapper.
 - **`sensorwatch-cli`** — the `sensorwatch` command-line binary on top of the safe
-  wrapper; repo-only (`publish = false`), with a one-shot `snapshot` subcommand
-  and the `log` logger loop (`cargo run -p sensorwatch-cli -- log` from `rust/`,
-  exit codes and JSON shapes in
+  wrapper; repo-only (`publish = false`), with a one-shot `snapshot` subcommand,
+  the `log` logger loop, and the `watch` alerting command (`cargo run -p
+  sensorwatch-cli -- watch` from `rust/`, exit codes and JSON shapes in
   [`rust/sensorwatch-cli/README.md`](rust/sensorwatch-cli/README.md)).
 
 ```rust

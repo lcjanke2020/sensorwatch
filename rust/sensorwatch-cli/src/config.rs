@@ -8,7 +8,7 @@
 //! strings (Python `str()`-coerces any value, so `log_dir = 5` silently
 //! becomes the directory `"5"`); non-strings warn and use the default.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Config {
@@ -63,6 +63,34 @@ impl Config {
         Config::default()
     }
 
+    /// Resolve the config path `watch` will read. Unlike [`Config::load`],
+    /// which reads leniently and returns a `Config`, `watch` needs the *path*
+    /// so it can read the text once and feed both the strict rules parser and
+    /// the lenient config parser (the LEO-335 single-document design). The
+    /// resolution mirrors `load`: an existing explicit `--config` wins; a
+    /// given-but-missing path warns and falls through to `./config.toml`;
+    /// absent that, `None` (watch treats "no config" as a zero-rules usage
+    /// error). The `_from` split keeps tests independent of the process cwd.
+    pub(crate) fn config_path(explicit: Option<&Path>) -> Option<PathBuf> {
+        Config::config_path_from(explicit, &[Path::new("config.toml")])
+    }
+
+    fn config_path_from(explicit: Option<&Path>, fallbacks: &[&Path]) -> Option<PathBuf> {
+        if let Some(path) = explicit {
+            if path.exists() {
+                return Some(path.to_path_buf());
+            }
+            log::warn!(
+                "Config file {} not found; falling back to the default config lookup",
+                path.display()
+            );
+        }
+        fallbacks
+            .iter()
+            .find(|candidate| candidate.exists())
+            .map(|candidate| candidate.to_path_buf())
+    }
+
     /// Read and parse one file; unreadable or malformed TOML warns and
     /// yields the defaults (it does not continue down the fallback chain,
     /// matching Python's `Config.load`).
@@ -85,7 +113,9 @@ impl Config {
 
     /// Parse a TOML document, falling back to defaults for missing or
     /// invalid keys. Only a syntactically malformed document is an error.
-    fn from_toml_str(text: &str) -> Result<Config, toml::de::Error> {
+    /// `pub(crate)` so `watch` can parse config out of already-read text
+    /// (it reads the file once and also hands the text to the rules parser).
+    pub(crate) fn from_toml_str(text: &str) -> Result<Config, toml::de::Error> {
         let data: toml::Table = text.parse()?;
         let defaults = Config::default();
 
@@ -444,5 +474,40 @@ mod tests {
         std::fs::write(&fallback, "[general]\ninterval_seconds = 7\n").unwrap();
         let config = Config::load_from(Some(&explicit), &[&fallback]);
         assert_eq!(config.interval_seconds, 3);
+    }
+
+    // ---- LEO-336: config_path resolution (watch) ----
+
+    #[test]
+    fn config_path_prefers_existing_explicit() {
+        let dir = TempDir::new();
+        let explicit = dir.path().join("explicit.toml");
+        let fallback = dir.path().join("fallback.toml");
+        std::fs::write(&explicit, "").unwrap();
+        std::fs::write(&fallback, "").unwrap();
+        assert_eq!(
+            Config::config_path_from(Some(&explicit), &[&fallback]),
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn config_path_falls_back_when_explicit_missing() {
+        let dir = TempDir::new();
+        let missing = dir.path().join("nope.toml");
+        let fallback = dir.path().join("fallback.toml");
+        std::fs::write(&fallback, "").unwrap();
+        assert_eq!(
+            Config::config_path_from(Some(&missing), &[&fallback]),
+            Some(fallback)
+        );
+    }
+
+    #[test]
+    fn config_path_is_none_when_nothing_exists() {
+        let dir = TempDir::new();
+        let missing = dir.path().join("nope.toml");
+        assert_eq!(Config::config_path_from(Some(&missing), &[]), None);
+        assert_eq!(Config::config_path_from(None, &[]), None);
     }
 }

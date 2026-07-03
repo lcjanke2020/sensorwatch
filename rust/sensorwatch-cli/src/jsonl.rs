@@ -32,6 +32,7 @@ use sensorwatch::Reading;
 use serde::Serialize;
 
 use crate::labels::type_label;
+use crate::source::SampleReading;
 
 /// Reproduces Python's default `json.dumps` separators: `", "` and `": "`.
 /// Everything else (string escaping, number rendering) inherits serde_json's
@@ -100,6 +101,25 @@ impl<'a> From<&'a Reading> for LogEntry<'a> {
     }
 }
 
+/// `watch --follow` logs the same sample the engine evaluated, whose readings
+/// are already [`SampleReading`]s (source-neutral, `kind` a canonical label).
+/// Building the record from those keeps live-follow sensor logs byte-shaped
+/// like the `log` command's.
+impl<'a> From<&'a SampleReading> for LogEntry<'a> {
+    fn from(r: &'a SampleReading) -> Self {
+        LogEntry {
+            sensor: &r.sensor,
+            reading: &r.reading,
+            kind: r.kind,
+            value: r.value,
+            min: r.min,
+            max: r.max,
+            avg: r.avg,
+            unit: &r.unit,
+        }
+    }
+}
+
 /// One JSONL record: all readings sampled at one timestamp.
 #[derive(Serialize)]
 struct Record<'a> {
@@ -138,18 +158,26 @@ pub(crate) fn format_timestamp(now: &Zoned) -> String {
     )
 }
 
-/// Serialize one record, without the trailing line ending (the writer owns
-/// that, since it is platform-dependent).
-pub(crate) fn format_record(now: &Zoned, entries: &[LogEntry<'_>]) -> String {
+/// Serialize one record from an already-rendered timestamp string, without
+/// the trailing line ending (the writer owns that, since it is
+/// platform-dependent). `watch` replay carries the log's verbatim timestamp
+/// bytes through here; the `log` command renders `now` via [`format_record`].
+pub(crate) fn format_record_raw(timestamp: &str, entries: &[LogEntry<'_>]) -> String {
     let mut out = Vec::new();
     let mut serializer = serde_json::Serializer::with_formatter(&mut out, PythonFormatter);
     Record {
-        timestamp: &format_timestamp(now),
+        timestamp,
         sensors: entries,
     }
     .serialize(&mut serializer)
     .expect("serializing strings and floats to a Vec cannot fail");
     String::from_utf8(out).expect("serde_json output is UTF-8")
+}
+
+/// Serialize one record, rendering `now` with the pendulum-compatible
+/// timestamp formatter.
+pub(crate) fn format_record(now: &Zoned, entries: &[LogEntry<'_>]) -> String {
+    format_record_raw(&format_timestamp(now), entries)
 }
 
 #[cfg(test)]
@@ -260,6 +288,41 @@ mod tests {
         e.kind = "Temperature";
         let record = format_record(&zoned(1_000, 0), &[e]);
         assert!(record.contains(r#""unit": "°C""#));
+    }
+
+    // ---- LEO-336: format_record_raw + LogEntry::from(&SampleReading) ----
+
+    #[test]
+    fn format_record_raw_matches_format_record_for_the_same_timestamp() {
+        let now = zoned(123_456_000, -5 * 3600);
+        let entries = [entry(12.03), entry(12.05)];
+        assert_eq!(
+            format_record_raw(&format_timestamp(&now), &entries),
+            format_record(&now, &entries)
+        );
+    }
+
+    #[test]
+    fn log_entry_from_sample_reading_maps_every_field() {
+        let sample = SampleReading {
+            sensor: "MEG Ai1600T".to_owned(),
+            reading: "+12V".to_owned(),
+            kind: "Voltage",
+            value: 11.4,
+            min: 11.3,
+            max: 12.1,
+            avg: 11.9,
+            unit: "V".to_owned(),
+        };
+        let entry = LogEntry::from(&sample);
+        assert_eq!(entry.sensor, "MEG Ai1600T");
+        assert_eq!(entry.reading, "+12V");
+        assert_eq!(entry.kind, "Voltage");
+        assert_eq!(entry.value, 11.4);
+        assert_eq!(entry.min, 11.3);
+        assert_eq!(entry.max, 12.1);
+        assert_eq!(entry.avg, 11.9);
+        assert_eq!(entry.unit, "V");
     }
 
     #[test]

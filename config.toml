@@ -17,3 +17,30 @@ include = []
 
 # Patterns to exclude (applied after include).
 exclude = []
+
+# Alert rules, evaluated by `sensorwatch watch` (the Rust CLI). The `log`
+# subcommand ignores this section entirely; `watch` validates it strictly and
+# exits 2 on any invalid rule. Uncomment and adapt. Full key reference and
+# semantics: README → "Alert rules" and docs/agent-monitoring.md.
+#
+# A CPU-temperature threshold with hysteresis and debounce: fire when the
+# reading has been above 90 °C for 3 consecutive samples; clear once it falls
+# back to 82 °C (the gap suppresses chatter around the edge).
+# [[rules]]
+# name = "cpu-temp-hot"
+# kind = "threshold"
+# reading = "CPU"           # substring match on the reading name
+# type = "Temperature"      # canonical type label (exact match)
+# metric = "value"          # which field to compare: value | min | max | avg
+# op = ">"                  # > | >= | < | <=
+# threshold = 90.0
+# clear = 82.0              # hysteresis re-arm level (omit = clears at threshold)
+# for_samples = 3           # consecutive violating samples before firing
+# severity = "critical"     # info | warning | critical
+#
+# Fire when the sensor source itself goes away (HWiNFO stops publishing):
+# [[rules]]
+# name = "sensors-offline"
+# kind = "source-unavailable"
+# for_samples = 2
+# severity = "warning"
