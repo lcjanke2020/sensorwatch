@@ -13,6 +13,17 @@ mod jsonl;
 mod labels;
 mod logger;
 mod snapshot;
+// The rule engine (LEO-335) is exercised only by its tests until the `watch`
+// command (LEO-336) wires it to the CLI; the dead_code allows come off in
+// that PR.
+#[allow(dead_code)]
+mod engine;
+#[allow(dead_code)]
+mod replay;
+#[allow(dead_code)]
+mod rules;
+#[allow(dead_code)]
+mod source;
 #[cfg(test)]
 mod testutil;
 

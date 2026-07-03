@@ -68,14 +68,16 @@ Each step ships independently:
    existing analyses work unchanged over directories that mix old and new
    files. *Usable outcome:* a single static binary replaces the Python
    process for long-running capture.
-3. **Declarative alert rules + deterministic engine** — a `[[rules]]` section
+3. **Declarative alert rules + deterministic engine** — *shipped*
+   ([`rust/sensorwatch-cli`](rust/sensorwatch-cli/)) — a `[[rules]]` section
    in `config.toml`: thresholds with hysteresis and debounce, rate-of-change,
    stale-reading, missing-sensor, and source-unavailable detection. Evaluation
    is sample-count based and consumes timestamps from the data stream, so it is
    fully deterministic under **replay** of recorded logs — which also makes the
    whole engine developable and testable on non-Windows machines. *Usable
    outcome:* the rule engine is exercised end-to-end in CI via replay before
-   any live wiring exists.
+   any live wiring exists (the `watch` command below is where rules become
+   user-visible).
 4. **`watch`** — the rules engine as a command. A blocking mode waits until a
    rule fires, emits one structured JSON event (with a monotonic, persisted
    sequence number), and exits with a distinct code; a follow mode streams
