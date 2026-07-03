@@ -76,10 +76,23 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
             let config = Config::from_toml_str(&text).unwrap_or_default();
             (rules, config)
         }
-        None => (
-            RuleSet::from_toml_str("").expect("an empty document is an empty rule set"),
-            Config::default(),
-        ),
+        None => {
+            // No config resolved, so gap detection runs on the DEFAULT cadence.
+            // Reading another machine's logs (the cross-platform "pure file
+            // reading" flow) without its config silently uses a 10 s interval —
+            // warn, because a logger that actually sampled slower would report
+            // spurious gaps. `report` is stdout-first, so this stays on stderr.
+            let config = Config::default();
+            log::warn!(
+                "no config found; gap detection uses the default interval_seconds={} — pass \
+                 --config to match the logger's real cadence",
+                config.interval_seconds
+            );
+            (
+                RuleSet::from_toml_str("").expect("an empty document is an empty rule set"),
+                config,
+            )
+        }
     };
 
     // Resolve the log directory (override wins). A missing or non-directory
@@ -141,10 +154,16 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     let files = digest::candidate_files(&log_dir, since, until, &tz);
     let files_scanned = files.len();
     let rules_evaluated = rules.rules().len();
+    let matches = &args.r#match;
+    let type_filter = type_filter_label(args.type_filter);
     let mut source = ReplaySource::from_files(files);
     let mut engine = Engine::new(rules);
     let mut agg = Aggregator::new(config.interval_seconds);
+    // Retained transitions cap DISPLAY only; `violations_total` counts the
+    // exact post-filter total across the whole scan so the cap can never hide
+    // data loss (mirrors how `gaps_total` stays exact while gaps are capped).
     let mut transitions: VecDeque<_> = VecDeque::new();
+    let mut violations_total: usize = 0;
 
     while let Some(tick) = source.next_tick() {
         // Replay never emits Unavailable; a non-sample tick has no instant to
@@ -157,6 +176,17 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
         }
         agg.observe(sample);
         for transition in engine.observe(&tick) {
+            // Mark the series BEFORE any capping: a series whose transitions all
+            // fall in the evicted prefix must still keep its forced ranking tier.
+            if let (Some(sensor), Some(reading)) = (&transition.sensor, &transition.reading) {
+                agg.mark_in_violation(sensor, reading);
+            }
+            // Count the exact post-filter total BEFORE the display cap; the
+            // series kind is already known (the sample was just aggregated), so
+            // this uses the same predicate `emit` uses to build the shown list.
+            if digest::violation_passes(&transition, matches, type_filter, &agg) {
+                violations_total += 1;
+            }
             if transitions.len() == VIOLATION_CAP {
                 transitions.pop_front();
             }
@@ -166,18 +196,13 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     let skipped_lines = source.skipped_lines();
     let transitions: Vec<_> = transitions.into_iter().collect();
 
-    // Flag every series that saw a transition (fired or cleared) in the window.
-    for transition in &transitions {
-        if let (Some(sensor), Some(reading)) = (&transition.sensor, &transition.reading) {
-            agg.mark_in_violation(sensor, reading);
-        }
-    }
-
     log::debug!(
-        "report: {} sample(s), {} series, {} transition(s), {} skipped line(s), {} file(s) scanned",
+        "report: {} sample(s), {} series, {} transition(s) retained, {} violation(s) total, \
+         {} skipped line(s), {} file(s) scanned",
         agg.samples(),
+        agg.series_count(),
         transitions.len(),
-        transitions.len(),
+        violations_total,
         skipped_lines,
         files_scanned,
     );
@@ -190,13 +215,13 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
         interval_seconds: config.interval_seconds,
         skipped_lines,
         rules_evaluated,
-        matches: &args.r#match,
-        type_filter: type_filter_label(args.type_filter),
+        matches,
+        type_filter,
         top: args.top,
         max_bytes: args.max_bytes,
         indent: args.indent,
     };
-    digest::emit(&cfg, &agg, &transitions)
+    digest::emit(&cfg, &agg, &transitions, violations_total)
 }
 
 /// Emit a usage message on stderr and return the usage exit code.

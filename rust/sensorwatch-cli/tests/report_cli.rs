@@ -818,3 +818,151 @@ fn golden_python_fixtures_replay_cleanly() {
     assert_eq!(d["meta"]["series_total"], 7);
     assert_eq!(d["meta"]["skipped_lines"], 0);
 }
+
+// ---- regression tests for the LEO-345 first-round review findings ----
+
+/// A rule matching every Voltage reading, so several rails violate at once.
+const VOLTAGE_SAG_RULE: &str = r#"
+[[rules]]
+name = "rail-sag"
+kind = "threshold"
+type = "Voltage"
+metric = "value"
+op = "<"
+threshold = 11.6
+clear = 11.8
+for_samples = 2
+severity = "critical"
+"#;
+
+#[test]
+fn top_keeps_every_violation_row_even_below_the_selector() {
+    // Three voltage rails all sag (all in violation) plus a moving temperature.
+    // `--top 1` must still show all three forced rows — the selector caps the
+    // mover tier, never the violation tier (only --max-bytes can drop those).
+    let dir = TempDir::new();
+    let config = write_config(dir.path(), VOLTAGE_SAG_RULE);
+    let s1 = r#"{"timestamp": "2026-02-18T08:00:00.000000-05:00", "sensors": [{"sensor": "PSU", "reading": "+12V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "+5V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "+3.3V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "Temp", "type": "Temperature", "value": 40.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "C"}]}"#;
+    let s2 = r#"{"timestamp": "2026-02-18T08:00:10.000000-05:00", "sensors": [{"sensor": "PSU", "reading": "+12V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "+5V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "+3.3V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "Temp", "type": "Temperature", "value": 90.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "C"}]}"#;
+    write_log(
+        dir.path(),
+        "sensors_2026-02-18.jsonl",
+        format!("{s1}\n{s2}\n").as_bytes(),
+    );
+
+    let output = run_bounded(&[
+        "report",
+        "--config",
+        arg(&config),
+        "--since",
+        "2026-02-18T00:00:00-05:00",
+        "--until",
+        "2026-02-18T23:00:00-05:00",
+        "--top",
+        "1",
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    let d = json(&output);
+    let readings = d["readings"].as_array().unwrap();
+    let shown: Vec<&str> = readings
+        .iter()
+        .map(|r| r["reading"].as_str().unwrap())
+        .collect();
+    // All three rails survive --top 1; the moving temperature (not in violation)
+    // is the only row the selector drops.
+    assert_eq!(
+        readings.len(),
+        3,
+        "all three forced rows kept, got {shown:?}"
+    );
+    assert!(readings.iter().all(|r| r["in_violation"] == true));
+    assert!(
+        !shown.contains(&"Temp"),
+        "the non-violation mover is dropped by --top 1"
+    );
+    assert_eq!(d["meta"]["truncated"]["readings_total"], 4);
+    assert_eq!(d["meta"]["truncated"]["readings_shown"], 3);
+}
+
+/// A rule that flaps once per sample (fires immediately, clears the next),
+/// used to overrun the 512-transition display cap.
+const FLAP_RULE: &str = r#"
+[[rules]]
+name = "flap"
+kind = "threshold"
+sensor = "MEG Ai1600T"
+reading = "+12V"
+type = "Voltage"
+metric = "value"
+op = "<"
+threshold = 11.6
+clear = 11.8
+for_samples = 1
+severity = "warning"
+"#;
+
+#[test]
+fn violation_cap_reports_exact_total_and_preserves_in_violation() {
+    // 600 samples alternating below/above threshold → 600 transitions, well past
+    // the 512 display cap. `violations_total` must be exact (not the capped 512),
+    // and the series must stay in_violation even though its early transitions
+    // were evicted before display.
+    let dir = TempDir::new();
+    let config = write_config(dir.path(), FLAP_RULE);
+    let mut content = String::new();
+    for i in 0..600 {
+        // 10 s apart, starting 08:00:00; alternate 11.0 (fire) / 12.0 (clear).
+        let secs = i * 10;
+        let (h, rem) = (8 + secs / 3600, secs % 3600);
+        let (m, s) = (rem / 60, rem % 60);
+        let value = if i % 2 == 0 { "11.0" } else { "12.0" };
+        content.push_str(&format!(
+            "{{\"timestamp\": \"2026-02-18T{h:02}:{m:02}:{s:02}.000000-05:00\", \"sensors\": [{{\"sensor\": \"MEG Ai1600T\", \"reading\": \"+12V\", \"type\": \"Voltage\", \"value\": {value}, \"min\": 0.0, \"max\": 0.0, \"avg\": 0.0, \"unit\": \"V\"}}]}}\n"
+        ));
+    }
+    write_log(dir.path(), "sensors_2026-02-18.jsonl", content.as_bytes());
+
+    // A generous byte cap so nothing is byte-dropped: the only thing bounding
+    // the shown violations is the 512-transition retention cap, which is
+    // exactly the point under test (and it keeps the reading row alive so the
+    // in_violation flag can be checked). Uses `sensorwatch()` (concurrent pipe
+    // drain) rather than `run_bounded` because the ~120 KB digest would
+    // deadlock the poll-then-drain helper against a full stdout pipe.
+    let output = sensorwatch(&[
+        "report",
+        "--config",
+        arg(&config),
+        "--since",
+        "2026-02-18T00:00:00-05:00",
+        "--until",
+        "2026-02-19T00:00:00-05:00",
+        "--max-bytes",
+        "500000",
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    let d = json(&output);
+    let trunc = &d["meta"]["truncated"];
+    // Exact count, past the cap — the cap never claims completeness.
+    assert_eq!(
+        trunc["violations_total"], 600,
+        "exact total past the 512 cap"
+    );
+    let shown = trunc["violations_shown"].as_u64().unwrap();
+    assert_eq!(
+        shown, 512,
+        "the retention cap bounds shown at 512, but total stays exact"
+    );
+    assert_eq!(
+        shown,
+        d["violations"].as_array().unwrap().len() as u64,
+        "shown counter matches the array"
+    );
+    // The series keeps its forced tier despite the evicted early transitions.
+    let v12 = d["readings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["reading"] == "+12V")
+        .expect("the +12V reading row survives the generous byte cap");
+    assert_eq!(v12["in_violation"], true);
+}

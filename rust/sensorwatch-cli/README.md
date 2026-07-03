@@ -186,8 +186,9 @@ that local day, `--until` a date is the *end*; `--until` defaults to now);
 `--last <DURATION>` (a trailing window ending at `--until` when `--since` is
 absent — `24h`, `90m`, `45s`, `7d`, compound `1d12h`, or a bare integer of
 seconds; default `24h`, conflicts with `--since`); `--max-bytes <BYTES>` (hard
-output cap, default 8192, floor 512); `--top <N>` (max reading rows before the
-cap, default 20); `--match <SUBSTRING>` (repeatable, case-insensitive over
+output cap, default 8192, floor 512); `--top <N>` (top-N reading rows by
+relative movement, default 20 — in-violation rows are always kept beyond N);
+`--match <SUBSTRING>` (repeatable, case-insensitive over
 sensor/reading names) and `--type <TYPE>` (display filters only — same
 vocabulary as `snapshot`); `--log-dir <PATH>` (override the config's);
 `--indent <0–16>` (0 = compact; indentation counts against the cap);
@@ -236,18 +237,22 @@ this digest never sees; widen the window to capture the lead-in when that
 matters.
 
 **Fitting.** The digest never exceeds `--max-bytes` (the trailing newline
-excluded). `--top` first caps the reading rows to the ones with the largest
-relative movement plus anything `in_violation`; then, if the JSON still
-overflows, detail is dropped worst-first until it fits, in this order:
+excluded). `--top` first caps the reading rows to the top-N by relative
+movement — but rows `in_violation` are always kept, even beyond N, so the shown
+count can exceed N when many series are in violation (only the byte cap below
+can drop a violation row). Then, if the JSON still overflows, detail is dropped
+worst-first until it fits, in this order:
 
 1. the lowest-ranked reading row (from the end),
 2. else the smallest sampling gap (oldest on a tie),
 3. else the oldest violation (lowest `seq`).
 
-The `meta` block, its counters, and the summary always survive; `truncated.*`
-records exactly what was shown versus found. Only a pathologically small cap
-(e.g. `--max-bytes 512 --indent 16`) can fail to fit even the meta-only digest —
-that, and only that, is a usage error (exit `2`).
+Only the `meta` block (and its counters) is guaranteed to survive; violations
+are dropped last but *can* be dropped, so `truncated.violations_shown <
+violations_total` means an early violation was cut, never that it did not
+happen. `truncated.*` records exactly what was shown versus found. Only a
+pathologically small cap (e.g. `--max-bytes 512 --indent 16`) can fail to fit
+even the meta-only digest — that, and only that, is a usage error (exit `2`).
 
 `report` is **pure file reading** — no live sensor source, no HWiNFO, no
 platform gate — so it works identically on any OS wherever the logs are

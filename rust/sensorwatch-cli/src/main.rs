@@ -42,10 +42,14 @@ fn main() -> std::process::ExitCode {
         cli::Command::Log(_) | cli::Command::Watch(_) => {
             env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         }
-        // `report` is stdout-first like `snapshot` (the JSON digest is the
-        // product; skipped lines surface in-band via meta), so it keeps the
-        // quiet error default.
-        cli::Command::Snapshot(_) | cli::Command::Report(_) => {
+        // `report` is stdout-first (the JSON digest is the product; skipped
+        // lines surface in-band via meta), but it defaults to `warn` rather than
+        // `snapshot`'s `error` so provenance caveats — a missing log dir, a
+        // defaulted sampling interval — reach stderr without `--verbose`.
+        cli::Command::Report(_) => {
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        }
+        cli::Command::Snapshot(_) => {
             env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"))
         }
     };

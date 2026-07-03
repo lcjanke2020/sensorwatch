@@ -158,7 +158,8 @@ The agent layer keeps hard size bounds *by design*, not by convention:
   comfortably inside a kilobyte (there is no length cap on the strings
   themselves — a pathologically long configured name would exceed it).
 - The `report` digest is hard-capped by `--max-bytes` (default ~8 KB): detail
-  rows are dropped worst-first while the meta and summary always survive.
+  is dropped worst-first (reading rows, then gaps, then the oldest violations)
+  while the meta block always survives.
 - Durable state is kilobyte-scale summaries.
 - The protocol forbids reading raw history — an agent never loads a day of
   logs into its context.

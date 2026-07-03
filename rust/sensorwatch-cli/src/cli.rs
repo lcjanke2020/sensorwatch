@@ -60,9 +60,11 @@ pub enum Command {
     /// streams them line by line, and emits per-(sensor, reading) window
     /// aggregates, re-derived rule violations, sampling gaps, and a meta block
     /// (sample counts and first/last timestamps — a one-call liveness check).
-    /// A `--max-bytes` cap and a `--top` selector bound the output: detail rows
-    /// are dropped worst-first while the meta, violations, and summary always
-    /// survive.
+    /// A `--max-bytes` cap and a `--top` selector bound the output: the meta
+    /// block always survives, and if the digest still overflows, detail is
+    /// dropped worst-first — reading rows, then gaps, then the oldest
+    /// violations (so `truncated.violations_shown < violations_total` is the
+    /// signal an early violation was dropped, never that it did not happen).
     ///
     /// Exit codes: 0 whenever a digest is printed — including a zero-sample
     /// digest, which is itself the "logger is dead" signal; 1 fatal (an
@@ -187,8 +189,8 @@ pub struct ReportArgs {
     pub last: String,
 
     /// Hard upper bound on the digest's JSON size in bytes (the trailing
-    /// newline is excluded). Detail rows are dropped worst-first to fit; the
-    /// meta, violations, and summary always survive.
+    /// newline is excluded). The meta block always survives; to fit, detail is
+    /// dropped worst-first — reading rows, then gaps, then the oldest violations.
     #[arg(
         long = "max-bytes",
         default_value_t = 8192,
@@ -197,8 +199,9 @@ pub struct ReportArgs {
     )]
     pub max_bytes: u64,
 
-    /// Maximum number of reading rows before the byte cap applies: the rows
-    /// with the largest relative movement, plus anything in violation.
+    /// Target number of reading rows: the top-N by relative movement. Rows in
+    /// violation are always kept even beyond N (only the byte cap can drop
+    /// them), so the shown count can exceed N when many series are in violation.
     #[arg(
         long,
         default_value_t = 20,

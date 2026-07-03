@@ -39,6 +39,10 @@ const DIGEST_SCHEMA_VERSION: u32 = 1;
 /// real windows produce a handful.
 const MAX_GAPS: usize = 1024;
 
+/// A sampling gap is any pause longer than this many sampling intervals. Three
+/// intervals tolerates one dropped sample plus jitter without crying wolf.
+const GAP_INTERVAL_MULTIPLIER: i128 = 3;
+
 // ===========================================================================
 // Window parsing (decisions 3 and 5)
 // ===========================================================================
@@ -318,6 +322,8 @@ pub(crate) struct Aggregator {
     samples: u64,
     first_sample: Option<String>,
     last_sample: Option<String>,
+    /// The latest *in-order* sample, the gap-detection baseline. Distinct from
+    /// `last_sample`, which advances on every record including out-of-order ones.
     prev_ts: Option<Timestamp>,
     prev_raw: Option<String>,
     series: BTreeMap<(String, String), SeriesAgg>,
@@ -349,24 +355,47 @@ impl Aggregator {
         }
         self.last_sample = Some(sample.raw_timestamp.clone());
 
-        if let (Some(prev_ts), Some(prev_raw)) = (self.prev_ts, self.prev_raw.as_ref()) {
-            let delta = sample.timestamp.as_nanosecond() - prev_ts.as_nanosecond();
-            let threshold = i128::from(self.interval_seconds) * 3 * 1_000_000_000;
-            // Strictly greater than 3× the interval; out-of-order (delta ≤ 0)
-            // never trips it because the threshold is positive.
-            if delta > threshold {
-                let seconds = (delta / 1_000_000_000) as i64;
-                self.push_gap(Gap {
-                    from: prev_raw.clone(),
-                    to: sample.raw_timestamp.clone(),
-                    seconds,
-                });
+        // Gap detection runs against the latest *in-order* sample. A stale or
+        // backfilled record (delta ≤ 0) is untrusted input: it neither trips a
+        // gap itself nor regresses the baseline, so it cannot fabricate a
+        // phantom gap on the next in-order sample.
+        match self.prev_ts {
+            None => {
+                self.prev_ts = Some(sample.timestamp);
+                self.prev_raw = Some(sample.raw_timestamp.clone());
+            }
+            Some(prev_ts) => {
+                let delta = sample.timestamp.as_nanosecond() - prev_ts.as_nanosecond();
+                if delta > 0 {
+                    let threshold =
+                        i128::from(self.interval_seconds) * GAP_INTERVAL_MULTIPLIER * 1_000_000_000;
+                    if delta > threshold {
+                        let seconds = (delta / 1_000_000_000) as i64;
+                        let from = self
+                            .prev_raw
+                            .clone()
+                            .expect("prev_raw is set whenever prev_ts is");
+                        self.push_gap(Gap {
+                            from,
+                            to: sample.raw_timestamp.clone(),
+                            seconds,
+                        });
+                    }
+                    self.prev_ts = Some(sample.timestamp);
+                    self.prev_raw = Some(sample.raw_timestamp.clone());
+                }
             }
         }
-        self.prev_ts = Some(sample.timestamp);
-        self.prev_raw = Some(sample.raw_timestamp.clone());
 
+        // First occurrence of a `(sensor, reading)` within a sample wins,
+        // matching the engine's duplicate handling (`engine.rs`), so the digest
+        // aggregates and the re-derived violations can never disagree about a
+        // duplicated reading in one record.
+        let mut seen: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
         for reading in &sample.readings {
+            if !seen.insert((reading.sensor.as_str(), reading.reading.as_str())) {
+                continue;
+            }
             self.series
                 .entry((reading.sensor.clone(), reading.reading.clone()))
                 .or_insert_with(|| SeriesAgg::new(reading.kind))
@@ -409,6 +438,20 @@ impl Aggregator {
 
     pub(crate) fn samples(&self) -> u64 {
         self.samples
+    }
+
+    /// The number of distinct `(sensor, reading)` series seen in the window.
+    pub(crate) fn series_count(&self) -> usize {
+        self.series.len()
+    }
+
+    /// The canonical type label of a series, if it appeared in the window —
+    /// used to resolve a violation's `--type` against its series (a violation
+    /// with no in-window series yields `None`).
+    pub(crate) fn series_kind(&self, sensor: &str, reading: &str) -> Option<&'static str> {
+        self.series
+            .get(&(sensor.to_owned(), reading.to_owned()))
+            .map(|s| s.kind)
     }
 }
 
@@ -458,9 +501,18 @@ struct ReadingRow<'a> {
 impl ReadingRow<'_> {
     /// Relative movement across the window: the forced-tier ranking's
     /// secondary key. Zero-finite rows score 0.0.
+    ///
+    /// The denominator is floored by `max(|first|, |last|, 1.0)` rather than a
+    /// tiny epsilon: a series starting at exactly 0.0 (a fan or rail idling,
+    /// then spinning up) would otherwise divide by ~0 and post an astronomical
+    /// score that monopolizes `--top`, evicting genuinely interesting movers.
+    /// With the floor, a 0→1200 RPM fan scores 1.0 and a 40→95 °C spike 0.58 —
+    /// both plausibly ranked, neither pathological.
     fn score(&self) -> f64 {
         match (self.first, self.last) {
-            (Some(first), Some(last)) => (last - first).abs() / first.abs().max(1e-9),
+            (Some(first), Some(last)) => {
+                (last - first).abs() / first.abs().max(last.abs()).max(1.0)
+            }
             _ => 0.0,
         }
     }
@@ -633,11 +685,15 @@ fn row_passes(
     matches: &[String],
     type_filter: Option<&str>,
 ) -> bool {
-    let match_ok = matches.is_empty()
-        || matches.iter().any(|needle| {
+    let match_ok = matches.is_empty() || {
+        // Lower-case the row strings once, not once per needle.
+        let sensor = sensor.to_lowercase();
+        let reading = reading.to_lowercase();
+        matches.iter().any(|needle| {
             let n = needle.to_lowercase();
-            sensor.to_lowercase().contains(&n) || reading.to_lowercase().contains(&n)
-        });
+            sensor.contains(&n) || reading.contains(&n)
+        })
+    };
     match_ok && type_filter.is_none_or(|label| label == kind)
 }
 
@@ -646,31 +702,33 @@ fn row_passes(
 /// violation's in-window series, so a violation with no in-window series (e.g.
 /// a `missing` rule, or a source-unavailable event with no series at all) fails
 /// any `--type` filter while still being matchable by name.
-fn violation_passes(
+///
+/// `pub(crate)` so `report` can count exact post-filter violation totals during
+/// the streaming scan, using the same predicate `emit` uses to build the shown
+/// list (one definition, no drift).
+pub(crate) fn violation_passes(
     t: &Transition,
     matches: &[String],
     type_filter: Option<&str>,
-    series: &BTreeMap<(String, String), SeriesAgg>,
+    agg: &Aggregator,
 ) -> bool {
-    let match_ok = matches.is_empty()
-        || matches.iter().any(|needle| {
+    let match_ok = matches.is_empty() || {
+        // Lower-case the transition strings once, not once per needle.
+        let sensor = t.sensor.as_deref().map(str::to_lowercase);
+        let reading = t.reading.as_deref().map(str::to_lowercase);
+        matches.iter().any(|needle| {
             let n = needle.to_lowercase();
-            t.sensor
-                .as_deref()
-                .is_some_and(|s| s.to_lowercase().contains(&n))
-                || t.reading
-                    .as_deref()
-                    .is_some_and(|r| r.to_lowercase().contains(&n))
-        });
+            sensor.as_deref().is_some_and(|s| s.contains(&n))
+                || reading.as_deref().is_some_and(|r| r.contains(&n))
+        })
+    };
     if !match_ok {
         return false;
     }
     match type_filter {
         None => true,
         Some(label) => match (t.sensor.as_deref(), t.reading.as_deref()) {
-            (Some(s), Some(r)) => series
-                .get(&(s.to_owned(), r.to_owned()))
-                .is_some_and(|agg| agg.kind == label),
+            (Some(s), Some(r)) => agg.series_kind(s, r).is_some_and(|kind| kind == label),
             _ => false,
         },
     }
@@ -680,9 +738,14 @@ fn violation_passes(
 /// and returns exit 0 on success (including a zero-sample digest); on the
 /// pathological "cannot fit even the minimal digest" case, warns on stderr and
 /// returns exit 2.
-pub(crate) fn emit(cfg: &Emit<'_>, agg: &Aggregator, transitions: &[Transition]) -> ExitCode {
+pub(crate) fn emit(
+    cfg: &Emit<'_>,
+    agg: &Aggregator,
+    transitions: &[Transition],
+    violations_total: usize,
+) -> ExitCode {
     // Reading rows: display-filtered, then ranked (violation tier first, then
-    // relative movement desc, then (sensor, reading) asc), then capped to --top.
+    // relative movement desc, then (sensor, reading) asc).
     let mut rows: Vec<ReadingRow<'_>> = agg
         .series
         .iter()
@@ -707,17 +770,25 @@ pub(crate) fn emit(cfg: &Emit<'_>, agg: &Aggregator, transitions: &[Transition])
         .collect();
     let readings_total = rows.len();
     rank_rows(&mut rows);
-    rows.truncate(cfg.top as usize);
+    // `--top` caps the *mover* tier only; every in-violation row is kept (the
+    // byte-cap fitter is the sole thing that may later drop one). Ranking puts
+    // the forced tier contiguously at the front, so keeping
+    // `max(#in_violation, top)` rows preserves all violation rows plus up to
+    // `top` rows total.
+    let forced = rows.iter().filter(|r| r.in_violation).count();
+    rows.truncate(forced.max(cfg.top as usize));
 
-    // Violations: digest-local seq 1..n over the retained transitions in order,
-    // then display-filtered (the seqs of hidden violations simply don't appear).
+    // Violations shown: digest-local seq 1..n over the retained transitions,
+    // display-filtered (hidden seqs simply don't appear). `violations_total` is
+    // the exact post-filter count from the full scan — it may exceed what was
+    // retained (the transition cap) or shown (the byte cap), so shown < total
+    // is honest data-loss signalling, not a silent claim of completeness.
     let violations: Vec<Event<'_>> = transitions
         .iter()
         .enumerate()
-        .filter(|(_, t)| violation_passes(t, cfg.matches, cfg.type_filter, &agg.series))
+        .filter(|(_, t)| violation_passes(t, cfg.matches, cfg.type_filter, agg))
         .map(|(i, t)| Event::from_transition(t, (i + 1) as u64))
         .collect();
-    let violations_total = violations.len();
 
     let assembled = Assembled {
         since: cfg.since.to_string(),
@@ -978,6 +1049,41 @@ mod tests {
         assert_eq!(agg.gaps_total, 0);
     }
 
+    #[test]
+    fn out_of_order_sample_does_not_regress_the_gap_baseline() {
+        // A stale record must not become the baseline: otherwise the next
+        // in-order sample measures its gap against the wrong point and
+        // fabricates a phantom outage.
+        let mut agg = Aggregator::new(10); // threshold 30 s
+        agg.observe(&sample("2026-02-18T08:00:00-05:00", vec![]));
+        agg.observe(&sample("2026-02-18T07:00:00-05:00", vec![])); // stale, 1 h back
+        agg.observe(&sample("2026-02-18T08:00:10-05:00", vec![])); // 10 s after #1
+                                                                   // Baseline stayed at 08:00:00, so 10 s < 30 s → no gap. Without the
+                                                                   // guard, #3 vs the stale #2 would report a ~3610 s gap.
+        assert_eq!(agg.gaps_total, 0);
+    }
+
+    #[test]
+    fn duplicate_series_in_one_sample_keeps_first_occurrence() {
+        // The engine folds a duplicate (sensor, reading) within a sample to its
+        // first occurrence; the aggregator must agree, or the digest would show
+        // a min/last the engine never evaluated.
+        let mut agg = Aggregator::new(10);
+        agg.observe(&sample(
+            "2026-02-18T08:00:00-05:00",
+            vec![
+                ("PSU", "+12V", "Voltage", 12.0, "V"),
+                ("PSU", "+12V", "Voltage", 11.0, "V"), // duplicate — ignored
+            ],
+        ));
+        let s = &agg.series[&("PSU".to_owned(), "+12V".to_owned())];
+        assert_eq!(s.samples, 1, "the duplicate is not a second sample");
+        assert_eq!(s.first, Some(12.0));
+        assert_eq!(s.last, Some(12.0));
+        assert_eq!(s.min_opt(), Some(12.0), "the 11.0 duplicate never entered");
+        assert_eq!(s.max_opt(), Some(12.0));
+    }
+
     // ---- ranking ----
 
     fn row(
@@ -1017,12 +1123,28 @@ mod tests {
     }
 
     #[test]
+    fn score_floors_denominator_for_zero_start_series() {
+        // A fan idling at 0 then spinning up: bounded score, not ~1e12.
+        let fan = row("Fan", "PSU Fan", 0.0, 1200.0, false);
+        assert!(
+            (fan.score() - 1.0).abs() < 1e-9,
+            "0→1200 should score 1.0, got {}",
+            fan.score()
+        );
+        // A 40→95 °C spike still ranks below the full-swing fan, and neither is
+        // astronomically large (the pre-fix zero-start score was ~8e11).
+        let temp = row("GPU", "Hot", 40.0, 95.0, false);
+        assert!(temp.score() < fan.score());
+        assert!(fan.score() < 10.0, "zero-start score stays bounded");
+    }
+
+    #[test]
     fn ranking_sorts_by_score_then_name_within_a_tier() {
         let mut rows = vec![
-            row("Z", "z", 10.0, 10.1, false),  // score 0.01
-            row("A", "a", 10.0, 11.0, false),  // score 0.1
-            row("M", "m1", 10.0, 10.5, false), // score 0.05
-            row("M", "m2", 10.0, 10.5, false), // score 0.05, ties m1 → name asc
+            row("Z", "z", 10.0, 10.1, false),  // score ≈ 0.0099
+            row("A", "a", 10.0, 11.0, false),  // score ≈ 0.091
+            row("M", "m1", 10.0, 10.5, false), // score ≈ 0.048
+            row("M", "m2", 10.0, 10.5, false), // ties m1 → name asc
         ];
         rank_rows(&mut rows);
         let order: Vec<&str> = rows.iter().map(|r| r.reading).collect();
