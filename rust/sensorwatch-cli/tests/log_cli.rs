@@ -15,6 +15,9 @@ fn sensorwatch(args: &[&str]) -> Output {
         .expect("failed to run the sensorwatch binary")
 }
 
+// Only the off-Windows fast-exit test inspects stderr; keep the helper behind
+// the same cfg so it is not dead code under the Windows clippy gate.
+#[cfg(not(windows))]
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
