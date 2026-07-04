@@ -1,9 +1,12 @@
 # Security Analysis: sensorwatch
 
-**Date**: 2026-06-30
+**Date**: 2026-06-30 (agent-skill addendum 2026-07-04: adds the
+`sensorwatch-monitor` skill — stdlib helper scripts that write only inside a
+machine-local state dir; no new listener, input class, or privilege, so the
+threat model is unchanged. See §4.)
 **Scope**: Windows hardware sensor monitoring toolkit reading HWiNFO64 shared
 memory today through a Python package and CLI, a native C core with Python (cffi),
-header-only C++, and Rust bindings, and a read-only agent skill; with a planned
+header-only C++, and Rust bindings, and read-only agent skills; with a planned
 localhost REST service.
 
 **Methodology**: Code review of the current Python implementation plus
@@ -35,9 +38,14 @@ cloud service.
   the C core statically linked in; Python imports it from the package directory,
   not via a name-based DLL search. A standalone `sensorwatch.dll` is built by
   CMake for C/C++ consumers but is not loaded by the Python package.
-- A read-only agent skill (`skills/sensorwatch/`) — documentation plus a
-  `snapshot.py` helper that calls the existing read-only API. It adds no network
-  listener and no privileged access beyond what the package already exposes.
+- Two read-only agent skills. `skills/sensorwatch/` is documentation plus a
+  `snapshot.py` helper that calls the existing read-only API.
+  `skills/sensorwatch-monitor/` adds the monitoring protocol plus stdlib-only
+  helper scripts that read the watcher's own JSON event/spool files (validated
+  against the frozen 14-key contract) and write durable state **only inside a
+  machine-local state directory** — the same local-file-write class the logger
+  already has, no new input source, listener, or privilege. Neither skill
+  controls hardware; both treat sensor strings as untrusted display data.
 
 **Planned components covered by this threat model**:
 
@@ -291,13 +299,16 @@ honest that it is designed primarily as a single-user desktop utility.
 
 ## 4. Agent Integration Security
 
-sensorwatch's agent interface is the shipped read-only agent skill
-(`skills/sensorwatch/`) — guidance plus a `snapshot.py` helper over the existing
-read-only CLI/API; it adds no network surface. There is deliberately no separate
-MCP server: local agents use the skill, and any future remote, over-a-protocol
+sensorwatch's agent interface is the shipped read-only agent skills:
+`skills/sensorwatch/` (guidance plus a `snapshot.py` helper over the existing
+read-only CLI/API) and `skills/sensorwatch-monitor/` (the monitoring protocol
+plus stdlib helper scripts that write durable state only inside a machine-local
+state directory). Neither adds a network surface, and neither controls hardware —
+escalation to a human *is* the action. There is deliberately no separate MCP
+server: local agents use the skills, and any future remote, over-a-protocol
 access would be served by the planned localhost REST service (§3), whose own
-threat model then applies. The requirements below govern the shipped skill and any
-agent-facing surface layered on top later.
+threat model then applies. The requirements below govern both shipped skills and
+any agent-facing surface layered on top later.
 
 ### 4.1 Prompt Injection via Sensor Data
 
@@ -554,13 +565,13 @@ change could warn when the log directory appears broadly writable/readable.
 | 4 | Keep endpoints read-only | 3.2 | Planned |
 | 5 | Use custom-header API key only if needed | 3.3 | Planned |
 
-### Agent Integration (skill shipped)
+### Agent Integration (skills shipped)
 
 | # | Requirement | Section | Status |
 |---|-------------|---------|--------|
-| 1 | Treat sensor strings as untrusted display data | 4.1 | Done (skill) / ongoing |
-| 2 | Use structured output for agent-facing data | 4.1 | Done (skill) |
-| 3 | Keep agent integration read-only | 4.1, 4.3 | Done (skill) |
+| 1 | Treat sensor strings as untrusted display data | 4.1 | Done (both skills) / ongoing |
+| 2 | Use structured output for agent-facing data | 4.1 | Done (both skills) |
+| 3 | Keep agent integration read-only (no hardware control; monitor writes only its state dir) | 4.1, 4.3 | Done (both skills) |
 
 ### Not Worth Doing for This Project
 

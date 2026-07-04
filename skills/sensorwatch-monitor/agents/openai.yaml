@@ -1,0 +1,20 @@
+# Codex UI discovery metadata for the sensorwatch-monitor skill.
+# This is discovery metadata, not agent instructions -- keep it aligned with
+# ../SKILL.md, which holds the actual wake-up protocol, state layout, and
+# escalation ladder. Tool mechanics (snapshot/log/watch/report flags) are NOT
+# here and NOT in SKILL.md -- they live in the sensorwatch skill.
+display_name: sensorwatch-monitor
+short_description: >-
+  Be the long-running hardware monitor: arm sensorwatch's deterministic watcher
+  as a wake-up primitive, triage its bounded events, and keep durable
+  ack/incident/escalation state on disk -- context stays flat over weeks.
+default_prompt: |
+  Use the sensorwatch-monitor skill to run as this machine's always-on hardware
+  monitor. Read SKILL.md in this folder first: it defines the wake-up state
+  machine (arm `watch` -> dispatch on exit code -> dedup, triage, record, ack,
+  re-arm), the hard context-budget rules (never read raw logs; always `report`;
+  at most two reports per wake), the machine-local state directory, and the
+  deterministic escalation ladder with cooldowns. This skill is about the
+  monitoring DECISIONS and state; for the underlying tool mechanics (how to run
+  snapshot / log / watch / report) defer to the sensorwatch skill. The monitor
+  is read-only with respect to hardware -- escalation is the action.

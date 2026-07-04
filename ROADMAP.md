@@ -10,7 +10,7 @@ One constraint shapes the sequencing: **the project must be usable at every
 intermediate stage.** Each milestone ships something you can run on its own —
 nothing below depends on a later phase to be useful.
 
-*Last updated: 2026-07-03.*
+*Last updated: 2026-07-04.*
 
 ## Where the project is today
 
@@ -24,6 +24,7 @@ nothing below depends on a later phase to be useful.
 | Rust CLI — `snapshot` + `log` + `watch` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
 | CMake `install()` / `find_package(sensorwatch CONFIG)` export | Shipped |
 | Agent skill (portable Agent Skills bundle) | Shipped — [`skills/sensorwatch/`](skills/sensorwatch/) |
+| Agent monitor skill (wake-up protocol + durable state dir) | Shipped — [`skills/sensorwatch-monitor/`](skills/sensorwatch-monitor/) |
 | CI: Ubuntu + Windows, sanitizers, ABI/vendor drift gates, MSRV check | Shipped — [`ci.yml`](.github/workflows/ci.yml) |
 
 The data source today is HWiNFO64's shared-memory feed on Windows. Everything
@@ -104,31 +105,40 @@ Python CLI explicitly legacy/reference.
 
 With `watch` and `report` in place, an AI agent can *monitor* hardware over
 days and weeks — woken by deterministic events plus a low-frequency heartbeat,
-instead of burning cycles polling. A second agent skill,
-`sensorwatch-monitor`, will encode the operating protocol:
+instead of burning cycles polling. The
+[`sensorwatch-monitor`](skills/sensorwatch-monitor/SKILL.md) skill **ships the
+operating protocol** (LEO-338); the unattended runtime around it, and the real
+notification transport, are still in progress:
 
-- **Event-driven wake-ups.** The agent arms the blocking `watch`; the process
-  exiting *is* the wake-up. A rule event means "triage this"; a timeout means
-  "heartbeat — verify all quiet, re-arm."
-- **Bounded context by construction.** Each wake-up consumes a ~1 KB event
-  plus one size-capped `report` digest. The protocol forbids reading raw logs.
-- **Durable state on disk, not in the context window.** The agent's memory is
-  a small state directory: an acknowledgment cursor keyed to event sequence
-  numbers (at-least-once handling, crash-safe), open-incident files with
-  snooze semantics (a still-firing rule is not re-investigated every wake),
-  a curated baseline of what "normal" looks like, and an escalation ledger
+- **Event-driven wake-ups — shipped.** The agent arms the blocking `watch`; the
+  process exiting *is* the wake-up. A rule event means "triage this"; a timeout
+  means "heartbeat — verify all quiet, re-arm."
+- **Bounded context by construction — shipped.** Each wake-up consumes a ~1 KB
+  event plus at most two size-capped `report` digests (one per heartbeat), and
+  the hard context-budget rules forbid reading raw logs — the skill states them
+  verbatim.
+- **Durable state on disk, not in the context window — shipped.** The agent's
+  memory is a small machine-local state directory: an acknowledgment cursor keyed
+  to event sequence numbers (at-least-once handling, crash-safe), open-incident
+  files with snooze semantics (a still-firing rule is not re-investigated every
+  wake), a curated baseline of what "normal" looks like, and an escalation ledger
   with cooldowns so a fresh session can never re-alert. Any new session
-  reconstructs the monitor from a few kilobytes of state summary.
-- **Deterministic escalation ladder.** Journal → incident file → notification
-  → issue tracker, driven by rule severity and persistence, with per-rule
-  cooldowns and a global daily cap. Notification delivery goes through a
-  pluggable adapter (email first).
-- **Staged runtimes.** First an interactive agent session (cheap to develop
-  and tune against real hardware), then an unattended supervisor: a small
-  deterministic loop that re-runs `watch` and dispatches each exit to a fresh
-  headless agent invocation — zero context growth, survives reboots. A
-  dead-man's switch (a trivial scheduled task checking heartbeat-file age)
-  watches the watcher through an independent alert path.
+  reconstructs the monitor from a few-kilobyte state summary. Stdlib-only helper
+  scripts do every mechanical write.
+- **Deterministic escalation ladder — shipped; transport pending.** Journal →
+  incident file → notification → Linear issue → critical-combination tier, driven
+  by rule severity and persistence, with per-rule cooldowns and a global daily
+  cap (batched digest beyond it). Delivery goes through a pluggable adapter;
+  LEO-338 ships stub adapters (`outbox`, `stderr`), and the real transport (email
+  first) is the LEO-339 decision.
+- **Staged runtimes — in progress.** The interactive agent session runs the
+  skill today (cheap to develop and tune against real hardware). Still pending:
+  the unattended supervisor — a small deterministic loop that re-runs `watch` and
+  dispatches each exit to a fresh headless agent invocation, zero context growth,
+  survives reboots — plus a dead-man's switch (a trivial scheduled task checking
+  heartbeat-file age) watching the watcher through an independent alert path. The
+  supervisor and dead-man's switch are LEO-340 (Windows wiring); the Phase 1
+  pilot on real hardware is LEO-341.
 
 The protocol is deliberately harness-agnostic: it needs only "run a blocking
 process; act on its exit," which any current agent runtime provides.

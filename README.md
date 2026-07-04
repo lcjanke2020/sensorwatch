@@ -38,6 +38,11 @@ currents, power, fan speeds, clocks, and usage.
   subcommand that condenses logged history into a bounded JSON digest — window
   aggregates, re-derived violations, and sampling gaps under a hard size cap —
   for humans and LLMs alike (see [Rust binding](#rust-binding)).
+- **Agent monitor skill** (`skills/sensorwatch-monitor/`) — teaches an agent to
+  *be* the always-on monitor: arm `watch` as a wake-up primitive, triage its
+  events on a fixed context budget, and keep durable ack / incident / escalation
+  state on disk. Kept separate from the usage skill so the protocol is not loaded
+  for a one-off reading (see [Skills](#skills)).
 
 ## Requirements
 
@@ -492,6 +497,16 @@ bundled [`scripts/snapshot.py`](skills/sensorwatch/scripts/snapshot.py) as a
 no-Rust-toolchain fallback, and `agents/openai.yaml` provides Codex discovery. The
 skill uses only read-only APIs — see [`SECURITY.md`](SECURITY.md) §4.
 
+A second bundle, [`skills/sensorwatch-monitor/`](skills/sensorwatch-monitor/),
+teaches an agent to *be* the long-running monitor: the wake-up state machine (arm
+`watch`, dispatch on its exit code, then dedup / triage / record / ack / re-arm),
+hard context-budget rules, a machine-local state directory, and a deterministic
+escalation ladder with cooldowns. Its mechanical writes live in stdlib-only
+helper `scripts/`, and it references the usage skill above for tool mechanics
+rather than duplicating them. It too is read-only with respect to hardware —
+escalation is the action, and its state directory stays out of git
+(see [`SECURITY.md`](SECURITY.md) §4).
+
 ## Roadmap
 
 sensorwatch starts as a Python monitor and grows toward a general hardware
@@ -503,10 +518,12 @@ event-driven monitoring agent), open design questions, and non-goals — lives i
   interface (HWiNFO today; UPS, AIDA64, and IPMI next) with stable sensor
   identities and per-reading quality flags.
 - **Optional localhost REST service** for live queries (bound to `127.0.0.1`).
-- **Agent integration** — AI agents use sensorwatch through the shipped
-  [agent skill](skills/sensorwatch/SKILL.md) over the CLI and Python/C/C++/Rust APIs
-  (see [Skills](#skills)), not a bespoke MCP server. If remote, over-a-protocol
-  access is ever needed, it would come through the localhost REST service above.
+- **Agent integration** — AI agents use sensorwatch through the shipped agent
+  skills — [`sensorwatch`](skills/sensorwatch/SKILL.md) for tool mechanics and
+  [`sensorwatch-monitor`](skills/sensorwatch-monitor/SKILL.md) for the monitoring
+  protocol — over the CLI and Python/C/C++/Rust APIs (see [Skills](#skills)), not
+  a bespoke MCP server. If remote, over-a-protocol access is ever needed, it would
+  come through the localhost REST service above.
 
 The [Python](#native-binding-cffi), [C++](#c-binding), and [Rust](#rust-binding)
 bindings over the dependency-free C core (Windows DLL + static library, see

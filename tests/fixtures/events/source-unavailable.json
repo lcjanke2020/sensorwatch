@@ -1,0 +1,1 @@
+{"schema_version":1,"seq":1,"id":"sensor-source-down-1","rule":"sensor-source-down","type":"source-unavailable","severity":"warning","state":"fired","timestamp":"2026-07-04T09:47:37.513559-04:00","sensor":null,"reading":null,"value":null,"unit":null,"threshold":null,"samples_in_violation":1}
