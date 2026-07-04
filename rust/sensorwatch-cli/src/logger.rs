@@ -10,7 +10,7 @@
 
 use std::fs::File;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -35,6 +35,16 @@ pub(crate) const EVENT_PREFIX: &str = "events_";
 /// Line terminator matching the Python logger's text-mode writes: CRLF on
 /// Windows (where every existing file was produced), LF elsewhere.
 pub(crate) const LINE_ENDING: &str = if cfg!(windows) { "\r\n" } else { "\n" };
+
+/// Build the daily file path `<dir>/<prefix><date>.jsonl`. The single home for
+/// the `sensors_YYYY-MM-DD.jsonl` (and `events_`) naming scheme, so the logger
+/// that writes these files ([`LogWriter::log_path`]) and the `report` reader
+/// that selects them ([`crate::digest::candidate_files`]) can never disagree
+/// about the layout.
+pub(crate) fn daily_file_path(dir: &Path, prefix: &str, date: Date) -> PathBuf {
+    // civil::Date displays as ISO `YYYY-MM-DD`.
+    dir.join(format!("{prefix}{date}.jsonl"))
+}
 
 /// The logger loop, ported from `sensorwatch/__main__.py`.
 pub(crate) fn run(args: &LogArgs) -> ExitCode {
@@ -301,8 +311,7 @@ impl LogWriter {
     }
 
     fn log_path(&self, date: Date) -> PathBuf {
-        // civil::Date displays as ISO `YYYY-MM-DD`.
-        self.log_dir.join(format!("{}{date}.jsonl", self.prefix))
+        daily_file_path(&self.log_dir, self.prefix, date)
     }
 
     /// Delete log files strictly older than `retention_days` (a file exactly

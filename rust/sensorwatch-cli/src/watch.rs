@@ -55,28 +55,14 @@ pub(crate) fn run(args: &WatchArgs) -> ExitCode {
         }
         return ExitCode::from(exit::USAGE);
     };
-    let text = match std::fs::read_to_string(&config_path) {
-        Ok(text) => text,
-        Err(err) => {
-            // `config_path` only returns paths that exist, so a failure here is
-            // an I/O fault reading a present file (permissions, a vanished
-            // mount) — a preparation failure (exit 1), not a usage error. A
-            // genuinely absent config is the `None` arm above (exit 2).
-            eprintln!(
-                "sensorwatch watch: could not read config {}: {err}",
-                config_path.display()
-            );
-            return ExitCode::from(exit::FATAL);
-        }
-    };
-
-    // Step 3: strict rules parse. Malformed TOML, invalid rules → exit 2.
-    let mut rules = match RuleSet::from_toml_str(&text) {
-        Ok(rules) => rules,
-        Err(err) => {
-            eprintln!("{err}");
-            return ExitCode::from(exit::USAGE);
-        }
+    // Step 3: read the resolved document once and strict-parse its rules via the
+    // loader shared with `report`. A read failure is a fatal preparation fault;
+    // a malformed/invalid rules TOML is a usage error — both messaged inside the
+    // loader (they differ from report's only by the subcommand word). The loader
+    // returns the once-read text; the lenient config parse stays at Step 5 below.
+    let (mut rules, text) = match Config::load_rules_and_text(&config_path, "watch") {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     if rules.is_empty() {
         eprintln!(
@@ -92,9 +78,12 @@ pub(crate) fn run(args: &WatchArgs) -> ExitCode {
         return code;
     }
 
-    // Step 5: lenient config for interval / log_dir / retention / sensor
-    // filter. The document already parsed as TOML in step 3, so this cannot
-    // fail; default defensively regardless.
+    // Step 5: lenient config for interval / log_dir / retention / sensor filter.
+    // Parsed HERE (after the empty-rules and filter checks), NOT in the loader,
+    // so its warn-and-fall-back `log::warn!`s keep their original ordering — they
+    // must not precede the exit-2 stderr of those checks (review finding 1). The
+    // document already parsed as TOML in Step 3, so this cannot fail; default
+    // defensively regardless.
     let config = Config::from_toml_str(&text).unwrap_or_default();
 
     let mode = if args.follow { "follow" } else { "one-shot" };

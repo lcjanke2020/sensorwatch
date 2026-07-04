@@ -9,6 +9,10 @@
 //! becomes the directory `"5"`); non-strings warn and use the default.
 
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use crate::exit;
+use crate::rules::RuleSet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Config {
@@ -89,6 +93,62 @@ impl Config {
             .iter()
             .find(|candidate| candidate.exists())
             .map(|candidate| candidate.to_path_buf())
+    }
+
+    /// Read an already-resolved config document once and strict-parse its alert
+    /// rules — the shared read + rules parse for the subcommands that need both
+    /// (`watch`, `report`). Returns the [`RuleSet`] **and the once-read text**,
+    /// so each caller can run the lenient [`Config::from_toml_str`] at its own
+    /// position (see below); the loader deliberately does NOT parse the config
+    /// itself. `path` must already exist ([`Config::config_path`] only returns
+    /// existing paths), so a read failure is an I/O fault on a present file — a
+    /// fatal *preparation* failure (exit 1), not a usage error. On error the
+    /// message is printed here and the exit code is returned for the caller to
+    /// propagate; the two subcommands' messages differ ONLY by the `subcommand`
+    /// word — single-sourcing that read/parse-error text is the real drift risk
+    /// this kills.
+    ///
+    /// **Why the config parse stays at the callers, not here.** `report` parses
+    /// it immediately (its old position); `watch` parses it only AFTER its
+    /// empty-rules rejection and `--rule`/`--min-severity` filtering. Pulling the
+    /// lenient parse into the loader would run it *before* those exit-2 checks,
+    /// so a warn-provoking `[general]` value (`config.rs` warns via `log::warn!`,
+    /// which watch surfaces at its `info` default) would print a config warning
+    /// on `watch`'s exit-2 stderr that the pre-LEO-350 binary never emitted — an
+    /// observable stderr change outside the approved caveat (review finding 1).
+    /// Returning the text keeps each caller's ordering exactly as before.
+    ///
+    /// **The document is still parsed twice** (LEO-350 decision 1), and that is
+    /// load-bearing: `rules.rs` parses from this raw text so a `toml::de::Error`
+    /// on a bad rule carries the line/column span a startup error should point at
+    /// (`RawRule`'s `deny_unknown_fields`), while the caller's
+    /// `Config::from_toml_str` walks a pre-built `toml::Table` for its
+    /// warn-and-fall-back leniency. Deserializing the rules from a shared
+    /// pre-parsed `Value` would silently drop those spans on semantic rule
+    /// errors — a stderr regression — so the two parsers keep reading the
+    /// document independently.
+    pub(crate) fn load_rules_and_text(
+        path: &Path,
+        subcommand: &str,
+    ) -> Result<(RuleSet, String), ExitCode> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!(
+                    "sensorwatch {subcommand}: could not read config {}: {err}",
+                    path.display()
+                );
+                return Err(ExitCode::from(exit::FATAL));
+            }
+        };
+        let rules = match RuleSet::from_toml_str(&text) {
+            Ok(rules) => rules,
+            Err(err) => {
+                eprintln!("{err}");
+                return Err(ExitCode::from(exit::USAGE));
+            }
+        };
+        Ok((rules, text))
     }
 
     /// Read and parse one file; unreadable or malformed TOML warns and

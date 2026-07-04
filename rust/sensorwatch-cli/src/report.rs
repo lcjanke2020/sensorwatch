@@ -33,11 +33,12 @@ use std::process::ExitCode;
 
 use jiff::{SignedDuration, Zoned};
 
-use crate::cli::{ReportArgs, TypeFilter};
+use crate::cli::ReportArgs;
 use crate::config::Config;
 use crate::digest::{self, parse_duration_secs, parse_when, Aggregator, DayEdge, Emit};
 use crate::engine::Engine;
 use crate::exit;
+use crate::labels;
 use crate::replay::ReplaySource;
 use crate::rules::RuleSet;
 use crate::source::{SampleSource, Tick};
@@ -49,33 +50,16 @@ const VIOLATION_CAP: usize = 512;
 
 pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     // Config + rules. `report` reads the document once and feeds both parsers,
-    // exactly like `watch`; but with no config at all it proceeds over zero
-    // rules rather than erroring (a digest is still useful without alerts).
+    // exactly like `watch` (via the shared loader); but with no config at all it
+    // proceeds over zero rules rather than erroring — a digest is still useful
+    // without alerts — which is why the no-config arm stays here.
     let (rules, config) = match Config::config_path(args.config.as_deref()) {
-        Some(path) => {
-            let text = match std::fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(err) => {
-                    // `config_path` only returns existing paths, so this is an
-                    // I/O fault on a present file — a fatal preparation failure,
-                    // not a usage error.
-                    eprintln!(
-                        "sensorwatch report: could not read config {}: {err}",
-                        path.display()
-                    );
-                    return ExitCode::from(exit::FATAL);
-                }
-            };
-            let rules = match RuleSet::from_toml_str(&text) {
-                Ok(rules) => rules,
-                Err(err) => {
-                    eprintln!("{err}");
-                    return ExitCode::from(exit::USAGE);
-                }
-            };
-            let config = Config::from_toml_str(&text).unwrap_or_default();
-            (rules, config)
-        }
+        Some(path) => match Config::load_rules_and_text(&path, "report") {
+            // `report` parses the lenient config right after the rules — its
+            // original position, unchanged.
+            Ok((rules, text)) => (rules, Config::from_toml_str(&text).unwrap_or_default()),
+            Err(code) => return code,
+        },
         None => {
             // No config resolved, so gap detection runs on the DEFAULT cadence.
             // Reading another machine's logs (the cross-platform "pure file
@@ -156,8 +140,12 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     // Case-fold the --match needles once for the whole run: the row filter, the
     // violation filter, and the scan-time violation count all reuse this.
     let match_needles: Vec<String> = args.r#match.iter().map(|s| s.to_lowercase()).collect();
-    let type_filter = type_filter_label(args.type_filter);
-    let mut source = ReplaySource::from_files(files);
+    let type_filter = args.type_filter.map(labels::filter_label);
+    // The window precheck lets replay drop out-of-window lines without
+    // materializing their readings; report's post-parse `since`/`until` filter
+    // below still covers the lines that do reach the full parse (in-window
+    // lines, and foreign formats the precheck skips).
+    let mut source = ReplaySource::from_files(files).with_window(since, until);
     let mut engine = Engine::new(rules);
     let mut agg = Aggregator::new(config.interval_seconds);
     // Retained transitions cap DISPLAY only; `violations_total` counts the
@@ -233,21 +221,4 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
 fn usage(message: impl AsRef<str>) -> ExitCode {
     eprintln!("sensorwatch report: {}", message.as_ref());
     ExitCode::from(exit::USAGE)
-}
-
-/// Map the clap `--type` value onto the canonical reading-type label the digest
-/// filters against — the same vocabulary as `snapshot --type`.
-fn type_filter_label(filter: Option<TypeFilter>) -> Option<&'static str> {
-    filter.map(|f| match f {
-        TypeFilter::None => "None",
-        TypeFilter::Temperature => "Temperature",
-        TypeFilter::Voltage => "Voltage",
-        TypeFilter::Fan => "Fan",
-        TypeFilter::Current => "Current",
-        TypeFilter::Power => "Power",
-        TypeFilter::Clock => "Clock",
-        TypeFilter::Usage => "Usage",
-        TypeFilter::Other => "Other",
-        TypeFilter::Unknown => "unknown",
-    })
 }

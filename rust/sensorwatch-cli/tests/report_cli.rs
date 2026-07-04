@@ -8,54 +8,10 @@
 //! makes the exact-bytes assertions reproducible on any machine or time zone.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::process::Command;
 
-// ---- process helpers (mirroring tests/watch_cli.rs) ----
-
-fn sensorwatch(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
-        .args(args)
-        .output()
-        .expect("failed to run the sensorwatch binary")
-}
-
-/// Run to completion, killing and failing if the process outlives 10 s — a
-/// regression that fails to terminate fails fast instead of hanging CI.
-fn run_bounded(args: &[&str]) -> Output {
-    use std::time::{Duration, Instant};
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn the sensorwatch binary");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match child.try_wait().expect("could not poll the child") {
-            Some(_) => return child.wait_with_output().expect("could not collect output"),
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("`sensorwatch {}` did not exit within 10s", args.join(" "));
-            }
-            None => std::thread::sleep(Duration::from_millis(20)),
-        }
-    }
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn json(output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON")
-}
+mod common;
+use common::*;
 
 // ---- fixtures ----
 
@@ -118,72 +74,13 @@ const EVENT_KEYS: [&str; 14] = [
     "samples_in_violation",
 ];
 
-// The replay line-size cap (mirrors replay.rs); a line one byte over is dropped.
-const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
-
-// ---- temp dir (integration tests cannot see crate::testutil) ----
-
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new() -> TempDir {
-        let path = std::env::temp_dir().join(format!(
-            "sensorwatch-report-test-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        TempDir { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-/// Write a config.toml with a 10 s interval (so the gap threshold is 30 s), a
-/// `logs/` state dir under `dir`, and the given `[[rules]]` TOML; returns the
-/// config path. The log_dir is a TOML literal string so backslashes need no
-/// escaping. The `logs/` directory is created so the default-window
-/// (zero-sample) cases still have a directory to scan.
-fn write_config(dir: &Path, rules_toml: &str) -> PathBuf {
-    let log_dir = dir.join("logs");
-    std::fs::create_dir_all(&log_dir).unwrap();
-    let config = format!(
-        "[general]\ninterval_seconds = 10\nlog_dir = '{}'\nretention_days = 30\n{rules_toml}",
-        log_dir.display()
-    );
-    let path = dir.join("config.toml");
-    std::fs::write(&path, config).unwrap();
-    path
-}
-
-/// Write a log file (raw bytes) under `dir/logs/`.
-fn write_log(dir: &Path, name: &str, content: &[u8]) {
-    std::fs::write(dir.join("logs").join(name), content).unwrap();
-}
-
 /// The full 8-sample fixture (day 1 + day 2) under a fresh temp dir + config.
 fn full_fixture(rules: &str) -> (TempDir, PathBuf) {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), rules);
+    let config = write_config(dir.path(), rules, 10, true);
     write_log(dir.path(), "sensors_2026-02-18.jsonl", DAY1.as_bytes());
     write_log(dir.path(), "sensors_2026-02-19.jsonl", DAY2.as_bytes());
     (dir, config)
-}
-
-fn arg(path: &Path) -> &str {
-    path.to_str().expect("temp path is valid UTF-8")
 }
 
 /// The canonical full-window flags: covers all 8 samples across both days.
@@ -469,7 +366,7 @@ fn many_series_fixture() -> String {
 #[test]
 fn byte_cap_drops_rows_but_keeps_meta_violations_and_forced_row() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 10, true);
     write_log(
         dir.path(),
         "sensors_2026-02-18.jsonl",
@@ -561,7 +458,7 @@ fn cannot_fit_even_minimal_digest_is_usage_error() {
 #[test]
 fn garbage_line_is_counted_in_skipped_lines() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 10, true);
     // Day 1 with a garbage line spliced in; day 2 intact. Total valid: 8.
     let day1_with_garbage = format!("{DAY1}this is not json\n");
     write_log(
@@ -586,7 +483,7 @@ fn empty_log_dir_yields_a_clean_zero_sample_digest() {
     // Config points at an empty logs/ directory: the zero-sample digest is the
     // dead-logger signal, and it still exits 0.
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 10, true);
     let mut args = vec!["report", "--config", arg(&config)];
     args.extend_from_slice(&FULL_WINDOW);
     let output = run_bounded(&args);
@@ -691,6 +588,8 @@ metric = "value"
 threshold = 11.6
 severity = "warning"
 "#,
+        10,
+        true,
     );
     let mut args = vec!["report", "--config", arg(&config)];
     args.extend_from_slice(&FULL_WINDOW);
@@ -744,7 +643,7 @@ fn indented_output_parses_to_the_same_value_as_compact() {
 #[test]
 fn hostile_input_is_bounded_and_flows_valid_records_through() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), "");
+    let config = write_config(dir.path(), "", 10, true);
     // A good line, a Python-era bare-NaN line, a CRLF line, and one oversized
     // line (one byte over the cap). The valid records aggregate; the oversized
     // line is skipped and counted.
@@ -759,7 +658,7 @@ fn hostile_input_is_bounded_and_flows_valid_records_through() {
     content.push(b'\n');
     content.extend_from_slice(crlf_line.as_bytes());
     content.extend_from_slice(b"\r\n"); // CRLF terminator
-    content.extend_from_slice(&vec![b'x'; MAX_LINE_BYTES + 1]);
+    content.extend_from_slice(&vec![b'x'; common::limits::MAX_LINE_BYTES + 1]);
     content.push(b'\n');
     write_log(dir.path(), "sensors_2026-02-18.jsonl", &content);
 
@@ -797,7 +696,7 @@ fn golden_python_fixtures_replay_cleanly() {
     // output): a window over 2026-02-18/19 must produce a sane digest, exit 0.
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
     let dir = TempDir::new();
-    let config = write_config(dir.path(), "");
+    let config = write_config(dir.path(), "", 10, true);
     let output = run_bounded(&[
         "report",
         "--config",
@@ -841,7 +740,7 @@ fn top_keeps_every_violation_row_even_below_the_selector() {
     // `--top 1` must still show all three forced rows — the selector caps the
     // mover tier, never the violation tier (only --max-bytes can drop those).
     let dir = TempDir::new();
-    let config = write_config(dir.path(), VOLTAGE_SAG_RULE);
+    let config = write_config(dir.path(), VOLTAGE_SAG_RULE, 10, true);
     let s1 = r#"{"timestamp": "2026-02-18T08:00:00.000000-05:00", "sensors": [{"sensor": "PSU", "reading": "+12V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "+5V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "+3.3V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "Temp", "type": "Temperature", "value": 40.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "C"}]}"#;
     let s2 = r#"{"timestamp": "2026-02-18T08:00:10.000000-05:00", "sensors": [{"sensor": "PSU", "reading": "+12V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "+5V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "+3.3V", "type": "Voltage", "value": 11.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "V"}, {"sensor": "PSU", "reading": "Temp", "type": "Temperature", "value": 90.0, "min": 0.0, "max": 0.0, "avg": 0.0, "unit": "C"}]}"#;
     write_log(
@@ -908,7 +807,7 @@ fn violation_cap_reports_exact_total_and_preserves_in_violation() {
     // and the series must stay in_violation even though its early transitions
     // were evicted before display.
     let dir = TempDir::new();
-    let config = write_config(dir.path(), FLAP_RULE);
+    let config = write_config(dir.path(), FLAP_RULE, 10, true);
     let mut content = String::new();
     for i in 0..600 {
         // 10 s apart, starting 08:00:00; alternate 11.0 (fire) / 12.0 (clear).
@@ -925,10 +824,11 @@ fn violation_cap_reports_exact_total_and_preserves_in_violation() {
     // A generous byte cap so nothing is byte-dropped: the only thing bounding
     // the shown violations is the 512-transition retention cap, which is
     // exactly the point under test (and it keeps the reading row alive so the
-    // in_violation flag can be checked). Uses `sensorwatch()` (concurrent pipe
-    // drain) rather than `run_bounded` because the ~120 KB digest would
-    // deadlock the poll-then-drain helper against a full stdout pipe.
-    let output = sensorwatch(&[
+    // in_violation flag can be checked). Driven through `run_bounded`, whose
+    // concurrent pipe drain streams the ~120 KB digest without blocking — the
+    // living proof that the old poll-then-drain deadlock (>~64 KB stdout) is
+    // fixed.
+    let output = run_bounded(&[
         "report",
         "--config",
         arg(&config),
@@ -974,7 +874,7 @@ fn files_scanned_counts_only_openable_files() {
     // must NOT inflate meta.files_scanned — that would falsely claim coverage.
     use std::os::unix::fs::PermissionsExt;
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 10, true);
     write_log(dir.path(), "sensors_2026-02-18.jsonl", DAY1.as_bytes());
     write_log(dir.path(), "sensors_2026-02-19.jsonl", DAY2.as_bytes());
     let unreadable = dir.path().join("logs").join("sensors_2026-02-19.jsonl");

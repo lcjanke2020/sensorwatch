@@ -25,7 +25,7 @@ use serde::Serialize;
 use crate::engine::Transition;
 use crate::event::Event;
 use crate::exit;
-use crate::logger::LOG_PREFIX;
+use crate::logger::{daily_file_path, LOG_PREFIX};
 use crate::source::Sample;
 
 /// The digest's own schema version, independent of the event schema's
@@ -202,7 +202,7 @@ pub(crate) fn candidate_files(
     let mut files = Vec::new();
     let mut date = first;
     loop {
-        let path = log_dir.join(format!("{LOG_PREFIX}{date}.jsonl"));
+        let path = daily_file_path(log_dir, LOG_PREFIX, date);
         if path.is_file() {
             files.push(path);
         }
@@ -248,6 +248,11 @@ struct SeriesAgg {
     first: Option<f64>,
     last: Option<f64>,
     in_violation: bool,
+    /// The `sample_index` this series was last folded on. A duplicate
+    /// `(sensor, reading)` within one sample is detected by finding this equal
+    /// to the current index — the engine's `last_seen_tick` stamp pattern, so
+    /// first-occurrence-wins costs no per-sample set allocation.
+    last_seen_sample: u64,
 }
 
 impl SeriesAgg {
@@ -264,6 +269,7 @@ impl SeriesAgg {
             first: None,
             last: None,
             in_violation: false,
+            last_seen_sample: 0,
         }
     }
 
@@ -320,6 +326,11 @@ impl SeriesAgg {
 pub(crate) struct Aggregator {
     interval_seconds: i64,
     samples: u64,
+    /// Monotonic per-sample counter (starts at 1 on the first `observe`), used
+    /// only to stamp each series' `last_seen_sample` for intra-sample duplicate
+    /// detection. Kept separate from `samples` so the dedup can't break if the
+    /// sample-count semantics ever change — the engine's `tick_index` split.
+    sample_index: u64,
     first_sample: Option<String>,
     last_sample: Option<String>,
     /// The latest *in-order* sample, the gap-detection baseline. Distinct from
@@ -336,6 +347,7 @@ impl Aggregator {
         Aggregator {
             interval_seconds,
             samples: 0,
+            sample_index: 0,
             first_sample: None,
             last_sample: None,
             prev_ts: None,
@@ -350,6 +362,7 @@ impl Aggregator {
     /// the window (out-of-window samples are dropped before this call).
     pub(crate) fn observe(&mut self, sample: &Sample) {
         self.samples += 1;
+        self.sample_index += 1;
         if self.first_sample.is_none() {
             self.first_sample = Some(sample.raw_timestamp.clone());
         }
@@ -397,18 +410,22 @@ impl Aggregator {
         // First occurrence of a `(sensor, reading)` within a sample wins,
         // matching the engine's duplicate handling (`engine.rs`), so the digest
         // aggregates and the re-derived violations can never disagree about a
-        // duplicated reading in one record. Pre-sized to the reading count to
-        // avoid rehashing on records with many readings.
-        let mut seen: std::collections::HashSet<(&str, &str)> =
-            std::collections::HashSet::with_capacity(sample.readings.len());
+        // duplicated reading in one record. Presence within THIS sample is
+        // tracked by stamping each series with the monotonic `sample_index` (the
+        // engine's `last_seen_tick` pattern) instead of allocating a per-sample
+        // set: a series already stamped with the current index is a duplicate.
+        let sample_index = self.sample_index;
         for reading in &sample.readings {
-            if !seen.insert((reading.sensor.as_str(), reading.reading.as_str())) {
+            let series = self
+                .series
+                .entry((reading.sensor.clone(), reading.reading.clone()))
+                .or_insert_with(|| SeriesAgg::new(reading.kind));
+            if series.last_seen_sample == sample_index {
+                // Duplicate (sensor, reading) in this sample: first wins.
                 continue;
             }
-            self.series
-                .entry((reading.sensor.clone(), reading.reading.clone()))
-                .or_insert_with(|| SeriesAgg::new(reading.kind))
-                .observe(reading.value, &reading.unit);
+            series.last_seen_sample = sample_index;
+            series.observe(reading.value, &reading.unit);
         }
     }
 
@@ -599,7 +616,15 @@ struct Assembled<'a> {
 }
 
 impl<'a> Assembled<'a> {
-    fn meta(&self) -> Meta<'_> {
+    /// The meta block, given the shown counts to report. The fitter renders
+    /// truncated views whose shown counts differ from the full stored
+    /// collections, so the counts are passed in rather than read from `self`.
+    fn meta_with(
+        &self,
+        readings_shown: usize,
+        violations_shown: usize,
+        gaps_shown: usize,
+    ) -> Meta<'_> {
         Meta {
             window: Window {
                 since: &self.since,
@@ -615,35 +640,140 @@ impl<'a> Assembled<'a> {
             series_total: self.series_total,
             rules_evaluated: self.rules_evaluated,
             truncated: Truncated {
-                readings_shown: self.rows.len(),
+                readings_shown,
                 readings_total: self.readings_total,
-                violations_shown: self.violations.len(),
+                violations_shown,
                 violations_total: self.violations_total,
-                gaps_shown: self.gaps.len(),
+                gaps_shown,
                 gaps_total: self.gaps_total,
             },
         }
     }
 
+    /// Render the digest as it would look after dropping the first `k` items in
+    /// the deterministic worst-first order: reading rows from the tail, then
+    /// gaps by ascending `(seconds, original index)` (via `gap_drop_rank`), then
+    /// violations from the front. Because each drop only ever shrinks the output,
+    /// `render_at(k).len()` is monotone non-increasing in `k` — the property
+    /// [`Assembled::fit`] binary-searches over.
+    fn render_at(&self, gap_drop_rank: &[usize], k: usize, indent: u32) -> String {
+        let d_rows = k.min(self.rows.len());
+        let rem = k - d_rows;
+        let d_gaps = rem.min(self.gaps.len());
+        let d_violations = (rem - d_gaps).min(self.violations.len());
+
+        let rows = &self.rows[..self.rows.len() - d_rows];
+        let violations = &self.violations[d_violations..];
+        // Surviving gaps: those whose drop rank is at or beyond the drop count,
+        // kept in original (chronological) order.
+        let gaps: Vec<Gap> = self
+            .gaps
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| gap_drop_rank[*i] >= d_gaps)
+            .map(|(_, g)| g.clone())
+            .collect();
+
+        let digest = Digest {
+            schema_version: DIGEST_SCHEMA_VERSION,
+            meta: self.meta_with(rows.len(), violations.len(), gaps.len()),
+            violations,
+            gaps: &gaps,
+            readings: rows,
+        };
+        crate::render::to_json_string(&digest, indent).expect("serializing a Digest cannot fail")
+    }
+
+    /// Shrink the digest to fit `max_bytes`, dropping detail worst-first: the
+    /// lowest-ranked reading rows (from the tail), then the smallest gaps (oldest
+    /// on a tie), then the oldest violations (lowest seq). Meta, and the last of
+    /// each section, are preserved as far as possible; only a digest whose
+    /// irreducible core (meta alone) still overflows fails. The measured length
+    /// excludes the trailing newline `println!` adds. This is the documented
+    /// answer to the ROADMAP "digest truncation semantics" question.
+    ///
+    /// Each drop shrinks the render monotonically in the number dropped `k`, so
+    /// rather than re-render once per dropped item (O(n²) serialization, ~1.5k
+    /// renders worst case) this binary-searches the smallest fitting `k`
+    /// (~⌈log₂ n⌉ renders) with byte-identical results — oracled against the
+    /// one-at-a-time `naive_fit` in the unit tests.
+    fn fit(self, max_bytes: u64, indent: u32) -> Result<String, String> {
+        // Gap drop order: ascending `(seconds, original index)`, matching the old
+        // iterative min-seconds / first-lowest-index-on-tie scan exactly.
+        // `gap_drop_rank[i]` is gap i's position in that order, so gap i survives
+        // a `k` dropping `d_gaps` gaps iff `gap_drop_rank[i] >= d_gaps`.
+        let mut order: Vec<usize> = (0..self.gaps.len()).collect();
+        order.sort_by_key(|&i| (self.gaps[i].seconds, i));
+        let mut gap_drop_rank = vec![0usize; self.gaps.len()];
+        for (rank, &i) in order.iter().enumerate() {
+            gap_drop_rank[i] = rank;
+        }
+
+        let max_drops = self.rows.len() + self.gaps.len() + self.violations.len();
+
+        // Fast path — the common case: the untruncated digest fits (report's cap
+        // defaults to 8 KiB and most digests are well under it), so return after
+        // a SINGLE render instead of the ~⌈log₂ n⌉ probes the search below costs.
+        // Byte-identical: a fitting k=0 is exactly what the search would return.
+        let full = self.render_at(&gap_drop_rank, 0, indent);
+        if full.len() as u64 <= max_bytes {
+            return Ok(full);
+        }
+
+        // k=0 overflows. Establish the upper bound: if even the everything-dropped
+        // (meta-only) digest overflows, no k fits — the terminal error,
+        // byte-identical to the old loop's. When there is nothing to drop, that
+        // render IS `full`, so reuse it rather than render k=0 twice.
+        let minimal = if max_drops == 0 {
+            full
+        } else {
+            self.render_at(&gap_drop_rank, max_drops, indent)
+        };
+        if minimal.len() as u64 > max_bytes {
+            return Err(format!(
+                "even the minimal digest is {} bytes, over --max-bytes {max_bytes}; \
+                 raise --max-bytes or lower --indent",
+                minimal.len()
+            ));
+        }
+
+        // Smallest k in [1, max_drops] whose render fits (k=0 is already ruled
+        // out above). Invariant: `hi` always fits; `lo` is the lower bound under
+        // test; `best` holds the render at the smallest fitting k seen so far.
+        let (mut lo, mut hi) = (1usize, max_drops);
+        let mut best = minimal;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let candidate = self.render_at(&gap_drop_rank, mid, indent);
+            if candidate.len() as u64 <= max_bytes {
+                best = candidate;
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        Ok(best)
+    }
+
+    /// Render the current (possibly mutated) collections — the test-only helper
+    /// [`Assembled::naive_fit`] re-renders through after each drop.
+    #[cfg(test)]
     fn render(&self, indent: u32) -> String {
         let digest = Digest {
             schema_version: DIGEST_SCHEMA_VERSION,
-            meta: self.meta(),
+            meta: self.meta_with(self.rows.len(), self.violations.len(), self.gaps.len()),
             violations: &self.violations,
             gaps: &self.gaps,
             readings: &self.rows,
         };
-        render_json(&digest, indent)
+        crate::render::to_json_string(&digest, indent).expect("serializing a Digest cannot fail")
     }
 
-    /// Shrink the digest to fit `max_bytes`, dropping detail worst-first: the
-    /// lowest-ranked reading row (from the end), then the smallest gap (oldest
-    /// on a tie), then the oldest violation (lowest seq). Meta, and the last of
-    /// each section, are preserved as far as possible; only a digest whose
-    /// irreducible core still overflows fails. The measured length excludes the
-    /// trailing newline `println!` adds. This is the documented answer to the
-    /// ROADMAP "digest truncation semantics" question.
-    fn fit(mut self, max_bytes: u64, indent: u32) -> Result<String, String> {
+    /// The pre-LEO-350 one-drop-at-a-time fitter, kept as the oracle that pins
+    /// [`Assembled::fit`]'s binary search to byte-identical output (both the Ok
+    /// strings and the terminal Err string).
+    #[cfg(test)]
+    fn naive_fit(mut self, max_bytes: u64, indent: u32) -> Result<String, String> {
         loop {
             let json = self.render(indent);
             if json.len() as u64 <= max_bytes {
@@ -674,23 +804,6 @@ impl<'a> Assembled<'a> {
             ));
         }
     }
-}
-
-/// Serialize a digest: compact for `indent == 0`, else pretty with an
-/// `indent`-space unit. Duplicates the `PrettyFormatter` pattern from the
-/// frozen `snapshot.rs` deliberately (that module must not be touched).
-fn render_json(digest: &Digest<'_>, indent: u32) -> String {
-    if indent == 0 {
-        return serde_json::to_string(digest).expect("serializing a Digest cannot fail");
-    }
-    let indent_unit = vec![b' '; indent as usize];
-    let mut out = Vec::new();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent_unit);
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
-    digest
-        .serialize(&mut serializer)
-        .expect("serializing a Digest cannot fail");
-    String::from_utf8(out).expect("serde_json output is UTF-8")
 }
 
 /// Does a reading row pass the display filters? `--match` is an
@@ -1215,6 +1328,97 @@ mod tests {
             rows,
             gaps: Vec::new(),
             violations: Vec::new(),
+        }
+    }
+
+    /// A leaked `Transition` (so a borrowed `Event` can be `'static`).
+    fn make_transition(i: usize) -> &'static Transition {
+        use crate::engine::TransitionState;
+        use crate::rules::{RuleKind, Severity};
+        Box::leak(Box::new(Transition {
+            rule: format!("rule-{i:02}"),
+            kind: RuleKind::Threshold,
+            severity: Severity::Warning,
+            state: TransitionState::Fired,
+            raw_timestamp: format!("2026-02-18T08:{i:02}:00.000000-05:00"),
+            timestamp: "2026-02-18T08:00:00-05:00".parse().unwrap(),
+            sensor: Some("PSU".to_owned()),
+            reading: Some(format!("V{i:02}")),
+            value: Some(11.0),
+            unit: Some("V".to_owned()),
+            threshold: Some(11.6),
+            samples_in_violation: 2,
+        }))
+    }
+
+    /// An assembled digest with reading rows AND gaps AND violations, so the
+    /// fit oracle exercises all three drop phases and their boundaries. The gap
+    /// `seconds` are deliberately non-monotonic (with a tie) so the
+    /// `(seconds, index)` drop order — not mere insertion order — is tested.
+    fn assembled_full(n_rows: usize, n_gaps: usize, n_violations: usize) -> Assembled<'static> {
+        let mut rows: Vec<ReadingRow<'static>> = (0..n_rows)
+            .map(|i| {
+                let name: &'static str = Box::leak(format!("S{i:03}").into_boxed_str());
+                row(name, name, 1.0, 1.0 + i as f64 * 0.01, false)
+            })
+            .collect();
+        rank_rows(&mut rows);
+        let readings_total = rows.len();
+
+        let gaps: Vec<Gap> = (0..n_gaps)
+            .map(|i| Gap {
+                from: format!("2026-02-18T08:{i:02}:00.000000-05:00"),
+                to: format!("2026-02-18T09:{i:02}:00.000000-05:00"),
+                // Non-monotonic AND with genuine ties (i=0..5 → 100,101,102,100,101):
+                // ties are precisely where fit's stable (seconds, index) drop order
+                // must match naive_fit's first-lowest-index-on-tie scan.
+                seconds: 100 + ((i * 37) % 3) as i64,
+            })
+            .collect();
+
+        let violations: Vec<Event<'static>> = (0..n_violations)
+            .map(|i| Event::from_transition(make_transition(i), (i + 1) as u64))
+            .collect();
+
+        Assembled {
+            since: "2026-02-18T05:00:00Z".to_owned(),
+            until: "2026-02-19T05:00:00Z".to_owned(),
+            log_dir: "/logs",
+            files_scanned: 1,
+            interval_seconds: 10,
+            samples: 100,
+            skipped_lines: 0,
+            first_sample: Some("2026-02-18T08:00:00-05:00"),
+            last_sample: Some("2026-02-18T09:00:00-05:00"),
+            series_total: readings_total,
+            rules_evaluated: 1,
+            readings_total,
+            gaps_total: n_gaps as u64,
+            violations_total: n_violations,
+            rows,
+            gaps,
+            violations,
+        }
+    }
+
+    #[test]
+    fn fit_matches_the_naive_oracle_across_a_sweep() {
+        // fit's binary search must be byte-identical to the one-drop-at-a-time
+        // oracle — both the Ok strings and the terminal Err string — across caps
+        // that exercise 0 drops, mid-range, the row/gap and gap/violation
+        // boundaries, and the minimal-overflow error, at both indents.
+        for indent in [0u32, 2] {
+            for cap in [
+                60u64, 100, 150, 200, 250, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1500,
+                2000, 3000, 4000, 6000, 8000, 12000,
+            ] {
+                let expected = assembled_full(12, 5, 8).naive_fit(cap, indent);
+                let actual = assembled_full(12, 5, 8).fit(cap, indent);
+                assert_eq!(
+                    actual, expected,
+                    "fit != naive_fit at cap={cap}, indent={indent}"
+                );
+            }
         }
     }
 
