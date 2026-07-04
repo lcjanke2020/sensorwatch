@@ -397,8 +397,10 @@ impl Aggregator {
         // First occurrence of a `(sensor, reading)` within a sample wins,
         // matching the engine's duplicate handling (`engine.rs`), so the digest
         // aggregates and the re-derived violations can never disagree about a
-        // duplicated reading in one record.
-        let mut seen: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+        // duplicated reading in one record. Pre-sized to the reading count to
+        // avoid rehashing on records with many readings.
+        let mut seen: std::collections::HashSet<(&str, &str)> =
+            std::collections::HashSet::with_capacity(sample.readings.len());
         for reading in &sample.readings {
             if !seen.insert((reading.sensor.as_str(), reading.reading.as_str())) {
                 continue;
