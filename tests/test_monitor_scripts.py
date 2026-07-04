@@ -40,10 +40,14 @@ pytestmark = pytest.mark.skipif(
 # ---- helpers ----
 
 def run_script(name, *args):
+    # Decode as UTF-8 explicitly: the scripts force UTF-8 output, and a Windows
+    # parent would otherwise decode with the ANSI code page and mojibake the
+    # non-ASCII bootstrap header the summary echoes.
     return subprocess.run(
         [sys.executable, str(SCRIPTS / name), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 

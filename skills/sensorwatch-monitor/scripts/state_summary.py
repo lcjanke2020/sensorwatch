@@ -173,6 +173,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    st.force_utf8_io()
     args = build_parser().parse_args(argv)
     try:
         return run(args)

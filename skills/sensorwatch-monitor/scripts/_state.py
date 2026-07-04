@@ -76,6 +76,20 @@ def die(exc: BaseException) -> int:
     return code
 
 
+def force_utf8_io() -> None:
+    """Emit/read UTF-8 regardless of platform locale. A redirected stdout on
+    Windows defaults to the ANSI code page (cp1252), which cannot encode e.g. a
+    '≥' that a user's bootstrap.md might contain — state_summary echoes that file
+    verbatim. Call once at the top of every script's main()."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8")
+            except (ValueError, OSError):  # pragma: no cover - stream already used
+                pass
+
+
 def emit(result: dict) -> None:
     """Write the machine-readable result as one compact JSON line on stdout."""
     json.dump(result, sys.stdout, separators=(",", ":"), sort_keys=False)
