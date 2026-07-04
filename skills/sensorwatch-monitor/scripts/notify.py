@@ -27,7 +27,8 @@ Delivery channels (all stdlib-only):
 
 Channel routing and transport credentials live in ``<state>/notify.toml`` in the
 machine-local state directory — never in the repo (the state dir is private for
-exactly that reason). Adding a channel = registering one function in ``ADAPTERS``.
+exactly that reason). Adding a channel = a delivery function in ``ADAPTERS`` plus
+its config schema (required keys / defaults) in the validators.
 
 On successful delivery notify records the per-rule cooldown (``last_notified``)
 and bumps the daily notification count — it is the SOLE writer of those, so the
@@ -51,6 +52,7 @@ malformed notify.toml).
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import ssl
 import sys
@@ -161,9 +163,15 @@ def _deliver_ntfy(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
         raise st.Fatal(f"ntfy: HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise st.Fatal(f"ntfy: {exc.reason}") from exc
+    except http.client.HTTPException as exc:
+        # Do NOT interpolate exc — an InvalidURL message can echo the secret topic.
+        raise st.Fatal(f"ntfy: invalid request ({type(exc).__name__})") from exc
     if not 200 <= status < 300:
         raise st.Fatal(f"ntfy: HTTP {status}")
-    return f"ntfy:{server}/{topic}"
+    # The topic is the shared secret on hosted ntfy.sh — keep it OUT of the
+    # journaled/stdout target (it still travels in the HTTP path at transit time,
+    # but st.emit output is parsed back into the driving agent's context).
+    return f"ntfy:{server}"
 
 
 def _deliver_pushover(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
@@ -186,12 +194,14 @@ def _deliver_pushover(state_dir: Path, now, slug: str, body: str, args, cfg) -> 
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             status = resp.status
-            payload = resp.read().decode("utf-8")
+            payload = resp.read(65536).decode("utf-8")   # cap: a hostile api_url can't balloon RAM
     except urllib.error.HTTPError as exc:
         # Never echo the request (it carries token/user); report the code only.
         raise st.Fatal(f"pushover: HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise st.Fatal(f"pushover: {exc.reason}") from exc
+    except http.client.HTTPException as exc:
+        raise st.Fatal(f"pushover: invalid request ({type(exc).__name__})") from exc
     try:
         parsed = json.loads(payload)
     except json.JSONDecodeError as exc:
@@ -240,16 +250,19 @@ ADAPTERS = {
 
 # ---- notify.toml (machine-local channel routing + transport config) ----
 
-def _load_config(state_dir: Path) -> dict:
-    """Parse ``<state>/notify.toml``; a missing file is an empty config (routed
-    mode falls back to the outbox). A parse error / unreadable file is a Usage
-    error (exit 2) so it fails before any side effect."""
+def _load_config(state_dir: Path) -> dict | None:
+    """Parse ``<state>/notify.toml``. Returns ``None`` when the file is **absent**
+    (routed mode then takes the outbox fallback — the LEO-338 behavior); a
+    present-but-empty file parses to ``{}``. A parse error / unreadable file is a
+    Usage error (exit 2) so it fails before any side effect. The absent-vs-present
+    distinction is what lets a half-configured file be a loud error instead of a
+    silent outbox write (see ``_run_routed`` / ``_routed_adapters``)."""
     path = state_dir / "notify.toml"
     try:
         with path.open("rb") as handle:
             return tomllib.load(handle)
     except FileNotFoundError:
-        return {}
+        return None
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise st.Usage(f"notify.toml: {exc}") from exc
 
@@ -261,8 +274,12 @@ def _as_name_list(where: str, value: object) -> list:
 
 
 def _routed_adapters(config: dict, severity: str) -> list:
-    """Channels for this severity: ``[severity][sev]``, else ``default``, else the
-    outbox fallback (preserves LEO-338 behavior for an unconfigured state dir)."""
+    """Channels for this severity in a PRESENT config: ``[severity][sev]`` (``[]``
+    is a valid, deliberate mute), else ``default``. A present config that routes
+    nothing for the severity is a **config error**, not a silent outbox write — the
+    outbox fallback is reserved for a truly-absent notify.toml (see
+    ``_run_routed``), so a half-configured file can never bury a critical notice in
+    the outbox and arm the cooldown for a delivery that never reached a phone."""
     severity_table = config.get("severity", {})
     if not isinstance(severity_table, dict):
         raise st.Usage("notify.toml: [severity] is not a table")
@@ -270,7 +287,10 @@ def _routed_adapters(config: dict, severity: str) -> list:
         return _as_name_list(f"severity.{severity}", severity_table[severity])
     if "default" in config:
         return _as_name_list("default", config["default"])
-    return ["outbox"]
+    raise st.Usage(
+        f"notify.toml: nothing routed for severity {severity!r} — add a "
+        f"[severity].{severity} entry (use [] to mute) or a top-level 'default'"
+    )
 
 
 def _validate_config(config: dict) -> None:
@@ -282,6 +302,12 @@ def _validate_config(config: dict) -> None:
     severity_table = config.get("severity", {})
     if not isinstance(severity_table, dict):
         raise st.Usage("notify.toml: [severity] is not a table")
+    unknown_sev = sorted(k for k in severity_table if k not in st.SEVERITIES)
+    if unknown_sev:  # a typo'd key must be loud, not a silent miss → outbox fallback
+        raise st.Usage(
+            f"notify.toml: unknown severity key(s) in [severity]: "
+            f"{', '.join(unknown_sev)}; valid: {', '.join(st.SEVERITIES)}"
+        )
     for sev, names in severity_table.items():
         referenced += _as_name_list(f"severity.{sev}", names)
     unknown = sorted({name for name in referenced if name not in ADAPTERS})
@@ -292,21 +318,57 @@ def _validate_config(config: dict) -> None:
         )
 
 
+def _validate_priority(name: str, cfg: dict) -> None:
+    """A ``priority`` map, if present, must be a table of ints — so a scalar
+    (``priority = 5``) or a non-int value fails as a clean config error instead of
+    an AttributeError / ValueError traceback at delivery time."""
+    prio = cfg.get("priority")
+    if prio is None:
+        return
+    if not isinstance(prio, dict):
+        raise st.Usage(
+            f"notify.toml: [{name}] priority must be a table "
+            "(e.g. {{ info = 3, warning = 4, critical = 5 }})"
+        )
+    for sev, value in prio.items():
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise st.Usage(f"notify.toml: [{name}] priority.{sev} must be an integer")
+
+
 def _validate_required_keys(config: dict, adapters: list) -> None:
     """For each channel routed for THIS event, its required keys must be present
-    (a missing key is a config error, exit 2; a missing secret *file* is a
-    delivery-time channel failure, handled per-channel)."""
+    and well-typed (a missing key or wrong-typed value is a config error, exit 2;
+    a missing secret *file* is a delivery-time channel failure, handled
+    per-channel)."""
     for name in adapters:
         cfg = config.get(name, {})
         if not isinstance(cfg, dict):
             raise st.Usage(f"notify.toml: [{name}] is not a table")
         if name == "ntfy":
-            if not cfg.get("topic"):
+            topic = cfg.get("topic")
+            if not topic:
                 raise st.Usage("notify.toml: [ntfy] requires 'topic'")
+            if any(ch.isspace() for ch in topic):  # a space → http.client.InvalidURL
+                raise st.Usage("notify.toml: [ntfy] topic must not contain whitespace")
+            _validate_priority(name, cfg)
+        elif name == "pushover":
+            # Missing KEY = config error (exit 2, before any side effect); a missing
+            # secret FILE stays a delivery-time channel failure (_read_secret).
+            for key in ("token_file", "user_file"):
+                if not cfg.get(key):
+                    raise st.Usage(f"notify.toml: [pushover] requires '{key}'")
+            _validate_priority(name, cfg)
         elif name == "smtp":
             for key in ("host", "mail_from", "mail_to"):
                 if not cfg.get(key):
                     raise st.Usage(f"notify.toml: [smtp] requires '{key}'")
+            if cfg.get("username") and not cfg.get("password_file"):
+                raise st.Usage(
+                    "notify.toml: [smtp] requires 'password_file' when 'username' is set"
+                )
+            port = cfg.get("port", 587)
+            if not isinstance(port, int) or isinstance(port, bool):
+                raise st.Usage("notify.toml: [smtp] port must be an integer")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -351,8 +413,10 @@ def _run_explicit(args: argparse.Namespace, state_dir: Path, now, slug: str, bod
         raise st.Usage(
             f"unknown adapter {args.adapter!r}; available: {', '.join(sorted(ADAPTERS))}"
         )
-    # A real channel still reads its notify.toml section (outbox/stderr need none).
-    config = _load_config(state_dir) if args.adapter in CONFIGURED_ADAPTERS else {}
+    # A real channel still reads its notify.toml section (outbox/stderr need none;
+    # an absent file yields {}, so a real adapter with no config fails required-key
+    # validation just as before).
+    config = (_load_config(state_dir) or {}) if args.adapter in CONFIGURED_ADAPTERS else {}
     _validate_required_keys(config, [args.adapter])
 
     # Validate the ledger BEFORE any side effect: a wrong-shape escalation.json
@@ -381,9 +445,13 @@ def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body:
     """Severity-routed fan-out from notify.toml. All config validation precedes
     any delivery; the cooldown arms iff at least one channel succeeded."""
     config = _load_config(state_dir)
-    _validate_config(config)
-    adapters = _routed_adapters(config, args.severity)
-    _validate_required_keys(config, adapters)
+    if config is None:                       # no notify.toml → LEO-338 outbox fallback
+        adapters = ["outbox"]
+        config = {}
+    else:
+        _validate_config(config)
+        adapters = _routed_adapters(config, args.severity)
+        _validate_required_keys(config, adapters)
 
     # Ledger validation BEFORE any side effect (journaling included).
     esc = st.load_escalation(state_dir)

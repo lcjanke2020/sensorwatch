@@ -839,7 +839,9 @@ def http_endpoint(status=200, body=""):
     """An ephemeral localhost HTTP server for the ntfy / pushover POST targets."""
     server = _RecordingHTTPServer(status, body)
     server.url = "http://%s:%d" % server.server_address
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # poll_interval=0.05: shutdown() blocks up to one interval; the default 0.5 s
+    # wastes ~0.47 s per teardown (the just-handled POST resets the select timer).
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     try:
         yield server
@@ -896,7 +898,7 @@ class _RecordingSMTPServer(socketserver.ThreadingTCPServer):
 @contextlib.contextmanager
 def smtp_endpoint():
     server = _RecordingSMTPServer()
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     try:
         yield server
@@ -934,13 +936,14 @@ def test_notify_ntfy_explicit(tmp_path):
         r = _notify(state, "psu-12v-sag", severity="critical", tier=2,
                     adapter="ntfy", summary="sag; see incident")
     assert r.returncode == 0, r.stderr
-    # Legacy single-channel shape — byte-compatible with LEO-338 explicit mode.
+    # Legacy single-channel shape — byte-compatible with LEO-338 explicit mode,
+    # except the target redacts the topic (the shared secret on hosted ntfy.sh).
     assert json.loads(r.stdout) == {
         "adapter": "ntfy", "delivered": True, "tier": 2,
-        "target": f"ntfy:{ntfy.url}/topic-e2e",
+        "target": f"ntfy:{ntfy.url}",
     }
     req = ntfy.requests[-1]
-    assert req["path"] == "/topic-e2e"
+    assert req["path"] == "/topic-e2e"                    # topic still travels in transit
     assert req["headers"]["priority"] == "5"              # critical default
     assert req["headers"]["title"] == "sensorwatch monitor - critical (tier 2)"
     assert req["headers"]["tags"] == "sensorwatch"
@@ -948,6 +951,9 @@ def test_notify_ntfy_explicit(tmp_path):
     assert "stub adapter" not in req["body"] and "LEO-339" not in req["body"]
     assert '"action":"notify"' in journal_text(state)
     assert "last_notified" in read_json(state / "escalation.json")["per_rule"]["psu-12v-sag"]
+    # ...but the topic must never surface in the durable target: stdout or journal.
+    assert "topic-e2e" not in r.stdout
+    assert "topic-e2e" not in journal_text(state)
 
 
 def test_notify_routed_fanout(tmp_path):
@@ -1126,3 +1132,81 @@ def test_notify_toml_parse_error_exits_2(tmp_path):
     assert list((state / "outbox").glob("*.md")) == []               # no side effects
     assert '"action":"notify"' not in journal_text(state)
     assert (state / "escalation.json").read_text(encoding="utf-8") == esc_before
+
+
+# ---- review round 1 fixes: routing footguns must be loud, not silent ----------
+
+def _assert_no_side_effects(state, esc_before):
+    assert list((state / "outbox").glob("*.md")) == []
+    assert '"action":"notify"' not in journal_text(state)
+    assert (state / "escalation.json").read_text(encoding="utf-8") == esc_before
+
+
+def test_notify_routed_unknown_severity_key_exits_2(tmp_path):
+    # A [severity] typo (`critcal`) must be a loud config error — never a silent
+    # miss that falls through to outbox and arms the cooldown.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, '[severity]\ncritcal = ["ntfy"]\n[ntfy]\ntopic = "t"\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert "critcal" in r.stderr
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_routed_present_config_no_route_exits_2(tmp_path):
+    # notify.toml exists and configures ntfy but routes nothing for critical and
+    # has no default → config error, NOT a silent outbox write that arms the 6h
+    # cooldown. The outbox fallback is reserved for a truly-ABSENT file.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, '[severity]\nwarning = ["ntfy"]\n[ntfy]\ntopic = "t"\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_routed_pushover_missing_key_exits_2_no_side_effects(tmp_path):
+    # A missing pushover KEY is a config error caught before ANY delivery, so a
+    # sibling outbox channel can't fire and arm the cooldown for the broken one.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, "\n".join([
+        "[severity]", 'critical = ["outbox", "pushover"]',
+        "[pushover]", 'api_url = "http://127.0.0.1:9/unused"',   # token_file/user_file absent
+    ]))
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    _assert_no_side_effects(state, esc_before)                   # sibling did NOT fire
+
+
+def test_notify_smtp_missing_password_when_username_exits_2(tmp_path):
+    # username set but no password_file KEY = config mistake (exit 2), distinct
+    # from a set-but-missing secret file (a delivery-time failure).
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, "\n".join([
+        "[severity]", 'critical = ["smtp"]',
+        "[smtp]", 'host = "127.0.0.1"', "port = 2525",
+        'mail_from = "a@x"', 'mail_to = "b@y"', 'username = "a@x"',   # password_file absent
+    ]))
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_routed_scalar_priority_exits_2_not_traceback(tmp_path):
+    # A scalar ntfy `priority = 5` (the form ntfy's own docs use) must be a clean
+    # exit-2 config error, not a raw AttributeError traceback (empty stdout).
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, '[severity]\ncritical = ["ntfy"]\n[ntfy]\ntopic = "t"\npriority = 5\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert "priority" in r.stderr and "Traceback" not in r.stderr
+    _assert_no_side_effects(state, esc_before)

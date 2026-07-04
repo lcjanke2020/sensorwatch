@@ -286,8 +286,11 @@ is the shared secret.
 Routing and transport credentials live in `<state>/notify.toml`, machine-local
 and **never in git**: it holds topic names and points at 0600 secret files, the
 repo is public, and `config.toml` is byte-shared with the frozen Python logger. A
-missing `notify.toml` falls back to the `outbox` (preserving LEO-338 behavior).
-Example:
+**missing** `notify.toml` falls back to the `outbox` (preserving LEO-338
+behavior); a **present** file must route each severity — a `[severity]` entry (an
+empty list `[]` deliberately mutes) or a top-level `default` — or the run is a
+loud config error (exit 2), so a half-configured file can never silently swallow a
+critical notice in the outbox. Example:
 
     # <state>/notify.toml — channel routing + transport config (machine-local)
     default = ["ntfy"]                # channels used when [severity] has no entry
