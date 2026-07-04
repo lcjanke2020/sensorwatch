@@ -248,6 +248,11 @@ struct SeriesAgg {
     first: Option<f64>,
     last: Option<f64>,
     in_violation: bool,
+    /// The `sample_index` this series was last folded on. A duplicate
+    /// `(sensor, reading)` within one sample is detected by finding this equal
+    /// to the current index — the engine's `last_seen_tick` stamp pattern, so
+    /// first-occurrence-wins costs no per-sample set allocation.
+    last_seen_sample: u64,
 }
 
 impl SeriesAgg {
@@ -264,6 +269,7 @@ impl SeriesAgg {
             first: None,
             last: None,
             in_violation: false,
+            last_seen_sample: 0,
         }
     }
 
@@ -320,6 +326,11 @@ impl SeriesAgg {
 pub(crate) struct Aggregator {
     interval_seconds: i64,
     samples: u64,
+    /// Monotonic per-sample counter (starts at 1 on the first `observe`), used
+    /// only to stamp each series' `last_seen_sample` for intra-sample duplicate
+    /// detection. Kept separate from `samples` so the dedup can't break if the
+    /// sample-count semantics ever change — the engine's `tick_index` split.
+    sample_index: u64,
     first_sample: Option<String>,
     last_sample: Option<String>,
     /// The latest *in-order* sample, the gap-detection baseline. Distinct from
@@ -336,6 +347,7 @@ impl Aggregator {
         Aggregator {
             interval_seconds,
             samples: 0,
+            sample_index: 0,
             first_sample: None,
             last_sample: None,
             prev_ts: None,
@@ -350,6 +362,7 @@ impl Aggregator {
     /// the window (out-of-window samples are dropped before this call).
     pub(crate) fn observe(&mut self, sample: &Sample) {
         self.samples += 1;
+        self.sample_index += 1;
         if self.first_sample.is_none() {
             self.first_sample = Some(sample.raw_timestamp.clone());
         }
@@ -397,18 +410,22 @@ impl Aggregator {
         // First occurrence of a `(sensor, reading)` within a sample wins,
         // matching the engine's duplicate handling (`engine.rs`), so the digest
         // aggregates and the re-derived violations can never disagree about a
-        // duplicated reading in one record. Pre-sized to the reading count to
-        // avoid rehashing on records with many readings.
-        let mut seen: std::collections::HashSet<(&str, &str)> =
-            std::collections::HashSet::with_capacity(sample.readings.len());
+        // duplicated reading in one record. Presence within THIS sample is
+        // tracked by stamping each series with the monotonic `sample_index` (the
+        // engine's `last_seen_tick` pattern) instead of allocating a per-sample
+        // set: a series already stamped with the current index is a duplicate.
+        let sample_index = self.sample_index;
         for reading in &sample.readings {
-            if !seen.insert((reading.sensor.as_str(), reading.reading.as_str())) {
+            let series = self
+                .series
+                .entry((reading.sensor.clone(), reading.reading.clone()))
+                .or_insert_with(|| SeriesAgg::new(reading.kind));
+            if series.last_seen_sample == sample_index {
+                // Duplicate (sensor, reading) in this sample: first wins.
                 continue;
             }
-            self.series
-                .entry((reading.sensor.clone(), reading.reading.clone()))
-                .or_insert_with(|| SeriesAgg::new(reading.kind))
-                .observe(reading.value, &reading.unit);
+            series.last_seen_sample = sample_index;
+            series.observe(reading.value, &reading.unit);
         }
     }
 
