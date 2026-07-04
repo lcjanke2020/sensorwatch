@@ -50,6 +50,29 @@ pub enum Command {
     /// there is no live sensor source, so only `source-unavailable` rules can
     /// fire; `--replay` evaluates rules over recorded logs on any platform.
     Watch(WatchArgs),
+
+    /// Summarize logged sensor history into a bounded JSON digest on stdout —
+    /// the sanctioned way for an agent to read history without ever touching
+    /// the raw JSONL logs.
+    ///
+    /// Selects the `sensors_YYYY-MM-DD.jsonl` files overlapping a window (a
+    /// `--since` instant or a trailing `--last` duration ending at `--until`),
+    /// streams them line by line, and emits per-(sensor, reading) window
+    /// aggregates, re-derived rule violations, sampling gaps, and a meta block
+    /// (sample counts and first/last timestamps — a one-call liveness check).
+    /// A `--max-bytes` cap and a `--top` selector bound the output: the meta
+    /// block always survives, and if the digest still overflows, detail is
+    /// dropped worst-first — reading rows, then gaps, then the oldest
+    /// violations (so `truncated.violations_shown < violations_total` is the
+    /// signal an early violation was dropped, never that it did not happen).
+    ///
+    /// Exit codes: 0 whenever a digest is printed — including a zero-sample
+    /// digest, which is itself the "logger is dead" signal; 1 fatal (an
+    /// existing config that cannot be read); 2 usage (invalid `[[rules]]`, bad
+    /// window/duration arguments, or a digest that cannot fit `--max-bytes`
+    /// even fully truncated). Pure file reading — works on any platform, with
+    /// or without a live sensor source.
+    Report(ReportArgs),
 }
 
 #[derive(Args)]
@@ -138,6 +161,85 @@ pub struct WatchArgs {
     /// rule fire on yesterday's logs?" and drives the integration tests.
     #[arg(long, value_name = "FILE")]
     pub replay: Vec<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReportArgs {
+    /// Path to config.toml (default: ./config.toml if present). Supplies the
+    /// `log_dir`, sampling `interval_seconds`, and the `[[rules]]` re-derived
+    /// over the window. `report` works with zero rules.
+    #[arg(long, short = 'c', value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
+    /// Window start: an RFC 3339 instant, a local `YYYY-MM-DDTHH:MM:SS`, or a
+    /// bare `YYYY-MM-DD` (the start of that local day). Overrides `--last`.
+    #[arg(long, value_name = "WHEN", conflicts_with = "last")]
+    pub since: Option<String>,
+
+    /// Window end (same forms as `--since`; a bare `YYYY-MM-DD` means the END
+    /// of that local day). Defaults to now — the hook that makes tests
+    /// time-independent.
+    #[arg(long, value_name = "WHEN")]
+    pub until: Option<String>,
+
+    /// Trailing window length ending at `--until`, when `--since` is absent.
+    /// Accepts `24h`, `90m`, `45s`, `7d`, compound `1d12h` (case-insensitive
+    /// units), or a bare integer of seconds.
+    #[arg(long, default_value = "24h", value_name = "DURATION")]
+    pub last: String,
+
+    /// Hard upper bound on the digest's JSON size in bytes (the trailing
+    /// newline is excluded). The meta block always survives; to fit, detail is
+    /// dropped worst-first — reading rows, then gaps, then the oldest violations.
+    #[arg(
+        long = "max-bytes",
+        default_value_t = 8192,
+        value_name = "BYTES",
+        value_parser = clap::value_parser!(u64).range(512..)
+    )]
+    pub max_bytes: u64,
+
+    /// Target number of reading rows: the top-N by relative movement. Rows in
+    /// violation are always kept even beyond N (only the byte cap can drop
+    /// them), so the shown count can exceed N when many series are in violation.
+    #[arg(
+        long,
+        default_value_t = 20,
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub top: u32,
+
+    /// Only show reading rows (and violations) whose sensor or reading name
+    /// contains this substring (case-insensitive); repeatable, matching any.
+    /// A display filter only — it never affects rule evaluation or the meta
+    /// sample counts.
+    #[arg(long, value_name = "SUBSTRING")]
+    pub r#match: Vec<String>,
+
+    /// Only show reading rows (and violations) of this type (case-insensitive).
+    /// A display filter only, like `--match`.
+    #[arg(long = "type", value_enum, ignore_case = true, value_name = "TYPE")]
+    pub type_filter: Option<TypeFilter>,
+
+    /// Read logs from this directory instead of the config's `log_dir`. A
+    /// missing or unreadable directory yields a clean zero-sample digest.
+    #[arg(long = "log-dir", value_name = "PATH")]
+    pub log_dir: Option<PathBuf>,
+
+    /// JSON indentation in spaces, 0 to 16; 0 prints a single compact line.
+    /// Indentation counts against `--max-bytes`.
+    #[arg(
+        long,
+        default_value_t = 0,
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(..=16)
+    )]
+    pub indent: u32,
+
+    /// Enable debug logging on stderr (takes precedence over RUST_LOG).
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
 }
 
 /// The `--min-severity` filter vocabulary. Mapped to `rules::Severity` in

@@ -24,9 +24,12 @@ cloud service.
   API-mode binding over the native C core).
 - Writes local JSON Lines log files.
 - Reads those JSON Lines files back as **untrusted input** (the Rust CLI's
-  rule-engine replay source): line length is bounded, malformed lines are
-  counted and skipped rather than trusted, and the parser is exercised
-  against synthetic adversarial lines in the test suite.
+  rule-engine replay source, shared by `watch --replay` and the `report`
+  history digest): line length is bounded, malformed lines are counted and
+  skipped rather than trusted, and the parser is exercised against synthetic
+  adversarial lines in the test suite. `report` adds no new listener,
+  privilege, or input class — it is the same bounded replay parser behind a
+  read-only, size-capped digest.
 - Opens no network listeners.
 - The binary wheel ships a compiled cffi extension (`sensorwatch._sw_cffi`) with
   the C core statically linked in; Python imports it from the package directory,

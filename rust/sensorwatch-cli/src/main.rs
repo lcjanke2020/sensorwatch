@@ -9,6 +9,7 @@
 
 mod cli;
 mod config;
+mod digest;
 mod engine;
 mod event;
 mod exit;
@@ -16,6 +17,7 @@ mod jsonl;
 mod labels;
 mod logger;
 mod replay;
+mod report;
 mod rules;
 mod snapshot;
 mod source;
@@ -36,8 +38,16 @@ fn main() -> std::process::ExitCode {
     let mut builder = match &cli.command {
         cli::Command::Log(args) if args.verbose => debug_builder(),
         cli::Command::Watch(args) if args.verbose => debug_builder(),
+        cli::Command::Report(args) if args.verbose => debug_builder(),
         cli::Command::Log(_) | cli::Command::Watch(_) => {
             env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        }
+        // `report` is stdout-first (the JSON digest is the product; skipped
+        // lines surface in-band via meta), but it defaults to `warn` rather than
+        // `snapshot`'s `error` so provenance caveats — a missing log dir, a
+        // defaulted sampling interval — reach stderr without `--verbose`.
+        cli::Command::Report(_) => {
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         }
         cli::Command::Snapshot(_) => {
             env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"))
@@ -48,6 +58,7 @@ fn main() -> std::process::ExitCode {
         cli::Command::Snapshot(args) => snapshot::run(&args),
         cli::Command::Log(args) => logger::run(&args),
         cli::Command::Watch(args) => watch::run(&args),
+        cli::Command::Report(args) => report::run(&args),
     }
 }
 

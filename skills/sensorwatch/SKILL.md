@@ -242,51 +242,85 @@ Windows the live source only reports "unavailable" (there is no HWiNFO), so
 only `source-unavailable` rules can fire there; `--replay` evaluates rules over
 recorded logs on any platform.
 
-## Recipe 4 — Analyze the logged data
+## Recipe 4 — Review the logged history (the `report` digest)
 
-Each log line is one sample: a `timestamp` plus a `sensors` array. This is the
-**generic** shape the logger emits:
+**Agents never read the raw `sensors_*.jsonl` logs.** They are unbounded,
+per-sample, and full of source-lifetime noise; parsing them by hand blows an
+agent's context budget and invites subtly wrong aggregates. `sensorwatch report`
+is the sanctioned alternative: one call condenses a window of history into a
+single **bounded** JSON digest — window aggregates, re-derived rule violations,
+sampling gaps, and a liveness meta block — capped at `--max-bytes`. Build the
+CLI once as in Recipe 1, then:
+
+```sh
+./target/release/sensorwatch report                            # last 24 h, compact JSON
+./target/release/sensorwatch report --last 6h --indent 2       # a 6 h window, pretty-printed
+./target/release/sensorwatch report --match psu --type TEMPERATURE --last 6h   # focused triage
+./target/release/sensorwatch report --since 2026-02-18 --until 2026-02-19       # an explicit date window
+```
+
+(Use the built Rust binary path, as in Recipes 1–3 — a bare `sensorwatch` on
+PATH may resolve to the Python console script, which has no `report` subcommand.)
+
+Flags: `--since`/`--until` (RFC 3339, local `YYYY-MM-DDTHH:MM:SS`, or a bare
+`YYYY-MM-DD` — since = start of day, until = end; until defaults to now) or a
+trailing `--last <24h|90m|7d|1d12h|SECONDS>` (default 24 h, conflicts with
+`--since`); `--config/-c` and `--log-dir` (where the rules and logs come from);
+`--max-bytes` (hard cap, default 8192) and `--top` (max reading rows, default
+20); `--match`/`--type` (case-insensitive **display** filters — same vocabulary
+as `snapshot`, and they never change the meta counts or the rule evaluation);
+`--indent 0–16`.
+
+**Digest anatomy** (`--indent 2`, abbreviated):
 
 ```json
-{"timestamp": "2026-02-18T08:17:48-05:00", "sensors": [
-  {"sensor": "MEG Ai1600T", "reading": "+12V", "type": "Voltage", "value": 12.03, "min": 12.01, "max": 12.17, "avg": 12.06, "unit": "V"}
-]}
+{"schema_version":1,
+ "meta":{"window":{"since":"2026-02-18T05:00:00Z","until":"2026-02-19T17:00:00Z"},
+   "log_dir":"logs","files_scanned":2,"interval_seconds":10,"samples":8,
+   "skipped_lines":0,"first_sample":"2026-02-18T08:00:00.000000-05:00",
+   "last_sample":"2026-02-19T08:00:20.000000-05:00","series_total":2,"rules_evaluated":1,
+   "truncated":{"readings_shown":2,"readings_total":2,"violations_shown":2,
+     "violations_total":2,"gaps_shown":2,"gaps_total":2}},
+ "violations":[/* frozen watch-event objects (Recipe 3's schema), chronological */],
+ "gaps":[{"from":"…-05:00","to":"…-05:00","seconds":120}],
+ "readings":[{"sensor":"MEG Ai1600T","reading":"+12V","type":"Voltage","unit":"V",
+   "samples":8,"non_finite":0,"first":12.0,"last":12.25,"min":11.25,"max":12.5,
+   "avg":11.9375,"delta":0.25,"in_violation":true}]}
 ```
 
-Read it with the stdlib — e.g. pull every temperature reading:
+- **`meta`** — the window, files scanned, per-window `samples`, `skipped_lines`
+  (malformed lines the parser dropped), `series_total`, `rules_evaluated`, and
+  `truncated` (what was shown vs found after the byte cap).
+- **`readings`** — one row per `(sensor, reading)`, aggregated over the window
+  itself. `non_finite` counts nulls/NaN/±inf (excluded from the math);
+  `first/last/min/max/avg/delta` are over the finite values; `in_violation`
+  flags a series that tripped a rule. HWiNFO's own per-record `min`/`max`/`avg`
+  are source-lifetime numbers — wrong for a window — and are deliberately
+  ignored.
+- **`violations`** — the same frozen event objects `watch` emits (Recipe 3),
+  re-derived by replaying the window through the identical deterministic engine.
+  Their `seq`/`id` are **digest-local ordinals** for reference only — *not* an
+  ack cursor.
+- **`gaps`** — any pause longer than 3× `interval_seconds`: when the machine was
+  off or the logger was down.
 
-```python
-import json
+**Liveness in one call.** To answer "is the logger alive and how fresh is the
+data?", read `meta`: a zero-sample digest (empty arrays, null `first_sample`/
+`last_sample`, still exit `0`) means the logger is dead or the machine was off;
+otherwise compare `meta.last_sample` against `meta.window.until` — a large lag,
+or a trailing entry in `gaps`, means the feed has stalled.
 
-with open("logs/sensors_2026-02-18.jsonl", encoding="utf-8") as f:
-    for line in f:
-        record = json.loads(line)
-        ts = record["timestamp"]
-        for s in record["sensors"]:
-            if s["type"] == "Temperature":
-                print(ts, s["sensor"], s["reading"], s["value"], s["unit"])
-```
+**Aggregate-only by design.** The digest exposes per-window *aggregates*, not
+individual samples — so per-sample questions ("at what minute did the GPU peak?",
+"plot the +12V rail across yesterday") are **out of protocol on purpose**: the
+whole point is a fixed, small context budget. Do not fall back to hand-parsing
+the raw logs to answer them. A future `report` capability (a per-series
+bucket/sparkline flag, or a sanctioned SQL surface) will widen this when needed.
 
-For larger analyses, flatten the nested records into a tabular frame (one row per
-reading per sample) and use Polars/DuckDB:
-
-```python
-import json, polars as pl
-
-rows = []
-with open("logs/sensors_2026-02-18.jsonl", encoding="utf-8") as f:
-    for line in f:
-        rec = json.loads(line)
-        for s in rec["sensors"]:
-            rows.append({"timestamp": rec["timestamp"], **s})
-df = pl.DataFrame(rows)
-```
-
-A full worked analysis (efficiency study, Polars + DuckDB queries, charts) lives
-in [`examples/psu-efficiency/`](../../examples/psu-efficiency/). **Note:** that
-directory's published dataset is a curated *flat, PSU-specific* export (16
-columns), **not** the generic nested format above — its README explains the
-schema. Treat it as an analysis worked-example, not the logger's output format.
+For a full **human** offline analysis (efficiency study, Polars + DuckDB
+queries, charts over a curated flat export), see
+[`examples/psu-efficiency/`](../../examples/psu-efficiency/) — a worked example,
+not the logger's output format.
 
 ## Other language surfaces
 

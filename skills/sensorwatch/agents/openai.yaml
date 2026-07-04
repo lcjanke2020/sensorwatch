@@ -3,11 +3,11 @@
 # ../SKILL.md, which holds the actual prerequisites and usage recipes.
 display_name: sensorwatch
 short_description: >-
-  Read live hardware sensors (temps, voltages, fans, power) and analyze logged
-  sensor history on Windows (via HWiNFO64) with sensorwatch.
+  Read live hardware sensors (temps, voltages, fans, power) and review logged
+  sensor history as a bounded digest on Windows (via HWiNFO64) with sensorwatch.
 default_prompt: |
   Use the sensorwatch skill to read the current hardware sensor state on this
   Windows machine -- temperatures, voltages, fan speeds, and power. Read SKILL.md
   in this folder first for the prerequisites (Windows + HWiNFO64 with Shared
   Memory Support) and the read-now / collect-history / watch-alerts /
-  analyze-logs recipes.
+  report-history recipes.

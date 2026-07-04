@@ -54,9 +54,10 @@ also written as its own atomic file (temp name, then rename), giving an
 at-least-once durable handoff that survives an agent that was not listening.
 
 **4. Agent triage protocol.** On a fired event the agent's loop is: wake → read
-the ~1 KB event → pull one size-capped `report` digest (Phase 1 step 5) → act.
-It never reads raw logs. A timeout wake means "heartbeat — verify all quiet,
-re-arm."
+the ~1 KB event → pull one size-capped `sensorwatch report` digest → act. It
+never reads raw logs — `report` (shipped in `rust/sensorwatch-cli`) is the
+sanctioned bounded window over history. A timeout wake means "heartbeat — verify
+all quiet, re-arm."
 
 **5. Durable state directory.** The agent's memory is a few kilobytes on disk,
 not in the context window: an acknowledgment cursor keyed to event **sequence
@@ -156,7 +157,9 @@ The agent layer keeps hard size bounds *by design*, not by convention:
   name and the sensor/reading/unit strings, so short rule names keep events
   comfortably inside a kilobyte (there is no length cap on the strings
   themselves — a pathologically long configured name would exceed it).
-- The `report` digest (Phase 1 step 5) is size-capped.
+- The `report` digest is hard-capped by `--max-bytes` (default ~8 KB): detail
+  is dropped worst-first (reading rows, then gaps, then the oldest violations)
+  while the meta block always survives.
 - Durable state is kilobyte-scale summaries.
 - The protocol forbids reading raw history — an agent never loads a day of
   logs into its context.
