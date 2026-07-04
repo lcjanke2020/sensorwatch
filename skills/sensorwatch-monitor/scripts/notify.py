@@ -324,6 +324,27 @@ def _validate_config(config: dict) -> None:
         )
 
 
+def _is_plain_int(value: object) -> bool:
+    """int, but not bool (a TOML bool is never a valid port/priority/retry)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _require_str(name: str, key: str, value: object) -> None:
+    """A required field: present and a non-empty string. Catches both a missing key
+    and a wrong-typed one (``token_file = 123``) as a clean config error, so
+    neither reaches delivery-time code where a sibling channel could already have
+    fired and armed the cooldown."""
+    if not isinstance(value, str) or not value:
+        raise st.Usage(f"notify.toml: [{name}] requires '{key}' as a non-empty string")
+
+
+def _optional_str(name: str, key: str, cfg: dict) -> None:
+    """An optional field that, WHEN present, must be a string (``server``,
+    ``api_url``, ``username``)."""
+    if key in cfg and not isinstance(cfg[key], str):
+        raise st.Usage(f"notify.toml: [{name}] {key} must be a string")
+
+
 def _validate_priority(name: str, cfg: dict) -> None:
     """A ``priority`` map, if present, must be a table keyed by severity with int
     values — so a scalar (``priority = 5``), a typo'd severity key (silently
@@ -344,56 +365,56 @@ def _validate_priority(name: str, cfg: dict) -> None:
                 f"notify.toml: [{name}] priority has an unknown severity key {sev!r}; "
                 f"valid: {', '.join(st.SEVERITIES)}"
             )
-        if not isinstance(value, int) or isinstance(value, bool):
+        if not _is_plain_int(value):
             raise st.Usage(f"notify.toml: [{name}] priority.{sev} must be an integer")
 
 
 def _validate_required_keys(config: dict, adapters: list) -> None:
-    """For each channel routed for THIS event, its required keys must be present
-    and well-typed (a missing key or wrong-typed value is a config error, exit 2;
-    a missing secret *file* is a delivery-time channel failure, handled
-    per-channel)."""
+    """For each channel routed for THIS event, every field it reads is present
+    (when required) and well-typed BEFORE any delivery — so a config-schema error
+    is a clean exit 2 and can never reach delivery-time code where a preceding
+    sibling channel has already succeeded and armed the cooldown. A missing secret
+    *file* (a present, valid path) stays a delivery-time channel failure."""
     for name in adapters:
         cfg = config.get(name, {})
         if not isinstance(cfg, dict):
             raise st.Usage(f"notify.toml: [{name}] is not a table")
         if name == "ntfy":
-            topic = cfg.get("topic")
-            if not topic:
-                raise st.Usage("notify.toml: [ntfy] requires 'topic'")
+            _require_str(name, "topic", cfg.get("topic"))
             # The topic is a URL path segment and the shared secret. Anything outside
             # ntfy's charset would silently redirect the POST ('#'/'?'), crash the
-            # header/URL encoder (non-ASCII, non-str), or count as delivery to the
-            # wrong topic — all of which arm the cooldown. Reject at config time.
-            if not isinstance(topic, str) or not NTFY_TOPIC_RE.fullmatch(topic):
+            # header/URL encoder (non-ASCII), or count as delivery to the wrong topic
+            # — all of which arm the cooldown. Reject at config time.
+            if not NTFY_TOPIC_RE.fullmatch(cfg["topic"]):
                 raise st.Usage(
                     "notify.toml: [ntfy] topic must be 1-64 characters of [A-Za-z0-9_-] "
                     "(ntfy's topic charset)"
                 )
+            _optional_str(name, "server", cfg)
             token = cfg.get("token")  # Authorization header encodes latin-1 → require ASCII
             if token is not None and (not isinstance(token, str) or not token.isascii()):
                 raise st.Usage("notify.toml: [ntfy] token must be an ASCII string")
             _validate_priority(name, cfg)
         elif name == "pushover":
-            # Missing KEY = config error (exit 2, before any side effect); a missing
-            # secret FILE stays a delivery-time channel failure (_read_secret).
-            for key in ("token_file", "user_file"):
-                if not cfg.get(key):
-                    raise st.Usage(f"notify.toml: [pushover] requires '{key}'")
+            # Missing/wrong-typed KEY = config error (exit 2, before any side effect);
+            # a missing secret FILE stays a delivery-time channel failure (_read_secret).
+            _require_str(name, "token_file", cfg.get("token_file"))
+            _require_str(name, "user_file", cfg.get("user_file"))
+            _optional_str(name, "api_url", cfg)
             for key in ("retry", "expire"):  # sent as form fields; a wrong type 400s at delivery
-                if key in cfg and (not isinstance(cfg[key], int) or isinstance(cfg[key], bool)):
+                if key in cfg and not _is_plain_int(cfg[key]):
                     raise st.Usage(f"notify.toml: [pushover] {key} must be an integer")
             _validate_priority(name, cfg)
         elif name == "smtp":
             for key in ("host", "mail_from", "mail_to"):
-                if not cfg.get(key):
-                    raise st.Usage(f"notify.toml: [smtp] requires '{key}'")
-            if cfg.get("username") and not cfg.get("password_file"):
-                raise st.Usage(
-                    "notify.toml: [smtp] requires 'password_file' when 'username' is set"
-                )
+                _require_str(name, key, cfg.get(key))
+            _optional_str(name, "username", cfg)
+            if cfg.get("username"):  # login is attempted only when username is set
+                _require_str(name, "password_file", cfg.get("password_file"))
+            if "starttls" in cfg and not isinstance(cfg["starttls"], bool):
+                raise st.Usage("notify.toml: [smtp] starttls must be true or false")
             port = cfg.get("port", 587)
-            if not isinstance(port, int) or isinstance(port, bool):
+            if not _is_plain_int(port):
                 raise st.Usage("notify.toml: [smtp] port must be an integer")
 
 

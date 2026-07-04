@@ -16,7 +16,8 @@ stdlib-only, pathlib-portable file manipulation.
 """
 
 import contextlib
-import email.policy
+import email            # email.message_from_bytes (import email.policy alone would suffice,
+import email.policy     # but be explicit — the SMTP test uses both)
 import http.server
 import json
 import socketserver
@@ -1271,3 +1272,37 @@ def test_notify_pushover_bad_retry_type_exits_2(tmp_path):
     r = _notify_routed(state, "r1", severity="critical", tier=2)
     assert r.returncode == 2
     _assert_no_side_effects(state, esc_before)                   # sibling outbox did NOT fire
+
+
+def test_notify_routed_wrong_typed_transport_field_exits_2(tmp_path):
+    # Present-but-wrong-typed transport fields must be exit-2 config errors caught
+    # BEFORE any delivery — never a delivery-time failure that lets a preceding
+    # sibling (here outbox) fire and arm the cooldown for a config mistake.
+    state = tmp_path / "state"
+    init_state(state)
+    tok = _secret_file(state, "po-token", "x")
+    usr = _secret_file(state, "po-user", "y")
+    cases = [
+        ("ntfy", '[ntfy]\nserver = 123\ntopic = "t"'),
+        ("pushover", f'[pushover]\napi_url = 123\ntoken_file = "{tok}"\nuser_file = "{usr}"'),
+        ("pushover", '[pushover]\ntoken_file = 123\nuser_file = "u"'),
+        ("smtp", '[smtp]\nhost = "127.0.0.1"\nmail_from = "a@x"\nmail_to = "b@y"\nstarttls = "false"'),
+        ("smtp", '[smtp]\nhost = 123\nmail_from = "a@x"\nmail_to = "b@y"'),
+    ]
+    for chan, section in cases:
+        write_notify_toml(state, f'[severity]\ncritical = ["outbox", "{chan}"]\n{section}\n')
+        esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+        assert r.returncode == 2, section
+        assert "Traceback" not in r.stderr, section
+        _assert_no_side_effects(state, esc_before)               # sibling outbox did NOT fire
+
+
+def test_notify_explicit_pushover_nonstring_token_file_exits_2(tmp_path):
+    # Explicit mode: a non-string token_file must be a clean exit-2 config error,
+    # not a raw TypeError traceback from Path(123) at delivery.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, '[pushover]\ntoken_file = 123\nuser_file = "u"\n')
+    r = _notify(state, "r1", severity="critical", tier=2, adapter="pushover")
+    assert r.returncode == 2 and "Traceback" not in r.stderr
