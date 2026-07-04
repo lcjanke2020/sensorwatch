@@ -1306,3 +1306,26 @@ def test_notify_explicit_pushover_nonstring_token_file_exits_2(tmp_path):
     write_notify_toml(state, '[pushover]\ntoken_file = 123\nuser_file = "u"\n')
     r = _notify(state, "r1", severity="critical", tier=2, adapter="pushover")
     assert r.returncode == 2 and "Traceback" not in r.stderr
+
+
+def test_notify_ntfy_schemeless_server_does_not_leak_topic(tmp_path):
+    # A server without a scheme ('ntfy.sh' not 'https://ntfy.sh' — a plausible typo)
+    # makes urllib raise ValueError whose message echoes the full URL, INCLUDING the
+    # secret topic. It must fail sanitized — the topic must never reach stdout, the
+    # journal, or stderr (no raw traceback) — in routed AND explicit mode.
+    state = tmp_path / "state"
+    init_state(state)
+    secret = "supersecrettopic"
+    toml = f'[severity]\ncritical = ["ntfy"]\n[ntfy]\nserver = "ntfy.sh"\ntopic = "{secret}"\n'
+
+    write_notify_toml(state, toml)
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 1
+    assert secret not in r.stdout and secret not in r.stderr
+    assert secret not in journal_text(state)
+
+    r2 = _notify(state, "r2", severity="critical", tier=2, adapter="ntfy")
+    assert r2.returncode == 1
+    assert secret not in r2.stdout and secret not in r2.stderr
+    assert "Traceback" not in r2.stderr        # explicit mode: clean Fatal, not a crash
+    assert secret not in journal_text(state)

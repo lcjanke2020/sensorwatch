@@ -155,23 +155,29 @@ def _deliver_ntfy(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
     if not topic:  # defensive: routed/explicit config validation catches this first
         raise st.Fatal("ntfy: no topic configured")
     priority = (cfg.get("priority") or {}).get(args.severity, NTFY_DEFAULT_PRIORITY[args.severity])
-    req = urllib.request.Request(f"{server}/{topic}", data=body.encode("utf-8"), method="POST")
-    req.add_header("Title", _title(args))
-    req.add_header("Priority", str(priority))
-    req.add_header("Tags", "sensorwatch")
     token = cfg.get("token") or ""
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    # Build the request INSIDE the try: a schemeless server ('ntfy.sh' vs
+    # 'https://ntfy.sh') makes Request() raise ValueError whose message echoes the
+    # full URL — including the secret topic. Every failure below re-raises a Fatal
+    # that names NO URL / topic (only urllib.error.URLError.reason is a topic-free
+    # transport cause, so it stays interpolated).
     try:
+        req = urllib.request.Request(f"{server}/{topic}", data=body.encode("utf-8"), method="POST")
+        req.add_header("Title", _title(args))
+        req.add_header("Priority", str(priority))
+        req.add_header("Tags", "sensorwatch")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
         with urllib.request.urlopen(req, timeout=10) as resp:
             status = resp.status
     except urllib.error.HTTPError as exc:
         raise st.Fatal(f"ntfy: HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise st.Fatal(f"ntfy: {exc.reason}") from exc
-    except http.client.HTTPException as exc:
-        # Do NOT interpolate exc — an InvalidURL message can echo the secret topic.
-        raise st.Fatal(f"ntfy: invalid request ({type(exc).__name__})") from exc
+    except (http.client.HTTPException, ValueError) as exc:
+        # ValueError ('unknown url type', UnicodeError) / InvalidURL messages can
+        # echo the URL — the topic is the secret, so NEVER interpolate them.
+        raise st.Fatal(f"ntfy: invalid server or topic ({type(exc).__name__})") from exc
     if not 200 <= status < 300:
         raise st.Fatal(f"ntfy: HTTP {status}")
     # The topic is the shared secret on hosted ntfy.sh — keep it OUT of the
@@ -196,8 +202,8 @@ def _deliver_pushover(state_dir: Path, now, slug: str, body: str, args, cfg) -> 
         fields["retry"] = str(cfg.get("retry", 60))
         fields["expire"] = str(cfg.get("expire", 3600))
     data = urllib.parse.urlencode(fields).encode("utf-8")
-    req = urllib.request.Request(api_url, data=data, method="POST")
     try:
+        req = urllib.request.Request(api_url, data=data, method="POST")
         with urllib.request.urlopen(req, timeout=10) as resp:
             status = resp.status
             payload = resp.read(65536).decode("utf-8")   # cap: a hostile api_url can't balloon RAM
@@ -206,7 +212,7 @@ def _deliver_pushover(state_dir: Path, now, slug: str, body: str, args, cfg) -> 
         raise st.Fatal(f"pushover: HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise st.Fatal(f"pushover: {exc.reason}") from exc
-    except http.client.HTTPException as exc:
+    except (http.client.HTTPException, ValueError) as exc:
         raise st.Fatal(f"pushover: invalid request ({type(exc).__name__})") from exc
     try:
         parsed = json.loads(payload)
@@ -518,8 +524,13 @@ def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body:
         try:
             target = adapter(state_dir, now, slug, body, args, config.get(name, {}))
             channels.append({"adapter": name, "ok": True, "target": target})
-        except Exception as exc:  # per-channel isolation: one bad channel != total failure
+        except st.Fatal as exc:  # per-channel isolation: one bad channel != total failure
             channels.append({"adapter": name, "ok": False, "error": str(exc)})
+        except Exception as exc:
+            # Defense in depth: adapters raise st.Fatal with sanitized reasons, but a
+            # leaked raw exception could echo a secret (e.g. a URL with the topic)
+            # into this journaled/emitted error field — record only its type.
+            channels.append({"adapter": name, "ok": False, "error": f"unexpected {type(exc).__name__}"})
 
     any_ok = any(c["ok"] for c in channels)
     all_ok = all(c["ok"] for c in channels)
