@@ -15,6 +15,7 @@ mod event;
 mod exit;
 mod jsonl;
 mod labels;
+mod limits;
 mod logger;
 mod replay;
 mod report;

@@ -6,56 +6,8 @@
 //! crate — including a golden byte-comparison against a Python-logger
 //! fixture — and live behavior is verified manually on Windows.
 
-use std::process::{Command, Output};
-
-fn sensorwatch(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
-        .args(args)
-        .output()
-        .expect("failed to run the sensorwatch binary")
-}
-
-// Only the off-Windows fast-exit test inspects stderr; keep the helper behind
-// the same cfg so it is not dead code under the Windows clippy gate.
-#[cfg(not(windows))]
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-/// Run to completion, but kill and fail if the process outlives `10 s` —
-/// so a regression that reaches the sampling loop fails fast instead of
-/// hanging CI on `.output()`.
-#[cfg(not(windows))]
-fn run_bounded(args: &[&str]) -> Output {
-    use std::time::{Duration, Instant};
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn the sensorwatch binary");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match child.try_wait().expect("could not poll the child") {
-            Some(_) => return child.wait_with_output().expect("could not collect output"),
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!(
-                    "`sensorwatch {}` did not exit within 10s — \
-                     the off-Windows fast-exit path regressed into the loop",
-                    args.join(" ")
-                );
-            }
-            None => std::thread::sleep(Duration::from_millis(20)),
-        }
-    }
-}
+mod common;
+use common::*;
 
 /// Off Windows the logger must fail fast (before touching config or the log
 /// directory), matching the Python CLI's platform gate — under both the

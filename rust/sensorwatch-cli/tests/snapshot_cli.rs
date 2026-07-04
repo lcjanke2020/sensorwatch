@@ -8,22 +8,8 @@
 //! either side of the contract (mirroring the wrapper's self-skipping live
 //! test).
 
-use std::process::{Command, Output};
-
-fn sensorwatch(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
-        .args(args)
-        .output()
-        .expect("failed to spawn the sensorwatch binary")
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
+mod common;
+use common::*;
 
 #[test]
 fn unknown_type_is_a_usage_error() {

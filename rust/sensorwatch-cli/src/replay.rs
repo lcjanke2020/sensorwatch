@@ -34,12 +34,8 @@ use jiff::Timestamp;
 use serde::Deserialize;
 
 use crate::labels::normalize_type_label;
+use crate::limits::MAX_LINE_BYTES;
 use crate::source::{Sample, SampleReading, SampleSource, Tick};
-
-/// Upper bound for one JSONL line. A full HWiNFO record is ~100 KB, so this
-/// is >20k readings of headroom; anything larger is discarded to the next
-/// newline WITHOUT being buffered.
-const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 
 /// How many malformed lines get an individual warning per file before the
 /// per-file end-of-file summary takes over.

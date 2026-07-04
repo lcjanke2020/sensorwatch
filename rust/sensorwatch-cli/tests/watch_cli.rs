@@ -6,53 +6,13 @@
 //! (`one_shot_timeout_exits_zero`) runs only off Windows, where the live
 //! source deterministically reports the sensor source as unavailable.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU32, Ordering};
+// The `kill -INT` regression is the only direct `Command` user, and it is
+// Unix-only, so gate the import to keep the Windows `-D warnings` gate green.
+#[cfg(unix)]
+use std::process::Command;
 
-// ---- process helpers (mirroring tests/log_cli.rs) ----
-
-fn sensorwatch(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
-        .args(args)
-        .output()
-        .expect("failed to run the sensorwatch binary")
-}
-
-/// Run to completion, but kill and fail if the process outlives 10 s — so a
-/// regression that fails to terminate (a replay that never exhausts, a
-/// timeout that never elapses) fails fast instead of hanging CI. Compiled on
-/// all platforms: `follow_replay` relies on it to guard the follow loop.
-fn run_bounded(args: &[&str]) -> Output {
-    use std::time::{Duration, Instant};
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn the sensorwatch binary");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match child.try_wait().expect("could not poll the child") {
-            Some(_) => return child.wait_with_output().expect("could not collect output"),
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("`sensorwatch {}` did not exit within 10s", args.join(" "));
-            }
-            None => std::thread::sleep(Duration::from_millis(20)),
-        }
-    }
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
+mod common;
+use common::*;
 
 // ---- fixtures ----
 
@@ -117,60 +77,6 @@ severity = "critical"
 /// The exact event stdout expects for FIXTURE + PSU_RULE on a fresh state dir.
 const FIRED_EVENT: &str = r#"{"schema_version":1,"seq":1,"id":"psu-12v-sag-1","rule":"psu-12v-sag","type":"threshold","severity":"critical","state":"fired","timestamp":"2026-02-18T08:00:20.000000-05:00","sensor":"MEG Ai1600T","reading":"+12V","value":11.4,"unit":"V","threshold":11.6,"samples_in_violation":2}"#;
 
-// ---- temp dir (integration tests cannot see crate::testutil) ----
-
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new() -> TempDir {
-        let path = std::env::temp_dir().join(format!(
-            "sensorwatch-watch-test-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        TempDir { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-/// Write a config.toml with a 1 s interval, a `logs/` state dir under `dir`,
-/// and the given `[[rules]]` TOML; returns the config path. The log_dir is a
-/// TOML literal string so Windows backslashes need no escaping.
-fn write_config(dir: &Path, rules_toml: &str) -> PathBuf {
-    let log_dir = dir.join("logs");
-    let config = format!(
-        "[general]\ninterval_seconds = 1\nlog_dir = '{}'\nretention_days = 30\n{rules_toml}",
-        log_dir.display()
-    );
-    let path = dir.join("config.toml");
-    std::fs::write(&path, config).unwrap();
-    path
-}
-
-fn write_str(dir: &Path, name: &str, content: &str) -> PathBuf {
-    let path = dir.join(name);
-    std::fs::write(&path, content).unwrap();
-    path
-}
-
-fn arg(path: &Path) -> &str {
-    path.to_str().expect("temp path is valid UTF-8")
-}
-
 // ---- tests ----
 
 #[test]
@@ -195,7 +101,7 @@ fn watch_help_lists_flags() {
 #[test]
 fn zero_rules_is_usage_error() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), ""); // [general] only, no [[rules]]
+    let config = write_config(dir.path(), "", 1, false); // [general] only, no [[rules]]
     let output = sensorwatch(&["watch", "--config", arg(&config)]);
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr(&output).contains("rules"));
@@ -217,6 +123,8 @@ metric = "value"
 threshold = 11.6
 severity = "warning"
 "#,
+        1,
+        false,
     );
     let output = sensorwatch(&["watch", "--config", arg(&config)]);
     assert_eq!(output.status.code(), Some(2));
@@ -227,7 +135,7 @@ severity = "warning"
 #[test]
 fn unknown_rule_filter_exits_two() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 1, false);
     let output = sensorwatch(&["watch", "--config", arg(&config), "--rule", "nope"]);
     assert_eq!(output.status.code(), Some(2));
     let err = stderr(&output);
@@ -241,7 +149,7 @@ fn unknown_rule_filter_exits_two() {
 #[test]
 fn one_shot_fires_ten_with_stdout_and_spool() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 1, false);
     let fixture = write_str(dir.path(), "fix.jsonl", FIXTURE);
     let spool = dir.path().join("spool");
     let output = run_bounded(&[
@@ -276,7 +184,7 @@ fn one_shot_fires_ten_with_stdout_and_spool() {
 #[test]
 fn one_shot_replay_exhausted_exits_zero() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 1, false);
     let fixture = write_str(dir.path(), "fix.jsonl", NON_FIRING);
     let output = run_bounded(&["watch", "--config", arg(&config), "--replay", arg(&fixture)]);
     assert_eq!(output.status.code(), Some(0));
@@ -289,7 +197,7 @@ fn one_shot_replay_exhausted_exits_zero() {
 #[test]
 fn one_shot_timeout_exits_zero() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 1, false);
     let output = run_bounded(&["watch", "--config", arg(&config), "--timeout", "1"]);
     assert_eq!(output.status.code(), Some(0));
     assert!(stdout(&output).is_empty());
@@ -298,7 +206,7 @@ fn one_shot_timeout_exits_zero() {
 #[test]
 fn follow_replay_writes_event_file_and_exits_zero() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 1, false);
     let fixture = write_str(dir.path(), "fix.jsonl", FIXTURE);
     let output = run_bounded(&[
         "watch",
@@ -349,7 +257,7 @@ fn follow_replay_writes_event_file_and_exits_zero() {
 #[test]
 fn sequence_persists_across_runs() {
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 1, false);
     let fixture = write_str(dir.path(), "fix.jsonl", FIXTURE);
     let config = arg(&config).to_owned();
     let fixture = arg(&fixture).to_owned();
@@ -370,7 +278,7 @@ fn min_severity_filters_rules() {
     // Baseline: without a filter the warning rule (2nd sample) beats the
     // critical rule (3rd sample).
     let base = TempDir::new();
-    let base_cfg = write_config(base.path(), TWO_RULES);
+    let base_cfg = write_config(base.path(), TWO_RULES, 1, false);
     let base_fix = write_str(base.path(), "fix.jsonl", FIXTURE);
     let baseline = run_bounded(&[
         "watch",
@@ -389,7 +297,7 @@ fn min_severity_filters_rules() {
     // With --min-severity critical the warning rule is filtered out, so the
     // critical rule's event surfaces instead.
     let dir = TempDir::new();
-    let config = write_config(dir.path(), TWO_RULES);
+    let config = write_config(dir.path(), TWO_RULES, 1, false);
     let fixture = write_str(dir.path(), "fix.jsonl", FIXTURE);
     let output = run_bounded(&[
         "watch",
@@ -414,7 +322,7 @@ fn sigint_exits_130() {
     use std::time::{Duration, Instant};
 
     let dir = TempDir::new();
-    let config = write_config(dir.path(), PSU_RULE);
+    let config = write_config(dir.path(), PSU_RULE, 1, false);
     let mut child = Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
         .args(["watch", "--follow", "--config", arg(&config)])
         .stdout(std::process::Stdio::null())
