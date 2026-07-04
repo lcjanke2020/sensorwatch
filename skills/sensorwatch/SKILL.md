@@ -292,8 +292,8 @@ as `snapshot`, and they never change the meta counts or the rule evaluation);
 ```
 
 - **`meta`** — the window, files scanned, per-window `samples`, `skipped_lines`
-  (malformed lines the parser dropped), `series_total`, `rules_evaluated`, and
-  `truncated` (what was shown vs found after the byte cap).
+  (malformed log lines dropped while reading the window), `series_total`,
+  `rules_evaluated`, and `truncated` (what was shown vs found after the byte cap).
 - **`readings`** — one row per `(sensor, reading)`, aggregated over the window
   itself. `non_finite` counts nulls/NaN/±inf (excluded from the math);
   `first/last/min/max/avg/delta` are over the finite values; `in_violation`

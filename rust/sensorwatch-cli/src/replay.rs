@@ -103,6 +103,11 @@ impl ReplaySource {
     /// Malformed (or oversized) lines skipped so far, across all files. The
     /// `report` command surfaces this count in its meta block (`skipped_lines`)
     /// so a digest never silently pretends full coverage; `watch` ignores it.
+    /// Exact for every in-window line and every no-window (`watch`) run; under a
+    /// window ([`ReplaySource::with_window`], report only), an out-of-window line
+    /// that is valid JSON but not a sensor record is elided uncounted — the
+    /// LEO-350 decision-2 caveat, an out-of-window edge that does not affect the
+    /// window's own coverage.
     pub(crate) fn skipped_lines(&self) -> u64 {
         self.skipped_lines
     }
@@ -183,17 +188,23 @@ impl SampleSource for ReplaySource {
                             // post-parse window filter would have dropped it too.
                             //
                             // CAVEAT (LEO-350 decision 2): this also elides the
-                            // `skipped_lines` count for a syntactically valid but
-                            // semantically invalid out-of-window line (e.g. one
-                            // missing the required `sensors` key), which the full
-                            // parse WOULD count. Everything else stays exact:
-                            // invalid-JSON garbage and Python-token lines both
-                            // fail this `IgnoredAny` check and fall through to
-                            // `parse_line`, so garbage is still counted with the
-                            // same reason as today, and an out-of-window record
-                            // that only needs the fixup is parsed and then
-                            // window-dropped by report exactly as before.
-                            // Out-of-window hostile-input-only edge; accepted.
+                            // handling of an out-of-window line that `IgnoredAny`
+                            // ACCEPTS but `RawRecord` would REJECT — any valid
+                            // JSON that is not a sensor record: a missing/wrong-
+                            // typed `sensors` key, entries missing required
+                            // fields, etc. Such a line is skipped entirely, so it
+                            // no longer (a) increments `skipped_lines`, (b) emits
+                            // `record_skip`'s per-line/per-file WARN, or (c)
+                            // consumes the 3-per-file detailed-warning budget —
+                            // all of which the full parse would do. Everything
+                            // else stays exact: invalid-JSON garbage and
+                            // Python-token lines both fail this `IgnoredAny` check
+                            // and fall through to `parse_line`, so garbage is
+                            // still counted with the same reason as today, and an
+                            // out-of-window record that only needs the fixup is
+                            // parsed and then window-dropped by report exactly as
+                            // before. Out-of-window hostile-input-only edge;
+                            // accepted (it cannot affect the window's own data).
                             if (ts < since || ts > until)
                                 && serde_json::from_slice::<serde::de::IgnoredAny>(&line).is_ok()
                             {
@@ -316,7 +327,14 @@ struct RawEntry {
 /// unparseable timestamp, non-UTF-8) return `None` and take the full path.
 fn leading_timestamp(line: &[u8]) -> Option<Timestamp> {
     let rest = line.strip_prefix(TIMESTAMP_PREFIX)?;
-    let end = rest.iter().position(|&b| b == b'"')?;
+    // A valid RFC 3339 instant is ≤ ~35 bytes, so bound the closing-quote scan:
+    // a hostile canonical-prefix line with no early quote stays O(1) here instead
+    // of scanning up to the 4 MiB line cap. Behavior-identical — a quoted span
+    // longer than this can't parse as a `Timestamp`, so it takes the full path
+    // (via `None`) either way.
+    const MAX_TIMESTAMP_BYTES: usize = 48;
+    let head = &rest[..rest.len().min(MAX_TIMESTAMP_BYTES)];
+    let end = head.iter().position(|&b| b == b'"')?;
     std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
 }
 
@@ -532,6 +550,46 @@ mod tests {
             replay_str(line).1,
             1,
             "no window: the semantically-invalid line is counted as today"
+        );
+    }
+
+    #[test]
+    fn windowed_out_of_window_wrong_typed_sensors_is_uncounted_caveat() {
+        // The caveat's class is broader than a missing `sensors` key: ANY line
+        // IgnoredAny accepts but RawRecord rejects is elided out of window —
+        // here `sensors` is a number, not an array.
+        let line = r#"{"timestamp": "2020-01-01T00:00:00Z", "sensors": 5}"#;
+        let (samples, skipped) =
+            replay_str_windowed(line, "2026-02-18T00:00:00Z", "2026-02-19T00:00:00Z");
+        assert!(samples.is_empty());
+        assert_eq!(
+            skipped, 0,
+            "wrong-typed `sensors` is uncounted out of window"
+        );
+        assert_eq!(replay_str(line).1, 1, "no window: counted as today");
+    }
+
+    #[test]
+    fn leading_timestamp_accepts_a_real_writer_record() {
+        // Executable tie between TIMESTAMP_PREFIX and the writer it mirrors: a
+        // record the logger actually emits must be precheck-eligible. If
+        // jsonl.rs's byte layout (key order / `": "` separator) ever changes,
+        // this fails instead of the precheck silently degrading to dead code.
+        use crate::jsonl::{format_record_raw, LogEntry};
+        let entry = LogEntry {
+            sensor: "MEG Ai1600T",
+            reading: "+12V",
+            kind: "Voltage",
+            value: 12.03,
+            min: 12.01,
+            max: 12.17,
+            avg: 12.06,
+            unit: "V",
+        };
+        let record = format_record_raw("2026-02-18T08:17:48.123456-05:00", &[entry]);
+        assert_eq!(
+            leading_timestamp(record.as_bytes()),
+            Some("2026-02-18T08:17:48.123456-05:00".parse().unwrap())
         );
     }
 

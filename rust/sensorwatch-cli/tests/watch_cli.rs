@@ -109,6 +109,29 @@ fn zero_rules_is_usage_error() {
 }
 
 #[test]
+fn empty_rules_error_emits_no_config_warning() {
+    // Regression for LEO-350 review finding 1: the shared loader must not run
+    // the lenient config parse before watch's empty-rules rejection. A
+    // warn-provoking `[general]` value (interval_seconds below the minimum)
+    // would otherwise print a config warning on this exit-2 stderr that the
+    // pre-LEO-350 binary never emitted. `[general]`-only config, no `[[rules]]`.
+    let dir = TempDir::new();
+    let config = write_str(
+        dir.path(),
+        "config.toml",
+        "[general]\ninterval_seconds = 0\n",
+    );
+    let output = sensorwatch(&["watch", "--config", arg(&config)]);
+    assert_eq!(output.status.code(), Some(2));
+    let err = stderr(&output);
+    assert!(err.contains("has no [[rules]] to evaluate"), "{err}");
+    assert!(
+        !err.contains("interval_seconds"),
+        "the lenient config warning must not precede the empty-rules usage error:\n{err}"
+    );
+}
+
+#[test]
 fn invalid_rules_exit_two() {
     // A threshold rule missing its required `op`.
     let dir = TempDir::new();

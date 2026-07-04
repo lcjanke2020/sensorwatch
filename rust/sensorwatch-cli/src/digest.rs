@@ -711,9 +711,24 @@ impl<'a> Assembled<'a> {
 
         let max_drops = self.rows.len() + self.gaps.len() + self.violations.len();
 
-        // If even the everything-dropped (meta-only) digest overflows, no k fits:
-        // the terminal error, byte-identical to the old loop's.
-        let minimal = self.render_at(&gap_drop_rank, max_drops, indent);
+        // Fast path — the common case: the untruncated digest fits (report's cap
+        // defaults to 8 KiB and most digests are well under it), so return after
+        // a SINGLE render instead of the ~⌈log₂ n⌉ probes the search below costs.
+        // Byte-identical: a fitting k=0 is exactly what the search would return.
+        let full = self.render_at(&gap_drop_rank, 0, indent);
+        if full.len() as u64 <= max_bytes {
+            return Ok(full);
+        }
+
+        // k=0 overflows. Establish the upper bound: if even the everything-dropped
+        // (meta-only) digest overflows, no k fits — the terminal error,
+        // byte-identical to the old loop's. When there is nothing to drop, that
+        // render IS `full`, so reuse it rather than render k=0 twice.
+        let minimal = if max_drops == 0 {
+            full
+        } else {
+            self.render_at(&gap_drop_rank, max_drops, indent)
+        };
         if minimal.len() as u64 > max_bytes {
             return Err(format!(
                 "even the minimal digest is {} bytes, over --max-bytes {max_bytes}; \
@@ -722,10 +737,10 @@ impl<'a> Assembled<'a> {
             ));
         }
 
-        // Smallest k in [0, max_drops] whose render fits. Invariant: `hi` always
-        // fits; `lo` is the lower bound under test; `best` holds the render at the
-        // smallest fitting k seen so far (starts at the known-fitting minimal).
-        let (mut lo, mut hi) = (0usize, max_drops);
+        // Smallest k in [1, max_drops] whose render fits (k=0 is already ruled
+        // out above). Invariant: `hi` always fits; `lo` is the lower bound under
+        // test; `best` holds the render at the smallest fitting k seen so far.
+        let (mut lo, mut hi) = (1usize, max_drops);
         let mut best = minimal;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -1354,7 +1369,10 @@ mod tests {
             .map(|i| Gap {
                 from: format!("2026-02-18T08:{i:02}:00.000000-05:00"),
                 to: format!("2026-02-18T09:{i:02}:00.000000-05:00"),
-                seconds: 100 + ((i * 37) % 11) as i64,
+                // Non-monotonic AND with genuine ties (i=0..5 → 100,101,102,100,101):
+                // ties are precisely where fit's stable (seconds, index) drop order
+                // must match naive_fit's first-lowest-index-on-tie scan.
+                seconds: 100 + ((i * 37) % 3) as i64,
             })
             .collect();
 

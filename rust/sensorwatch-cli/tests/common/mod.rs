@@ -52,14 +52,21 @@ pub fn run_bounded(args: &[&str]) -> Output {
 
     let mut stdout_pipe = child.stdout.take().expect("piped stdout");
     let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+    // `.expect` (not a swallowed result): a pipe read error would otherwise
+    // silently truncate captured output and hide the real failure behind a
+    // confusing downstream assertion.
     let stdout_reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut buf);
+        stdout_pipe
+            .read_to_end(&mut buf)
+            .expect("failed to read child stdout");
         buf
     });
     let stderr_reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut buf);
+        stderr_pipe
+            .read_to_end(&mut buf)
+            .expect("failed to read child stderr");
         buf
     });
 

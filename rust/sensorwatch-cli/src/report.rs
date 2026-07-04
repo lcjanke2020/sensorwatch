@@ -54,8 +54,10 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     // proceeds over zero rules rather than erroring — a digest is still useful
     // without alerts — which is why the no-config arm stays here.
     let (rules, config) = match Config::config_path(args.config.as_deref()) {
-        Some(path) => match Config::load_rules_and_config(&path, "report") {
-            Ok(pair) => pair,
+        Some(path) => match Config::load_rules_and_text(&path, "report") {
+            // `report` parses the lenient config right after the rules — its
+            // original position, unchanged.
+            Ok((rules, text)) => (rules, Config::from_toml_str(&text).unwrap_or_default()),
             Err(code) => return code,
         },
         None => {

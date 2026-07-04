@@ -55,13 +55,12 @@ pub(crate) fn run(args: &WatchArgs) -> ExitCode {
         }
         return ExitCode::from(exit::USAGE);
     };
-    // Step 3+5: read the resolved document once and parse it for both the strict
-    // rules and the lenient config, via the loader shared with `report`. A read
-    // failure is a fatal preparation fault; a malformed/invalid rules TOML is a
-    // usage error — both messaged inside the loader (they differ from report's
-    // only by the subcommand word). The empty-rules rejection and the
-    // --rule / --min-severity filtering below are watch-only, so they stay here.
-    let (mut rules, config) = match Config::load_rules_and_config(&config_path, "watch") {
+    // Step 3: read the resolved document once and strict-parse its rules via the
+    // loader shared with `report`. A read failure is a fatal preparation fault;
+    // a malformed/invalid rules TOML is a usage error — both messaged inside the
+    // loader (they differ from report's only by the subcommand word). The loader
+    // returns the once-read text; the lenient config parse stays at Step 5 below.
+    let (mut rules, text) = match Config::load_rules_and_text(&config_path, "watch") {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -78,6 +77,14 @@ pub(crate) fn run(args: &WatchArgs) -> ExitCode {
     if let Err(code) = apply_filters(&mut rules, args) {
         return code;
     }
+
+    // Step 5: lenient config for interval / log_dir / retention / sensor filter.
+    // Parsed HERE (after the empty-rules and filter checks), NOT in the loader,
+    // so its warn-and-fall-back `log::warn!`s keep their original ordering — they
+    // must not precede the exit-2 stderr of those checks (review finding 1). The
+    // document already parsed as TOML in Step 3, so this cannot fail; default
+    // defensively regardless.
+    let config = Config::from_toml_str(&text).unwrap_or_default();
 
     let mode = if args.follow { "follow" } else { "one-shot" };
     let source_desc = if args.replay.is_empty() {
