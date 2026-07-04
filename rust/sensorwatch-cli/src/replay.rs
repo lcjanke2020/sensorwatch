@@ -41,6 +41,13 @@ use crate::source::{Sample, SampleReading, SampleSource, Tick};
 /// per-file end-of-file summary takes over.
 const DETAILED_WARNINGS_PER_FILE: u32 = 3;
 
+/// The exact canonical prefix every sensor-log line begins with — both loggers'
+/// frozen writer contract (`jsonl.rs`: key order `timestamp, sensors`, Python
+/// `": "` separator). Note the space after the colon. Lines that do not start
+/// with this (foreign key order, lenient formats) are never eligible for the
+/// leading-timestamp precheck; they take the full parse path unchanged.
+const TIMESTAMP_PREFIX: &[u8] = br#"{"timestamp": ""#;
+
 pub(crate) struct ReplaySource {
     /// Files not yet opened, in caller order (callers sort;
     /// `sensors_YYYY-MM-DD` names sort chronologically).
@@ -51,6 +58,11 @@ pub(crate) struct ReplaySource {
     /// candidate that exists but fails `File::open` (e.g. permissions) is
     /// warned and skipped, and is NOT counted here.
     opened_files: usize,
+    /// The inclusive `[since, until]` window, set ONLY by `report` (via
+    /// [`ReplaySource::with_window`]). When present, an out-of-window line whose
+    /// canonical leading timestamp parses is dropped without materializing its
+    /// readings. `watch --replay` never sets it, so its behavior is unchanged.
+    window: Option<(Timestamp, Timestamp)>,
 }
 
 struct FileReader {
@@ -72,7 +84,20 @@ impl ReplaySource {
             current: None,
             skipped_lines: 0,
             opened_files: 0,
+            window: None,
         }
+    }
+
+    /// Restrict the full parse to lines whose canonical leading timestamp falls
+    /// in `[since, until]` (inclusive — matching `report`'s own post-parse
+    /// `timestamp < since || timestamp > until` window filter exactly). A cheap
+    /// precheck `report` uses so a `--last 1h` run does not fully parse the
+    /// readings of the up-to-two-days of out-of-window lines the ±1-day
+    /// candidate padding pulls in. Builder, so only `report` opts in;
+    /// `watch --replay` wants every record and never calls this.
+    pub(crate) fn with_window(mut self, since: Timestamp, until: Timestamp) -> ReplaySource {
+        self.window = Some((since, until));
+        self
     }
 
     /// Malformed (or oversized) lines skipped so far, across all files. The
@@ -144,6 +169,37 @@ impl SampleSource for ReplaySource {
                     // data and not an anomaly: skipped silently, uncounted.
                     if line.iter().all(u8::is_ascii_whitespace) {
                         continue;
+                    }
+                    // Leading-timestamp precheck (report sets a window; watch
+                    // never does): an out-of-window line need not have its
+                    // readings materialized. Only a line with the exact
+                    // canonical `{"timestamp": "` prefix AND a parseable
+                    // timestamp is eligible; anything else falls through to the
+                    // full lenient parse below, unchanged.
+                    if let Some((since, until)) = self.window {
+                        if let Some(ts) = leading_timestamp(&line) {
+                            // Out of window AND syntactically valid JSON: drop it
+                            // here without materializing readings — report's own
+                            // post-parse window filter would have dropped it too.
+                            //
+                            // CAVEAT (LEO-350 decision 2): this also elides the
+                            // `skipped_lines` count for a syntactically valid but
+                            // semantically invalid out-of-window line (e.g. one
+                            // missing the required `sensors` key), which the full
+                            // parse WOULD count. Everything else stays exact:
+                            // invalid-JSON garbage and Python-token lines both
+                            // fail this `IgnoredAny` check and fall through to
+                            // `parse_line`, so garbage is still counted with the
+                            // same reason as today, and an out-of-window record
+                            // that only needs the fixup is parsed and then
+                            // window-dropped by report exactly as before.
+                            // Out-of-window hostile-input-only edge; accepted.
+                            if (ts < since || ts > until)
+                                && serde_json::from_slice::<serde::de::IgnoredAny>(&line).is_ok()
+                            {
+                                continue;
+                            }
+                        }
                     }
                     match parse_line(&line) {
                         Ok(sample) => return Some(Tick::Sample(sample)),
@@ -249,6 +305,19 @@ struct RawEntry {
     max: Option<f64>,
     avg: Option<f64>,
     unit: String,
+}
+
+/// Extract and parse the leading timestamp of a line WITHOUT parsing the rest,
+/// but only when the line begins with the exact canonical [`TIMESTAMP_PREFIX`].
+/// The timestamp is the bytes up to the next `"` (a valid RFC 3339 instant never
+/// contains a quote or escape), parsed with the SAME `str::parse::<Timestamp>`
+/// that [`parse_line`] uses, so an eligible line's precheck verdict matches what
+/// the full parse would compute. Foreign/lenient encodings (no prefix,
+/// unparseable timestamp, non-UTF-8) return `None` and take the full path.
+fn leading_timestamp(line: &[u8]) -> Option<Timestamp> {
+    let rest = line.strip_prefix(TIMESTAMP_PREFIX)?;
+    let end = rest.iter().position(|&b| b == b'"')?;
+    std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
 }
 
 fn parse_line(bytes: &[u8]) -> Result<Sample, String> {
@@ -371,6 +440,115 @@ mod tests {
         let mut source = ReplaySource::from_files(vec![path]);
         let samples = collect(&mut source);
         (samples, source.skipped_lines())
+    }
+
+    /// As [`replay_str`] but with a `report`-style inclusive window, so the
+    /// leading-timestamp precheck is active.
+    fn replay_str_windowed(content: &str, since: &str, until: &str) -> (Vec<Sample>, u64) {
+        let dir = TempDir::new();
+        let path = write_file(&dir, "sensors_2026-02-18.jsonl", content.as_bytes());
+        let mut source = ReplaySource::from_files(vec![path])
+            .with_window(since.parse().unwrap(), until.parse().unwrap());
+        let samples = collect(&mut source);
+        (samples, source.skipped_lines())
+    }
+
+    // ---- LEO-350 G: leading-timestamp precheck + the approved caveat ----
+
+    #[test]
+    fn leading_timestamp_extracts_only_the_canonical_prefix() {
+        // Canonical prefix + real fractional-offset timestamp: extracted and
+        // parsed identically to what the full parse would read.
+        assert_eq!(
+            leading_timestamp(GOOD_LINE.as_bytes()),
+            Some("2026-02-18T08:17:48.123456-05:00".parse().unwrap())
+        );
+        // Foreign key order (no exact prefix) is ineligible.
+        assert_eq!(
+            leading_timestamp(br#"{"sensors": [], "timestamp": "2026-02-18T08:00:00Z"}"#),
+            None
+        );
+        // Prefix present but the timestamp does not parse.
+        assert_eq!(
+            leading_timestamp(br#"{"timestamp": "not a time", "sensors": []}"#),
+            None
+        );
+        // Prefix present but no closing quote.
+        assert_eq!(leading_timestamp(br#"{"timestamp": "2026-02-18"#), None);
+    }
+
+    #[test]
+    fn windowed_in_window_line_is_parsed_and_returned() {
+        // The precheck only elides out-of-window work; an in-window record is
+        // materialized and returned exactly as an unwindowed run would.
+        let (samples, skipped) =
+            replay_str_windowed(GOOD_LINE, "2026-02-18T00:00:00Z", "2026-02-19T00:00:00Z");
+        assert_eq!(skipped, 0);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].readings[0].sensor, "MEG Ai1600T");
+    }
+
+    #[test]
+    fn windowed_out_of_window_valid_record_is_dropped_uncounted() {
+        // The optimization: an out-of-window VALID record's readings are never
+        // materialized; it is neither returned nor counted (report's window
+        // filter would have dropped it anyway).
+        let line = r#"{"timestamp": "2020-01-01T00:00:00Z", "sensors": [{"sensor": "S", "reading": "R", "type": "Voltage", "value": 1.0, "min": 1.0, "max": 1.0, "avg": 1.0, "unit": "V"}]}"#;
+        let (samples, skipped) =
+            replay_str_windowed(line, "2026-02-18T00:00:00Z", "2026-02-19T00:00:00Z");
+        assert!(samples.is_empty(), "out-of-window record dropped");
+        assert_eq!(skipped, 0, "and not counted");
+    }
+
+    #[test]
+    fn windowed_out_of_window_garbage_tail_is_still_counted() {
+        // Valid canonical prefix + valid (out-of-window) timestamp + garbage
+        // tail: not valid JSON, so it fails the precheck's syntax check, falls
+        // through to the full parse, and is counted in skipped_lines exactly as
+        // an unwindowed run would — the precheck must not hide real garbage.
+        let line = r#"{"timestamp": "2020-01-01T00:00:00Z", not valid json"#;
+        let (samples, skipped) =
+            replay_str_windowed(line, "2026-02-18T00:00:00Z", "2026-02-19T00:00:00Z");
+        assert!(samples.is_empty());
+        assert_eq!(skipped, 1);
+        // Same line unwindowed (the watch path) is also counted — proving the
+        // precheck did not change garbage handling.
+        assert_eq!(replay_str(line).1, 1);
+    }
+
+    #[test]
+    fn windowed_out_of_window_valid_json_missing_sensors_is_uncounted_caveat() {
+        // THE approved caveat (LEO-350 decision 2): an out-of-window line that
+        // is syntactically valid JSON but not a sensor record (no `sensors`
+        // key) is skipped UNCOUNTED under a window.
+        let line = r#"{"timestamp": "2020-01-01T00:00:00Z", "not_sensors": 1}"#;
+        let (samples, skipped) =
+            replay_str_windowed(line, "2026-02-18T00:00:00Z", "2026-02-19T00:00:00Z");
+        assert!(samples.is_empty());
+        assert_eq!(skipped, 0, "the caveat: uncounted out of window");
+        // WITHOUT a window (watch --replay), the SAME line is counted — the
+        // window is exactly what elides the count, so watch is unaffected.
+        assert_eq!(
+            replay_str(line).1,
+            1,
+            "no window: the semantically-invalid line is counted as today"
+        );
+    }
+
+    #[test]
+    fn windowed_foreign_key_order_line_falls_through_to_full_parse() {
+        // A record that does NOT start with the exact canonical prefix (sensors
+        // first) is ineligible for the precheck: it takes the full lenient parse
+        // and, being in window, is returned unchanged.
+        let line = r#"{"sensors": [{"sensor": "S", "reading": "R", "type": "Voltage", "value": 1.0, "min": 1.0, "max": 1.0, "avg": 1.0, "unit": "V"}], "timestamp": "2026-02-18T08:00:00Z"}"#;
+        let (samples, skipped) =
+            replay_str_windowed(line, "2026-02-18T00:00:00Z", "2026-02-19T00:00:00Z");
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            samples.len(),
+            1,
+            "foreign key order still parses via full path"
+        );
     }
 
     #[test]

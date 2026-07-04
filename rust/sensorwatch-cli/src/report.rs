@@ -139,7 +139,11 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     // violation filter, and the scan-time violation count all reuse this.
     let match_needles: Vec<String> = args.r#match.iter().map(|s| s.to_lowercase()).collect();
     let type_filter = args.type_filter.map(labels::filter_label);
-    let mut source = ReplaySource::from_files(files);
+    // The window precheck lets replay drop out-of-window lines without
+    // materializing their readings; report's post-parse `since`/`until` filter
+    // below still covers the lines that do reach the full parse (in-window
+    // lines, and foreign formats the precheck skips).
+    let mut source = ReplaySource::from_files(files).with_window(since, until);
     let mut engine = Engine::new(rules);
     let mut agg = Aggregator::new(config.interval_seconds);
     // Retained transitions cap DISPLAY only; `violations_total` counts the
