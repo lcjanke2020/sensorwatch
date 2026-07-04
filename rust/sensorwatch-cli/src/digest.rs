@@ -358,7 +358,11 @@ impl Aggregator {
         // Gap detection runs against the latest *in-order* sample. A stale or
         // backfilled record (delta ≤ 0) is untrusted input: it neither trips a
         // gap itself nor regresses the baseline, so it cannot fabricate a
-        // phantom gap on the next in-order sample.
+        // phantom gap on the next in-order sample. The baseline is therefore the
+        // max timestamp seen; the residual trade is a single *future*-dated
+        // corrupt record (bounded above by `--until`, so at worst ≈ now) which
+        // both fabricates one gap and freezes detection until real timestamps
+        // pass it — fail-quiet, needs corrupt in-window data, window-bounded.
         match self.prev_ts {
             None => {
                 self.prev_ts = Some(sample.timestamp);
@@ -370,7 +374,10 @@ impl Aggregator {
                     let threshold =
                         i128::from(self.interval_seconds) * GAP_INTERVAL_MULTIPLIER * 1_000_000_000;
                     if delta > threshold {
-                        let seconds = (delta / 1_000_000_000) as i64;
+                        // jiff bounds Timestamp to ±9999 years, so this quotient
+                        // fits i64 for any real pair; saturate rather than wrap
+                        // if a corrupt value ever pushed it past the bound.
+                        let seconds = i64::try_from(delta / 1_000_000_000).unwrap_or(i64::MAX);
                         let from = self
                             .prev_raw
                             .clone()
@@ -469,6 +476,8 @@ pub(crate) struct Emit<'a> {
     pub interval_seconds: i64,
     pub skipped_lines: u64,
     pub rules_evaluated: usize,
+    /// The `--match` needles, **pre-lowercased once** by the caller (also used
+    /// for the scan-time violation count, so the fold happens exactly once).
     pub matches: &'a [String],
     /// Canonical type label the `--type` filter selects, if any.
     pub type_filter: Option<&'a str>,
@@ -508,10 +517,17 @@ impl ReadingRow<'_> {
     /// score that monopolizes `--top`, evicting genuinely interesting movers.
     /// With the floor, a 0→1200 RPM fan scores 1.0 and a 40→95 °C spike 0.58 —
     /// both plausibly ranked, neither pathological.
+    ///
+    /// Each value is divided by the floor *before* the subtraction, so an
+    /// f64-extreme pair (untrusted input, e.g. `±1e308`) can't overflow
+    /// `last − first` to `+inf` and rank above everything: with the floor
+    /// `d ≥ |first|, |last|`, each quotient lands in `[-1, 1]` and the score in
+    /// `[0, 2]`.
     fn score(&self) -> f64 {
         match (self.first, self.last) {
             (Some(first), Some(last)) => {
-                (last - first).abs() / first.abs().max(last.abs()).max(1.0)
+                let d = first.abs().max(last.abs()).max(1.0);
+                (last / d - first / d).abs()
             }
             _ => 0.0,
         }
@@ -677,7 +693,8 @@ fn render_json(digest: &Digest<'_>, indent: u32) -> String {
 
 /// Does a reading row pass the display filters? `--match` is an
 /// any-of-substrings test over the sensor and reading names; `--type` is an
-/// exact canonical-label match.
+/// exact canonical-label match. `matches` arrives **pre-lowercased** (folded
+/// once by the caller), so only the row strings are lowered here.
 fn row_passes(
     sensor: &str,
     reading: &str,
@@ -686,13 +703,11 @@ fn row_passes(
     type_filter: Option<&str>,
 ) -> bool {
     let match_ok = matches.is_empty() || {
-        // Lower-case the row strings once, not once per needle.
         let sensor = sensor.to_lowercase();
         let reading = reading.to_lowercase();
-        matches.iter().any(|needle| {
-            let n = needle.to_lowercase();
-            sensor.contains(&n) || reading.contains(&n)
-        })
+        matches
+            .iter()
+            .any(|n| sensor.contains(n.as_str()) || reading.contains(n.as_str()))
     };
     match_ok && type_filter.is_none_or(|label| label == kind)
 }
@@ -701,7 +716,8 @@ fn row_passes(
 /// transition's own sensor/reading strings; the `--type` is resolved via the
 /// violation's in-window series, so a violation with no in-window series (e.g.
 /// a `missing` rule, or a source-unavailable event with no series at all) fails
-/// any `--type` filter while still being matchable by name.
+/// any `--type` filter while still being matchable by name. `matches` arrives
+/// **pre-lowercased**.
 ///
 /// `pub(crate)` so `report` can count exact post-filter violation totals during
 /// the streaming scan, using the same predicate `emit` uses to build the shown
@@ -713,13 +729,11 @@ pub(crate) fn violation_passes(
     agg: &Aggregator,
 ) -> bool {
     let match_ok = matches.is_empty() || {
-        // Lower-case the transition strings once, not once per needle.
         let sensor = t.sensor.as_deref().map(str::to_lowercase);
         let reading = t.reading.as_deref().map(str::to_lowercase);
-        matches.iter().any(|needle| {
-            let n = needle.to_lowercase();
-            sensor.as_deref().is_some_and(|s| s.contains(&n))
-                || reading.as_deref().is_some_and(|r| r.contains(&n))
+        matches.iter().any(|n| {
+            sensor.as_deref().is_some_and(|s| s.contains(n.as_str()))
+                || reading.as_deref().is_some_and(|r| r.contains(n.as_str()))
         })
     };
     if !match_ok {
@@ -1136,6 +1150,23 @@ mod tests {
         let temp = row("GPU", "Hot", 40.0, 95.0, false);
         assert!(temp.score() < fan.score());
         assert!(fan.score() < 10.0, "zero-start score stays bounded");
+    }
+
+    #[test]
+    fn score_stays_finite_for_f64_extreme_values() {
+        // Untrusted input near opposite f64 extremes: `last - first` would
+        // overflow to +inf and outrank everything. Dividing first keeps the
+        // score finite and bounded in [0, 2].
+        let extreme = row("Evil", "Wide", -1e308, 1e308, false);
+        assert!(extreme.score().is_finite(), "score must not be +inf");
+        assert!(extreme.score() <= 2.0 + 1e-9, "score is bounded by 2");
+        // It still ranks below a normal in-violation row (forced tier wins).
+        let mut rows = vec![extreme, row("PSU", "+12V", 12.0, 11.5, true)];
+        rank_rows(&mut rows);
+        assert_eq!(
+            rows[0].reading, "+12V",
+            "violation tier beats any finite score"
+        );
     }
 
     #[test]

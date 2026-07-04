@@ -181,8 +181,9 @@ Design decisions we have deliberately left open, in case you'd like to weigh in
   first caps reading rows to the largest relative movers plus anything in
   violation; if the JSON still overflows `--max-bytes`, detail is dropped
   worst-first — lowest-ranked reading row, then smallest gap (oldest on a tie),
-  then oldest violation — while the meta block and summary always survive. Full
-  order and rationale:
+  then oldest violation. Only the meta block is guaranteed to survive; a dropped
+  early violation shows up as `truncated.violations_shown < violations_total`.
+  Full order and rationale:
   [rust/sensorwatch-cli/README.md](rust/sensorwatch-cli/README.md#report).
 - **Adaptive heartbeat.** Whether the watch timeout should vary by schedule
   (e.g. longer overnight) — and if so, deterministically in config rather than

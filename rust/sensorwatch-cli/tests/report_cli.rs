@@ -966,3 +966,41 @@ fn violation_cap_reports_exact_total_and_preserves_in_violation() {
         .expect("the +12V reading row survives the generous byte cap");
     assert_eq!(v12["in_violation"], true);
 }
+
+#[cfg(unix)]
+#[test]
+fn files_scanned_counts_only_openable_files() {
+    // codex round-2: a candidate that exists but can't be opened (permissions)
+    // must NOT inflate meta.files_scanned — that would falsely claim coverage.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new();
+    let config = write_config(dir.path(), PSU_RULE);
+    write_log(dir.path(), "sensors_2026-02-18.jsonl", DAY1.as_bytes());
+    write_log(dir.path(), "sensors_2026-02-19.jsonl", DAY2.as_bytes());
+    let unreadable = dir.path().join("logs").join("sensors_2026-02-19.jsonl");
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    // Running as root (some CI containers) bypasses the permission bits — the
+    // scenario can't be exercised there, so skip rather than assert falsely.
+    if std::fs::File::open(&unreadable).is_ok() {
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+
+    let mut args = vec!["report", "--config", arg(&config)];
+    args.extend_from_slice(&FULL_WINDOW);
+    let output = run_bounded(&args);
+    assert_eq!(output.status.code(), Some(0));
+    let d = json(&output);
+    assert_eq!(
+        d["meta"]["files_scanned"], 1,
+        "the unreadable file is excluded"
+    );
+    assert_eq!(
+        d["meta"]["samples"], 5,
+        "only the readable day-1 file's samples aggregate"
+    );
+
+    // Restore perms so the TempDir drop can remove the file.
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+}

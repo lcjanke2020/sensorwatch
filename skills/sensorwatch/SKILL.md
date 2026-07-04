@@ -253,11 +253,14 @@ sampling gaps, and a liveness meta block — capped at `--max-bytes`. Build the
 CLI once as in Recipe 1, then:
 
 ```sh
-sensorwatch report                                    # last 24 h, compact JSON
-sensorwatch report --last 6h --indent 2               # a 6 h window, pretty-printed
-sensorwatch report --match psu --type TEMPERATURE --last 6h   # focused triage
-sensorwatch report --since 2026-02-18 --until 2026-02-19       # an explicit date window
+./target/release/sensorwatch report                            # last 24 h, compact JSON
+./target/release/sensorwatch report --last 6h --indent 2       # a 6 h window, pretty-printed
+./target/release/sensorwatch report --match psu --type TEMPERATURE --last 6h   # focused triage
+./target/release/sensorwatch report --since 2026-02-18 --until 2026-02-19       # an explicit date window
 ```
+
+(Use the built Rust binary path, as in Recipes 1–3 — a bare `sensorwatch` on
+PATH may resolve to the Python console script, which has no `report` subcommand.)
 
 Flags: `--since`/`--until` (RFC 3339, local `YYYY-MM-DDTHH:MM:SS`, or a bare
 `YYYY-MM-DD` — since = start of day, until = end; until defaults to now) or a
@@ -306,6 +309,13 @@ data?", read `meta`: a zero-sample digest (empty arrays, null `first_sample`/
 `last_sample`, still exit `0`) means the logger is dead or the machine was off;
 otherwise compare `meta.last_sample` against `meta.window.until` — a large lag,
 or a trailing entry in `gaps`, means the feed has stalled.
+
+**Aggregate-only by design.** The digest exposes per-window *aggregates*, not
+individual samples — so per-sample questions ("at what minute did the GPU peak?",
+"plot the +12V rail across yesterday") are **out of protocol on purpose**: the
+whole point is a fixed, small context budget. Do not fall back to hand-parsing
+the raw logs to answer them. A future `report` capability (a per-series
+bucket/sparkline flag, or a sanctioned SQL surface) will widen this when needed.
 
 For a full **human** offline analysis (efficiency study, Polars + DuckDB
 queries, charts over a curated flat export), see

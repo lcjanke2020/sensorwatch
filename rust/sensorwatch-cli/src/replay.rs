@@ -51,6 +51,10 @@ pub(crate) struct ReplaySource {
     pending: std::vec::IntoIter<PathBuf>,
     current: Option<FileReader>,
     skipped_lines: u64,
+    /// Files successfully opened so far — the honest "scanned" count. A
+    /// candidate that exists but fails `File::open` (e.g. permissions) is
+    /// warned and skipped, and is NOT counted here.
+    opened_files: usize,
 }
 
 struct FileReader {
@@ -71,6 +75,7 @@ impl ReplaySource {
             pending: paths.into_iter(),
             current: None,
             skipped_lines: 0,
+            opened_files: 0,
         }
     }
 
@@ -79,6 +84,13 @@ impl ReplaySource {
     /// so a digest never silently pretends full coverage; `watch` ignores it.
     pub(crate) fn skipped_lines(&self) -> u64 {
         self.skipped_lines
+    }
+
+    /// Files successfully opened so far. `report` uses this for
+    /// `meta.files_scanned` — a candidate that could not be opened is excluded,
+    /// so the count reflects actual coverage rather than mere selection.
+    pub(crate) fn files_opened(&self) -> usize {
+        self.opened_files
     }
 
     fn finish_current_file(&mut self) {
@@ -102,6 +114,7 @@ impl SampleSource for ReplaySource {
                 let path = self.pending.next()?; // all files exhausted
                 match File::open(&path) {
                     Ok(file) => {
+                        self.opened_files += 1;
                         self.current = Some(FileReader {
                             path,
                             reader: BufReader::new(file),

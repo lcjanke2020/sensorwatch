@@ -152,9 +152,10 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     // the config's include/exclude are not reapplied (logs were already
     // filtered at write time).
     let files = digest::candidate_files(&log_dir, since, until, &tz);
-    let files_scanned = files.len();
     let rules_evaluated = rules.rules().len();
-    let matches = &args.r#match;
+    // Case-fold the --match needles once for the whole run: the row filter, the
+    // violation filter, and the scan-time violation count all reuse this.
+    let match_needles: Vec<String> = args.r#match.iter().map(|s| s.to_lowercase()).collect();
     let type_filter = type_filter_label(args.type_filter);
     let mut source = ReplaySource::from_files(files);
     let mut engine = Engine::new(rules);
@@ -184,7 +185,7 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
             // Count the exact post-filter total BEFORE the display cap; the
             // series kind is already known (the sample was just aggregated), so
             // this uses the same predicate `emit` uses to build the shown list.
-            if digest::violation_passes(&transition, matches, type_filter, &agg) {
+            if digest::violation_passes(&transition, &match_needles, type_filter, &agg) {
                 violations_total += 1;
             }
             if transitions.len() == VIOLATION_CAP {
@@ -194,6 +195,10 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
         }
     }
     let skipped_lines = source.skipped_lines();
+    // `files_scanned` is files actually opened and read, not merely selected: a
+    // candidate that exists but cannot be opened (e.g. permissions) is warned to
+    // stderr and excluded here, so meta stays an honest coverage signal.
+    let files_scanned = source.files_opened();
     let transitions: Vec<_> = transitions.into_iter().collect();
 
     log::debug!(
@@ -215,7 +220,7 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
         interval_seconds: config.interval_seconds,
         skipped_lines,
         rules_evaluated,
-        matches,
+        matches: &match_needles,
         type_filter,
         top: args.top,
         max_bytes: args.max_bytes,
