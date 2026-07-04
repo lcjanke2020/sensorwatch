@@ -17,6 +17,7 @@ order as ack_event.py. Exit 0 success, 1 fatal, 2 usage.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -25,6 +26,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _state as st  # noqa: E402
 
 TEMPLATE = Path(__file__).parent.parent / "templates" / "incident.md"
+TRIM_MARKER = "- … older events trimmed (over the 80-line cap); full history in the journal"
+SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
+
+
+def _escalate_severity(current: str, incoming: str) -> str:
+    """Severity only ratchets up: a warning incident that sees a critical event
+    becomes critical (so it counts toward the tier-4 combination); a later
+    warning never downgrades a critical."""
+    return incoming if SEVERITY_RANK.get(incoming, 0) > SEVERITY_RANK.get(current, 0) else current
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,9 +73,10 @@ def _render_new(event: dict, classification: str, opened: str, snooze_until: str
         "status": "open",
         "events_block": _event_line(event),
     }
-    for key, value in fields.items():
-        text = text.replace("{" + key + "}", value)
-    return text
+    # Single pass: a placeholder that appears *inside* a substituted value (e.g. a
+    # rule name literally containing "{events_block}") must not be re-substituted.
+    # An unknown "{token}" is left verbatim.
+    return re.sub(r"\{(\w+)\}", lambda m: fields.get(m.group(1), m.group(0)), text)
 
 
 def _insert_before_notes(lines: list[str], new_line: str) -> None:
@@ -87,27 +98,28 @@ def _events_count(lines: list[str]) -> int:
 
 def _trim_to_cap(lines: list[str]) -> list[str]:
     """Keep an incident file under INCIDENT_LINE_CAP by dropping the OLDEST event
-    bullet lines (the ``- <id> @ …`` entries), leaving a one-line marker. The
-    ``- events:`` header stays the cumulative total; the journal keeps the full
-    history. Without this, a rule that re-fires every re-arm grows the file
-    unbounded and the documented cap is a dead letter."""
+    bullet lines (``- <id> @ …``), leaving exactly one marker. The ``- events:``
+    header stays the cumulative total; the journal keeps the full history.
+
+    Two invariants the naive version got wrong: (1) prior markers are stripped
+    first, so they never accumulate; (2) the newest event line is NEVER dropped —
+    otherwise the log could empty out and a crash-before-ack redelivery would no
+    longer match the ``- <id> @`` idempotency check and would double-count."""
+    lines = [ln for ln in lines if ln != TRIM_MARKER]
     if len(lines) <= st.INCIDENT_LINE_CAP:
         return lines
     ev_idx = [i for i, ln in enumerate(lines) if ln.startswith("- ") and " @ " in ln]
-    if not ev_idx:
-        return lines  # nothing droppable (header/notes over cap — summary flags it)
+    if len(ev_idx) <= 1:
+        return lines  # can't trim below the single newest event (header/notes over cap)
     overflow = len(lines) - st.INCIDENT_LINE_CAP
-    if len(ev_idx) > overflow:
-        to_drop, add_marker = overflow + 1, True      # net -overflow after the marker
-    else:
-        to_drop, add_marker = len(ev_idx), False      # drop all events; best effort
+    # Drop oldest events only; keep the newest, and +1 pays for the one marker.
+    to_drop = min(len(ev_idx) - 1, overflow + 1)
     drop = set(ev_idx[:to_drop])
-    marker = "- … older events trimmed (over the 80-line cap); full history in the journal"
     out, marked = [], False
     for i, ln in enumerate(lines):
         if i in drop:
-            if add_marker and not marked:
-                out.append(marker)
+            if not marked:
+                out.append(TRIM_MARKER)
                 marked = True
             continue
         out.append(ln)
@@ -144,10 +156,19 @@ def run(args: argparse.Namespace) -> int:
             # is still recorded in the journal; there is no file to move.
             st.emit({"action": "close-noop", "rule": rule, "event_id": event_id})
             return 0
-        lines = open_path.read_text(encoding="utf-8").splitlines()
+        # Move OUT of open/ FIRST (atomic rename within the state tree), THEN edit
+        # in its closed/ home. A crash between the two steps leaves at worst a
+        # stale closed file — never a phantom that still counts as an open critical
+        # (the combination set is read from incidents/open/).
+        closed_path = _incident_path(state_dir, rule, closed=True)
+        if closed_path.exists():
+            closed_path = closed_path.with_name(f"{st.slugify(rule)}-{event['seq']}.md")
+        closed_path.parent.mkdir(parents=True, exist_ok=True)
+        open_path.replace(closed_path)
+
+        lines = closed_path.read_text(encoding="utf-8").splitlines()
         st.incident_set_field(lines, "status", "closed")
         if not st.incident_set_field(lines, "closed", st.iso(now)):
-            # add a closed: line right after status:
             for i, line in enumerate(lines):
                 if line.startswith("- status:"):
                     lines.insert(i + 1, f"- closed: {st.iso(now)}")
@@ -157,12 +178,7 @@ def run(args: argparse.Namespace) -> int:
         st.incident_set_field(lines, "events", str(_events_count(lines) + 1))
         _insert_before_notes(lines, _event_line(event))
         lines.append(f"- closed {st.iso(now)}: cleared by {event_id} (seq {event['seq']})")
-
-        closed_path = _incident_path(state_dir, rule, closed=True)
-        if closed_path.exists():
-            closed_path = closed_path.with_name(f"{st.slugify(rule)}-{event['seq']}.md")
         _write_incident(closed_path, lines)
-        open_path.unlink()
         st.emit({
             "action": "close",
             "rule": rule,
@@ -234,6 +250,10 @@ def run(args: argparse.Namespace) -> int:
     st.incident_set_field(lines, "events", str(count))
     st.incident_set_field(lines, "snooze_until", snooze_until)
     st.incident_set_field(lines, "classification", args.classification)
+    # Ratchet the header severity up so a warning incident that escalates to
+    # critical is counted by the tier-4 combination (read from these headers).
+    current_sev = st.incident_get_field(lines, "severity") or event["severity"]
+    st.incident_set_field(lines, "severity", _escalate_severity(current_sev, event["severity"]))
     _insert_before_notes(lines, _event_line(event))
     _write_incident(open_path, lines)
     st.emit({

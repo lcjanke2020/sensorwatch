@@ -141,6 +141,18 @@ def _write_open_incident(state, rule, severity="critical", opened="2026-02-18T08
     (state / "incidents" / "open" / f"{_slug(rule)}.md").write_text(body, encoding="utf-8")
 
 
+def _open(state, dest, classification="incident", now=T0):
+    return run_script("open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+                      "--classification", classification, "--now", now)
+
+
+def _heartbeat(state, kind, now=T0, blind_after=None):
+    args = ["heartbeat.py", "--state-dir", str(state), "--kind", kind, "--now", now]
+    if blind_after is not None:
+        args += ["--blind-after", str(blind_after)]
+    return run_script(*args)
+
+
 # ---- init_state ----
 
 def test_init_creates_tree_and_is_idempotent(tmp_path):
@@ -591,8 +603,10 @@ def test_incident_file_trimmed_to_line_cap(tmp_path):
         assert r.returncode == 0, r.stderr
     body = (state / "incidents" / "open" / "caprule.md").read_text(encoding="utf-8")
     assert len(body.splitlines()) <= 80          # INCIDENT_LINE_CAP enforced on write
-    assert "trimmed" in body                      # trim marker present
+    assert body.count("older events trimmed") == 1   # ONE marker, not accumulating
     assert f"- events: {total}" in body           # count stays cumulative, not line-limited
+    assert f"caprule-{total} @" in body           # the newest event survives (dedup intact)
+    assert body.count(" @ ") >= 5                 # real event lines remain, not all markers
 
 
 # ---- frozen contract pin (catches producer-side drift on the Python side) ----
@@ -653,3 +667,97 @@ def test_notify_outbox_no_overwrite_same_second(tmp_path):
     for _ in range(3):
         assert _notify(state, "r", now=T0).returncode == 0   # same rule + same second
     assert len(list((state / "outbox").glob("*.md"))) == 3    # none overwritten
+
+
+def test_notify_validates_ledger_before_delivery(tmp_path):
+    # A wrong-shape escalation.json must fail BEFORE the adapter runs — no outbox
+    # file, no journal line (else a retry duplicates the notice).
+    state = tmp_path / "state"
+    init_state(state)
+    (state / "escalation.json").write_text(
+        '{"schema_version":1,"per_rule":["bad"]}', encoding="utf-8")
+    r = _notify(state, "r", now=T0)
+    assert r.returncode == 1
+    assert list((state / "outbox").glob("*.md")) == []
+    assert '"action":"notify"' not in journal_text(state)
+
+
+def test_notify_tier_out_of_range(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    r = run_script("notify.py", "--state-dir", str(state), "--adapter", "outbox", "--rule", "r",
+                   "--severity", "critical", "--tier", "9", "--now", T0)
+    assert r.returncode == 2
+
+
+# ---- severity escalation feeds the combination tier ----
+
+def test_incident_severity_ratchets_to_critical(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    inc = state / "incidents" / "open" / f"{_slug('A')}.md"
+    _open(state, _place_synth(state, _synth_event(rule="A", id="A-1", seq=1, severity="warning")))
+    assert "- severity: warning" in inc.read_text(encoding="utf-8")
+    assert _gate(state, "B", "critical")["tier"] == 2   # A is warning => not combined
+
+    _open(state, _place_synth(state, _synth_event(rule="A", id="A-2", seq=2, severity="critical")))
+    assert "- severity: critical" in inc.read_text(encoding="utf-8")   # ratcheted up
+    assert _gate(state, "B", "critical")["tier"] == 4   # now A counts => tier 4
+
+
+# ---- single-pass template render (a brace in a field must not corrupt) ----
+
+def test_render_rule_with_brace_not_re_substituted(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    rule = "weird-{events_block}"
+    r = _open(state, _place_synth(state, _synth_event(rule=rule, id="weird-1")))
+    assert r.returncode == 0, r.stderr
+    body = (state / "incidents" / "open" / f"{_slug(rule)}.md").read_text(encoding="utf-8")
+    assert f"- rule: {rule}" in body                    # literal value preserved
+    assert body.count("weird-1 @") == 1                 # one real event line, not corrupted
+
+
+# ---- gate: malformed state timestamp is fatal, not a usage error ----
+
+def test_gate_malformed_last_notified_is_fatal(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    esc = read_json(state / "escalation.json")
+    esc["per_rule"]["r"] = {"severity": "critical", "tier": 2, "last_notified": "not-a-timestamp"}
+    (state / "escalation.json").write_text(json.dumps(esc), encoding="utf-8")
+    r = run_script("escalation_gate.py", "--state-dir", str(state), "--rule", "r",
+                   "--severity", "critical", "--state", "fired", "--now", T0)
+    assert r.returncode == 1
+
+
+# ---- heartbeat.py (liveness + maintenance updater) ----
+
+def test_heartbeat_resets_failures(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    _heartbeat(state, "failure")
+    r = _heartbeat(state, "heartbeat", now="2026-02-18T09:00:00-05:00")
+    assert json.loads(r.stdout)["consecutive_watch_failures"] == 0
+    hb = read_json(state / "heartbeat.json")
+    assert hb["consecutive_watch_failures"] == 0
+    assert hb["last_heartbeat"] == "2026-02-18T09:00:00-05:00"
+
+
+def test_heartbeat_failure_marks_monitoring_blind_after_three(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    assert json.loads(_heartbeat(state, "failure").stdout)["monitoring_blind"] is False
+    assert json.loads(_heartbeat(state, "failure").stdout)["monitoring_blind"] is False
+    third = json.loads(_heartbeat(state, "failure").stdout)
+    assert third["consecutive_watch_failures"] == 3
+    assert third["monitoring_blind"] is True
+
+
+def test_heartbeat_maintenance_stamps_date_and_journals(tmp_path):
+    state = tmp_path / "state"
+    init_state(state, now=T0)
+    r = _heartbeat(state, "maintenance", now="2026-03-01T00:05:00-05:00")
+    assert json.loads(r.stdout)["last_maintenance_date"] == "2026-03-01"
+    assert read_json(state / "heartbeat.json")["last_maintenance_date"] == "2026-03-01"
+    assert '"action":"maintenance"' in journal_text(state)

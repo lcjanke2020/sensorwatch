@@ -45,13 +45,13 @@ def _body(args: argparse.Namespace, now_iso: str) -> str:
     lines = [
         f"# sensorwatch monitor — {args.severity} (tier {args.tier})",
         "",
-        f"- rule: {args.rule}",
+        f"- rule: {_one_line(args.rule)}",           # newlines can't restructure the notice
         f"- severity: {args.severity}",
         f"- tier: {args.tier}",
         f"- at: {now_iso}",
     ]
     if args.incident_file:
-        lines.append(f"- incident: {args.incident_file}")
+        lines.append(f"- incident: {_one_line(args.incident_file)}")
     lines.append("")
     lines.append(summary)
     lines.append("")
@@ -109,11 +109,19 @@ def run(args: argparse.Namespace) -> int:
     state_dir = st.resolve_state_dir(args.state_dir)
     now = st.resolve_now(args.now)
 
+    if not 0 <= args.tier <= 4:
+        raise st.Usage(f"--tier must be 0-4, got {args.tier}")
+
     adapter = ADAPTERS.get(args.adapter)
     if adapter is None:
         raise st.Usage(
             f"unknown adapter {args.adapter!r}; available: {', '.join(sorted(ADAPTERS))}"
         )
+
+    # Validate the ledger BEFORE any side effect: a wrong-shape escalation.json
+    # must fail cleanly here, not after the notice is already in the outbox and
+    # journal (which a retry would then duplicate).
+    esc = st.load_escalation(state_dir)
 
     slug = st.slugify(args.rule)
     target = adapter(state_dir, now, slug, _body(args, st.iso(now)))
@@ -129,7 +137,7 @@ def run(args: argparse.Namespace) -> int:
     # closes the lost-notification gap: no delivery, no cooldown, so a redelivery
     # re-notifies instead of being suppressed. notify is the sole writer of
     # last_notified / notifications_today; the gate only reads them.
-    _record_delivery(state_dir, now, args.rule)
+    _record_delivery(esc, state_dir / "escalation.json", now, args.rule)
 
     st.emit({
         "adapter": args.adapter,
@@ -140,9 +148,7 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _record_delivery(state_dir: Path, now, rule: str) -> None:
-    esc_path = state_dir / "escalation.json"
-    esc = st.load_escalation(state_dir)
+def _record_delivery(esc: dict, esc_path: Path, now, rule: str) -> None:
     today = st.date_str(now)
     if esc.get("date") != today:  # daily-count roll-over
         esc["date"] = today

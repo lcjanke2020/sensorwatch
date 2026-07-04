@@ -121,6 +121,15 @@ def parse_iso(text: str) -> datetime:
     return dt
 
 
+def parse_iso_state(text: str) -> datetime:
+    """:func:`parse_iso` for a timestamp read from a STATE file — a bad value is
+    corrupt state (Fatal, exit 1), not a caller usage error (exit 2)."""
+    try:
+        return parse_iso(text)
+    except Usage as exc:
+        raise Fatal(f"corrupt state timestamp: {exc}") from exc
+
+
 def resolve_now(now_arg: str | None) -> datetime:
     """The injected ``--now``, or the real UTC clock when omitted."""
     if now_arg:

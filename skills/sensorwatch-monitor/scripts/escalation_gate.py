@@ -100,7 +100,7 @@ def run(args: argparse.Namespace) -> int:
     else:
         last_notified = per_rule.get(args.rule, {}).get("last_notified")
         cooldown = timedelta(hours=args.cooldown_hours)
-        if last_notified is not None and (now - st.parse_iso(last_notified)) < cooldown:
+        if last_notified is not None and (now - st.parse_iso_state(last_notified)) < cooldown:
             decision = "suppress"
             reason = f"within {args.cooldown_hours}h per-rule cooldown"
         elif today_count >= args.daily_cap:

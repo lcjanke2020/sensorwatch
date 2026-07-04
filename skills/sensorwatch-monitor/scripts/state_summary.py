@@ -24,10 +24,23 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import _state as st  # noqa: E402
+
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _opened_key(opened: str) -> datetime:
+    """Chronological sort key for an incident's ``opened`` timestamp. Parse it so
+    incidents across different UTC offsets truncate by real time, not by ISO-string
+    lexicography; an unparseable value sorts oldest (dropped first)."""
+    try:
+        return st.parse_iso(opened)
+    except st.Usage:
+        return _EPOCH
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -120,8 +133,8 @@ def run(args: argparse.Namespace) -> int:
             f"{max_bytes}; {culprit} needs the maintenance pass"
         )
 
-    # Detail lines, newest-first, so truncation drops the OLDEST first.
-    detail = sorted(incidents, key=lambda i: i["opened"], reverse=True)
+    # Detail lines, newest-first (by real time), so truncation drops the OLDEST first.
+    detail = sorted(incidents, key=lambda i: _opened_key(i["opened"]), reverse=True)
     detail_lines = [
         f"  {i['rule']}  opened={i['opened']}  snooze_until={i['snooze_until']}  events={i['events']}"
         for i in detail
