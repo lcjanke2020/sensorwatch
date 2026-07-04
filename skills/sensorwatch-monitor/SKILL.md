@@ -186,7 +186,7 @@ incidents/open/<rule>.md        # one open incident per rule  (Markdown, cap 80 
 incidents/closed/               # closed incidents (moved here on --close)
 spool/pending/          # watch --spool-dir points HERE; ack moves files out
 spool/acked/            # acked events; the maintenance pass prunes >30 days
-outbox/                 # notify's durable fallback when no channel is configured
+outbox/                 # notify's durable fallback when no notify.toml is present
 ```
 
 **JSON vs Markdown.** Machine-updated state is **JSON** (cursor, heartbeat,
@@ -275,7 +275,7 @@ one transport. Channels, all stdlib-only:
 | `ntfy` | POST the notice to a hosted (`ntfy.sh`) or self-hosted ntfy topic — the **default** transport; zero-account, FCM push via the app. |
 | `pushover` | POST to the Pushover API; emergency priority + a receipt for the acknowledge-required upgrade path. |
 | `smtp` | Submit over generic SMTP (bring-your-own credentials; subsumes transactional email providers — they all expose SMTP). |
-| `outbox` | Write an atomic `outbox/<utc-stamp>-<slug>.md` (disambiguated so same-second notices never overwrite) — the durable fallback when no channel is configured. |
+| `outbox` | Write an atomic `outbox/<utc-stamp>-<slug>.md` (disambiguated so same-second notices never overwrite) — the durable fallback when no `notify.toml` is present (a present-but-unrouting file is a config error, not a silent outbox write). |
 | `stderr` | Print the notice to stderr. |
 
 Notice bodies are **reference-only plain prose** — the rule, severity, tier, and

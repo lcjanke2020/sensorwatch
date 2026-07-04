@@ -24,9 +24,9 @@ to hardware — escalation IS the action.
 **Normal, in one breath.** See `baseline.md` for the curated "normal" ranges.
 
 **Escalation.** Notifications route per severity through the channels in
-`notify.toml` (ntfy / Pushover / SMTP; `outbox/` is the fallback when none is
-configured). Linear issues are plain prose that reference incident-file paths;
-they never embed sensor data.
+`notify.toml` (ntfy / Pushover / SMTP; `outbox/` is the fallback when no
+`notify.toml` is present). Linear issues are plain prose that reference
+incident-file paths; they never embed sensor data.
 
 **Operator notes.** <who to tell, quiet hours, anything a fresh session must know>
 

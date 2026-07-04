@@ -22,7 +22,7 @@ Delivery channels (all stdlib-only):
   * ``smtp`` — submit the notice over generic SMTP (bring-your-own credentials;
     subsumes transactional email providers, which all expose an SMTP endpoint).
   * ``outbox`` — write ``outbox/<utc-stamp>-<slug>.md`` atomically (the durable,
-    inspectable fallback when no channel is configured).
+    inspectable fallback when no ``notify.toml`` is present).
   * ``stderr`` — print the notice to stderr.
 
 Channel routing and transport credentials live in ``<state>/notify.toml`` in the
@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import re
 import ssl
 import sys
 import tomllib
@@ -75,6 +76,11 @@ CONFIGURED_ADAPTERS = frozenset({"ntfy", "pushover", "smtp"})
 NTFY_DEFAULT_PRIORITY = {"info": 3, "warning": 4, "critical": 5}
 PUSHOVER_DEFAULT_PRIORITY = {"info": -1, "warning": 0, "critical": 2}
 PUSHOVER_EMERGENCY = 2  # priority that requires retry/expire and returns a receipt
+
+# ntfy's documented topic charset. The topic is a URL path segment AND the shared
+# secret, so an out-of-charset char ('#'/'?' redirect the POST, non-ASCII crashes
+# the encoder) must be rejected at config time, not delivered to the wrong topic.
+NTFY_TOPIC_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def _one_line(text: str) -> str:
@@ -319,18 +325,25 @@ def _validate_config(config: dict) -> None:
 
 
 def _validate_priority(name: str, cfg: dict) -> None:
-    """A ``priority`` map, if present, must be a table of ints — so a scalar
-    (``priority = 5``) or a non-int value fails as a clean config error instead of
-    an AttributeError / ValueError traceback at delivery time."""
+    """A ``priority`` map, if present, must be a table keyed by severity with int
+    values — so a scalar (``priority = 5``), a typo'd severity key (silently
+    ignored → the built-in default is used), or a non-int value all fail as clean
+    config errors instead of an AttributeError / ValueError / silent-default at
+    delivery time."""
     prio = cfg.get("priority")
     if prio is None:
         return
     if not isinstance(prio, dict):
         raise st.Usage(
             f"notify.toml: [{name}] priority must be a table "
-            "(e.g. {{ info = 3, warning = 4, critical = 5 }})"
+            "(e.g. { info = 3, warning = 4, critical = 5 })"
         )
     for sev, value in prio.items():
+        if sev not in st.SEVERITIES:  # a typo here is as silent as one in [severity]
+            raise st.Usage(
+                f"notify.toml: [{name}] priority has an unknown severity key {sev!r}; "
+                f"valid: {', '.join(st.SEVERITIES)}"
+            )
         if not isinstance(value, int) or isinstance(value, bool):
             raise st.Usage(f"notify.toml: [{name}] priority.{sev} must be an integer")
 
@@ -348,8 +361,18 @@ def _validate_required_keys(config: dict, adapters: list) -> None:
             topic = cfg.get("topic")
             if not topic:
                 raise st.Usage("notify.toml: [ntfy] requires 'topic'")
-            if any(ch.isspace() for ch in topic):  # a space → http.client.InvalidURL
-                raise st.Usage("notify.toml: [ntfy] topic must not contain whitespace")
+            # The topic is a URL path segment and the shared secret. Anything outside
+            # ntfy's charset would silently redirect the POST ('#'/'?'), crash the
+            # header/URL encoder (non-ASCII, non-str), or count as delivery to the
+            # wrong topic — all of which arm the cooldown. Reject at config time.
+            if not isinstance(topic, str) or not NTFY_TOPIC_RE.fullmatch(topic):
+                raise st.Usage(
+                    "notify.toml: [ntfy] topic must be 1-64 characters of [A-Za-z0-9_-] "
+                    "(ntfy's topic charset)"
+                )
+            token = cfg.get("token")  # Authorization header encodes latin-1 → require ASCII
+            if token is not None and (not isinstance(token, str) or not token.isascii()):
+                raise st.Usage("notify.toml: [ntfy] token must be an ASCII string")
             _validate_priority(name, cfg)
         elif name == "pushover":
             # Missing KEY = config error (exit 2, before any side effect); a missing
@@ -357,6 +380,9 @@ def _validate_required_keys(config: dict, adapters: list) -> None:
             for key in ("token_file", "user_file"):
                 if not cfg.get(key):
                     raise st.Usage(f"notify.toml: [pushover] requires '{key}'")
+            for key in ("retry", "expire"):  # sent as form fields; a wrong type 400s at delivery
+                if key in cfg and (not isinstance(cfg[key], int) or isinstance(cfg[key], bool)):
+                    raise st.Usage(f"notify.toml: [pushover] {key} must be an integer")
             _validate_priority(name, cfg)
         elif name == "smtp":
             for key in ("host", "mail_from", "mail_to"):

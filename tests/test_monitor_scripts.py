@@ -1210,3 +1210,64 @@ def test_notify_routed_scalar_priority_exits_2_not_traceback(tmp_path):
     assert r.returncode == 2
     assert "priority" in r.stderr and "Traceback" not in r.stderr
     _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_ntfy_bad_topic_exits_2(tmp_path):
+    # An out-of-charset topic would silently redirect the POST ('#' fragment, '?'
+    # query) or crash the encoder (int, non-ASCII) — all must be exit 2, no side
+    # effects, no traceback (never a silent delivery to the wrong topic).
+    state = tmp_path / "state"
+    init_state(state)
+    for topic_line in ('topic = "secret#extra"', 'topic = "with?query"',
+                       "topic = 123", 'topic = "sensorwatch-café"'):
+        write_notify_toml(state, f'[severity]\ncritical = ["ntfy"]\n[ntfy]\n{topic_line}\n')
+        esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+        assert r.returncode == 2, topic_line
+        assert "topic" in r.stderr and "Traceback" not in r.stderr, topic_line
+        _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_ntfy_non_ascii_token_exits_2(tmp_path):
+    # The Authorization header encodes latin-1; a non-ASCII token would crash it
+    # (and, with a sibling channel, arm the cooldown while the push never goes out).
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state,
+                      '[severity]\ncritical = ["ntfy"]\n[ntfy]\ntopic = "t"\ntoken = "tok→en"\n')
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert "token" in r.stderr
+
+
+def test_notify_priority_unknown_severity_key_exits_2(tmp_path):
+    # A typo in a priority key is as silent as one in [severity] was — it would be
+    # ignored and the built-in default used (e.g. a demoted pushover critical stays
+    # emergency). Must be a loud config error, mirroring the [severity] key check.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(
+        state, '[severity]\ncritical = ["ntfy"]\n[ntfy]\ntopic = "t"\npriority = { critcal = 1 }\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert "critcal" in r.stderr
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_pushover_bad_retry_type_exits_2(tmp_path):
+    # A wrong-typed retry/expire would 400 at delivery and let a sibling channel
+    # arm the cooldown — catch it as a config error before any side effect.
+    state = tmp_path / "state"
+    init_state(state)
+    tok = _secret_file(state, "po-token", "x")
+    usr = _secret_file(state, "po-user", "y")
+    write_notify_toml(state, "\n".join([
+        "[severity]", 'critical = ["outbox", "pushover"]',
+        "[pushover]", 'api_url = "http://127.0.0.1:9/x"',
+        f'token_file = "{tok}"', f'user_file = "{usr}"', 'retry = "sixty"',
+    ]))
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    _assert_no_side_effects(state, esc_before)                   # sibling outbox did NOT fire
