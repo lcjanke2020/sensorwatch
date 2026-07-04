@@ -1,43 +1,91 @@
 #!/usr/bin/env python3
-"""notify.py — deliver an escalation notice through a pluggable adapter.
+"""notify.py — deliver an escalation notice through pluggable delivery channels.
 
-LEO-338 ships stub adapters only:
+Two modes, one CLI:
 
-  * ``outbox`` — write outbox/<utc-stamp>-<slug>.md atomically (the durable,
-    inspectable stand-in for a real channel).
+  * **Routed** (no ``--adapter``): the event's severity selects a list of
+    channels from ``<state>/notify.toml`` (``[severity]`` table, else ``default``,
+    else ``["outbox"]`` when no config file exists). The list is delivered in
+    order, per-channel outcomes are journaled, and the per-rule cooldown is armed
+    iff at least one channel succeeded. Exit 0 when every channel delivered, 1
+    when any failed.
+  * **Explicit** (``--adapter X``): today's single-channel mode, output and
+    journal shape unchanged. Used to force one channel (e.g. ``outbox`` for a
+    dry run, or a single real transport).
+
+Delivery channels (all stdlib-only):
+
+  * ``ntfy`` — POST the notice to a hosted or self-hosted ntfy topic (the default
+    transport; a long random topic name is the shared secret).
+  * ``pushover`` — POST to the Pushover messages API (emergency priority + a
+    receipt for the acknowledge-required path).
+  * ``smtp`` — submit the notice over generic SMTP (bring-your-own credentials;
+    subsumes transactional email providers, which all expose an SMTP endpoint).
+  * ``outbox`` — write ``outbox/<utc-stamp>-<slug>.md`` atomically (the durable,
+    inspectable fallback when no channel is configured).
   * ``stderr`` — print the notice to stderr.
 
-The real transport (email is the default candidate) is LEO-339's decision; until
-then tier >=2 delivery lands in the outbox. Adding a channel = registering one
-function in ADAPTERS. On successful delivery notify records the per-rule cooldown
-(last_notified) and bumps the daily notification count — it is the SOLE writer of
-those, so the cooldown is armed only when a notice actually went out (the gate
-reads them to decide; a crash before delivery leaves them un-armed, so the
-redelivery re-notifies instead of being silently suppressed).
+Channel routing and transport credentials live in ``<state>/notify.toml`` in the
+machine-local state directory — never in the repo (the state dir is private for
+exactly that reason). Adding a channel = registering one function in ``ADAPTERS``.
 
-    python notify.py --state-dir <dir> --adapter outbox|stderr --rule <name> \\
-        --severity <s> --tier <n> [--incident-file <path>] [--summary "..."] [--now <iso>]
+On successful delivery notify records the per-rule cooldown (``last_notified``)
+and bumps the daily notification count — it is the SOLE writer of those, so the
+cooldown is armed only when a notice actually went out (the gate reads them to
+decide; a crash before delivery leaves them un-armed, so the redelivery
+re-notifies instead of being silently suppressed).
+
+    # routed: severity -> channels from <state>/notify.toml
+    python notify.py --state-dir <dir> --rule <name> --severity <s> --tier <n> \\
+        [--incident-file <path>] [--summary "..."] [--now <iso>]
+    # explicit: force one channel
+    python notify.py --state-dir <dir> --adapter outbox|stderr|ntfy|pushover|smtp \\
+        --rule <name> --severity <s> --tier <n> [...]
 
 The body is plain prose that *references* the incident-file path — it never
-embeds sensor data (public-repo + Linear-WAF hygiene). Exit 0 success, 1 fatal,
-2 usage (unknown adapter).
+embeds sensor data (public-repo + Linear-WAF hygiene). Exit 0 success, 1 fatal
+(any channel failed / unreadable ledger), 2 usage (bad args, unknown adapter,
+malformed notify.toml).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import ssl
 import sys
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import timezone
+from email.message import EmailMessage
 from pathlib import Path
+from smtplib import SMTP, SMTPException
 
 sys.path.insert(0, str(Path(__file__).parent))
 import _state as st  # noqa: E402
+
+# Channels that read a ``notify.toml`` section; ``outbox``/``stderr`` need none.
+CONFIGURED_ADAPTERS = frozenset({"ntfy", "pushover", "smtp"})
+
+# Priority defaults per severity (documented in SKILL.md's notify.toml example).
+NTFY_DEFAULT_PRIORITY = {"info": 3, "warning": 4, "critical": 5}
+PUSHOVER_DEFAULT_PRIORITY = {"info": -1, "warning": 0, "critical": 2}
+PUSHOVER_EMERGENCY = 2  # priority that requires retry/expire and returns a receipt
 
 
 def _one_line(text: str) -> str:
     """Collapse any newlines/runs of whitespace to single spaces so a multi-line
     --summary cannot restructure the notice or corrupt the journal line."""
     return " ".join(text.split())
+
+
+def _title(args: argparse.Namespace) -> str:
+    """ASCII-only notice title (shared by ntfy/pushover/smtp). A plain hyphen, not
+    the body's em-dash: http.client encodes header values latin-1, so an em-dash
+    in an ntfy ``Title:`` header would raise UnicodeEncodeError."""
+    return f"sensorwatch monitor - {args.severity} (tier {args.tier})"
 
 
 def _body(args: argparse.Namespace, now_iso: str) -> str:
@@ -55,14 +103,24 @@ def _body(args: argparse.Namespace, now_iso: str) -> str:
     lines.append("")
     lines.append(summary)
     lines.append("")
-    lines.append(
-        "_Real transport pending LEO-339; this notice was delivered by a stub "
-        "adapter. Sensor data lives in the incident file, not here._"
-    )
+    lines.append("_Sensor data lives in the incident file, not here._")
     return "\n".join(lines) + "\n"
 
 
-def _deliver_outbox(state_dir: Path, now, slug: str, body: str) -> str:
+def _read_secret(path: str | None, what: str) -> str:
+    """Read a single-line secret from a 0600 file. Missing/unreadable → Fatal. The
+    error names the *path*, never the secret's contents."""
+    if not path:
+        raise st.Fatal(f"{what} not configured")
+    try:
+        return Path(path).expanduser().read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise st.Fatal(f"cannot read {what}: {exc}") from exc
+
+
+# ---- delivery channels: (state_dir, now, slug, body, args, cfg) -> target_str ----
+
+def _deliver_outbox(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
     stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     outbox = state_dir / "outbox"
     outbox.mkdir(parents=True, exist_ok=True)
@@ -78,24 +136,190 @@ def _deliver_outbox(state_dir: Path, now, slug: str, body: str) -> str:
     return str(path)
 
 
-def _deliver_stderr(state_dir: Path, now, slug: str, body: str) -> str:
+def _deliver_stderr(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
     sys.stderr.write(body)
     return "stderr"
+
+
+def _deliver_ntfy(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
+    server = (cfg.get("server") or "https://ntfy.sh").rstrip("/")
+    topic = cfg.get("topic")
+    if not topic:  # defensive: routed/explicit config validation catches this first
+        raise st.Fatal("ntfy: no topic configured")
+    priority = (cfg.get("priority") or {}).get(args.severity, NTFY_DEFAULT_PRIORITY[args.severity])
+    req = urllib.request.Request(f"{server}/{topic}", data=body.encode("utf-8"), method="POST")
+    req.add_header("Title", _title(args))
+    req.add_header("Priority", str(priority))
+    req.add_header("Tags", "sensorwatch")
+    token = cfg.get("token") or ""
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        raise st.Fatal(f"ntfy: HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise st.Fatal(f"ntfy: {exc.reason}") from exc
+    if not 200 <= status < 300:
+        raise st.Fatal(f"ntfy: HTTP {status}")
+    return f"ntfy:{server}/{topic}"
+
+
+def _deliver_pushover(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
+    api_url = cfg.get("api_url") or "https://api.pushover.net/1/messages.json"
+    token = _read_secret(cfg.get("token_file"), "pushover token_file")
+    user = _read_secret(cfg.get("user_file"), "pushover user_file")
+    priority = (cfg.get("priority") or {}).get(args.severity, PUSHOVER_DEFAULT_PRIORITY[args.severity])
+    fields = {
+        "token": token,
+        "user": user,
+        "title": _title(args),
+        "message": body,
+        "priority": str(priority),
+    }
+    if int(priority) == PUSHOVER_EMERGENCY:  # emergency: retry until acknowledged
+        fields["retry"] = str(cfg.get("retry", 60))
+        fields["expire"] = str(cfg.get("expire", 3600))
+    data = urllib.parse.urlencode(fields).encode("utf-8")
+    req = urllib.request.Request(api_url, data=data, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+            payload = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        # Never echo the request (it carries token/user); report the code only.
+        raise st.Fatal(f"pushover: HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise st.Fatal(f"pushover: {exc.reason}") from exc
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise st.Fatal("pushover: response was not JSON") from exc
+    if not 200 <= status < 300 or parsed.get("status") != 1:
+        raise st.Fatal(f"pushover: API status {parsed.get('status')!r}")
+    receipt = parsed.get("receipt")
+    return f"pushover:receipt={receipt}" if receipt else "pushover:ok"
+
+
+def _deliver_smtp(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
+    host = cfg.get("host")
+    port = int(cfg.get("port", 587))
+    mail_from = cfg.get("mail_from")
+    mail_to = cfg.get("mail_to")
+    username = cfg.get("username")
+    # Read the password before connecting so a missing file fails cleanly.
+    password = _read_secret(cfg.get("password_file"), "smtp password_file") if username else None
+
+    msg = EmailMessage()
+    msg["From"] = mail_from
+    msg["To"] = mail_to
+    msg["Subject"] = _title(args)
+    msg.set_content(body)
+
+    try:
+        with SMTP(host, port, timeout=10) as smtp:
+            if cfg.get("starttls", True):
+                smtp.starttls(context=ssl.create_default_context())
+            if username:
+                smtp.login(username, password)
+            smtp.send_message(msg)
+    except (SMTPException, OSError, ssl.SSLError) as exc:
+        raise st.Fatal(f"smtp: {exc}") from exc
+    return f"smtp:{mail_to}"
 
 
 ADAPTERS = {
     "outbox": _deliver_outbox,
     "stderr": _deliver_stderr,
+    "ntfy": _deliver_ntfy,
+    "pushover": _deliver_pushover,
+    "smtp": _deliver_smtp,
 }
+
+
+# ---- notify.toml (machine-local channel routing + transport config) ----
+
+def _load_config(state_dir: Path) -> dict:
+    """Parse ``<state>/notify.toml``; a missing file is an empty config (routed
+    mode falls back to the outbox). A parse error / unreadable file is a Usage
+    error (exit 2) so it fails before any side effect."""
+    path = state_dir / "notify.toml"
+    try:
+        with path.open("rb") as handle:
+            return tomllib.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise st.Usage(f"notify.toml: {exc}") from exc
+
+
+def _as_name_list(where: str, value: object) -> list:
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise st.Usage(f"notify.toml: {where} must be a list of adapter names")
+    return value
+
+
+def _routed_adapters(config: dict, severity: str) -> list:
+    """Channels for this severity: ``[severity][sev]``, else ``default``, else the
+    outbox fallback (preserves LEO-338 behavior for an unconfigured state dir)."""
+    severity_table = config.get("severity", {})
+    if not isinstance(severity_table, dict):
+        raise st.Usage("notify.toml: [severity] is not a table")
+    if severity in severity_table:
+        return _as_name_list(f"severity.{severity}", severity_table[severity])
+    if "default" in config:
+        return _as_name_list("default", config["default"])
+    return ["outbox"]
+
+
+def _validate_config(config: dict) -> None:
+    """All config checks that must precede any delivery: every adapter name
+    referenced in ``default`` and each ``[severity]`` list must be registered."""
+    referenced: list[str] = []
+    if "default" in config:
+        referenced += _as_name_list("default", config["default"])
+    severity_table = config.get("severity", {})
+    if not isinstance(severity_table, dict):
+        raise st.Usage("notify.toml: [severity] is not a table")
+    for sev, names in severity_table.items():
+        referenced += _as_name_list(f"severity.{sev}", names)
+    unknown = sorted({name for name in referenced if name not in ADAPTERS})
+    if unknown:
+        raise st.Usage(
+            f"notify.toml: unknown adapter(s): {', '.join(unknown)}; "
+            f"available: {', '.join(sorted(ADAPTERS))}"
+        )
+
+
+def _validate_required_keys(config: dict, adapters: list) -> None:
+    """For each channel routed for THIS event, its required keys must be present
+    (a missing key is a config error, exit 2; a missing secret *file* is a
+    delivery-time channel failure, handled per-channel)."""
+    for name in adapters:
+        cfg = config.get(name, {})
+        if not isinstance(cfg, dict):
+            raise st.Usage(f"notify.toml: [{name}] is not a table")
+        if name == "ntfy":
+            if not cfg.get("topic"):
+                raise st.Usage("notify.toml: [ntfy] requires 'topic'")
+        elif name == "smtp":
+            for key in ("host", "mail_from", "mail_to"):
+                if not cfg.get(key):
+                    raise st.Usage(f"notify.toml: [smtp] requires '{key}'")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notify.py",
-        description="Deliver an escalation notice through a stub adapter.",
+        description="Deliver an escalation notice via routed channels (or one explicit adapter).",
     )
     parser.add_argument("--state-dir", help="state directory (or $%s)" % st.STATE_ENV)
-    parser.add_argument("--adapter", required=True, help="outbox | stderr")
+    parser.add_argument(
+        "--adapter",
+        help="force one channel (outbox|stderr|ntfy|pushover|smtp); "
+             "omit for severity-routed fan-out from notify.toml",
+    )
     parser.add_argument("--rule", required=True)
     parser.add_argument("--severity", required=True, choices=st.SEVERITIES)
     parser.add_argument("--tier", required=True, type=int, help="escalation tier (0-4)")
@@ -112,33 +336,38 @@ def run(args: argparse.Namespace) -> int:
     if not 0 <= args.tier <= 4:
         raise st.Usage(f"--tier must be 0-4, got {args.tier}")
 
+    slug = st.slugify(args.rule)
+    body = _body(args, st.iso(now))
+
+    if args.adapter is not None:
+        return _run_explicit(args, state_dir, now, slug, body)
+    return _run_routed(args, state_dir, now, slug, body)
+
+
+def _run_explicit(args: argparse.Namespace, state_dir: Path, now, slug: str, body: str) -> int:
+    """Single explicit channel — today's shape, byte-compatible with LEO-338."""
     adapter = ADAPTERS.get(args.adapter)
     if adapter is None:
         raise st.Usage(
             f"unknown adapter {args.adapter!r}; available: {', '.join(sorted(ADAPTERS))}"
         )
+    # A real channel still reads its notify.toml section (outbox/stderr need none).
+    config = _load_config(state_dir) if args.adapter in CONFIGURED_ADAPTERS else {}
+    _validate_required_keys(config, [args.adapter])
 
     # Validate the ledger BEFORE any side effect: a wrong-shape escalation.json
-    # must fail cleanly here, not after the notice is already in the outbox and
-    # journal (which a retry would then duplicate).
+    # must fail cleanly here, not after the notice is already delivered and
+    # journaled (which a retry would then duplicate).
     esc = st.load_escalation(state_dir)
 
-    slug = st.slugify(args.rule)
-    target = adapter(state_dir, now, slug, _body(args, st.iso(now)))
+    target = adapter(state_dir, now, slug, body, args, config.get(args.adapter, {}))
 
     st.journal_append(
         state_dir, now, "notify",
         rule=args.rule,
         detail={"adapter": args.adapter, "tier": args.tier, "target": target},
     )
-
-    # A delivered notice spends the rule's cooldown and a daily-cap slot. Recording
-    # it HERE — after delivery — rather than in escalation_gate --commit is what
-    # closes the lost-notification gap: no delivery, no cooldown, so a redelivery
-    # re-notifies instead of being suppressed. notify is the sole writer of
-    # last_notified / notifications_today; the gate only reads them.
     _record_delivery(esc, state_dir / "escalation.json", now, args.rule)
-
     st.emit({
         "adapter": args.adapter,
         "delivered": True,
@@ -146,6 +375,60 @@ def run(args: argparse.Namespace) -> int:
         "target": target,
     })
     return 0
+
+
+def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body: str) -> int:
+    """Severity-routed fan-out from notify.toml. All config validation precedes
+    any delivery; the cooldown arms iff at least one channel succeeded."""
+    config = _load_config(state_dir)
+    _validate_config(config)
+    adapters = _routed_adapters(config, args.severity)
+    _validate_required_keys(config, adapters)
+
+    # Ledger validation BEFORE any side effect (journaling included).
+    esc = st.load_escalation(state_dir)
+
+    if not adapters:  # empty list = a deliberate no-op for this severity
+        st.journal_append(
+            state_dir, now, "notify",
+            rule=args.rule,
+            detail={"mode": "routed", "tier": args.tier, "channels": []},
+        )
+        st.emit({"delivered": False, "tier": args.tier, "mode": "routed", "channels": []})
+        return 0
+
+    channels: list[dict] = []
+    for name in adapters:
+        adapter = ADAPTERS[name]
+        try:
+            target = adapter(state_dir, now, slug, body, args, config.get(name, {}))
+            channels.append({"adapter": name, "ok": True, "target": target})
+        except Exception as exc:  # per-channel isolation: one bad channel != total failure
+            channels.append({"adapter": name, "ok": False, "error": str(exc)})
+
+    any_ok = any(c["ok"] for c in channels)
+    all_ok = all(c["ok"] for c in channels)
+
+    st.journal_append(
+        state_dir, now, "notify",
+        rule=args.rule,
+        detail={"mode": "routed", "tier": args.tier, "channels": channels},
+    )
+    # A delivered notice spends the rule's cooldown and a daily-cap slot. Recording
+    # it HERE — after delivery, and only when ≥1 channel succeeded — is what closes
+    # the lost-notification gap: no delivery, no cooldown, so a redelivery
+    # re-notifies instead of being suppressed. notify is the sole writer of
+    # last_notified / notifications_today; the gate only reads them.
+    if any_ok:
+        _record_delivery(esc, state_dir / "escalation.json", now, args.rule)
+
+    st.emit({
+        "delivered": any_ok,
+        "tier": args.tier,
+        "mode": "routed",
+        "channels": channels,
+    })
+    return 0 if all_ok else 1
 
 
 def _record_delivery(esc: dict, esc_path: Path, now, rule: str) -> None:

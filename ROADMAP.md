@@ -125,12 +125,13 @@ notification transport, are still in progress:
   with cooldowns so a fresh session can never re-alert. Any new session
   reconstructs the monitor from a few-kilobyte state summary. Stdlib-only helper
   scripts do every mechanical write.
-- **Deterministic escalation ladder — shipped; transport pending.** Journal →
-  incident file → notification → Linear issue → critical-combination tier, driven
-  by rule severity and persistence, with per-rule cooldowns and a global daily
-  cap (batched digest beyond it). Delivery goes through a pluggable adapter;
-  LEO-338 ships stub adapters (`outbox`, `stderr`), and the real transport (email
-  first) is the LEO-339 decision.
+- **Deterministic escalation ladder — shipped.** Journal → incident file →
+  notification → Linear issue → critical-combination tier, driven by rule
+  severity and persistence, with per-rule cooldowns and a global daily cap
+  (batched digest beyond it). Delivery goes through pluggable channels routed
+  per severity from a machine-local `notify.toml`; LEO-339 ships real transports
+  — **ntfy** (the zero-account default via hosted `ntfy.sh`), **Pushover**, and
+  generic **SMTP** — with the `outbox`/`stderr` stubs kept as fallbacks.
 - **Staged runtimes — in progress.** The interactive agent session runs the
   skill today (cheap to develop and tune against real hardware). Still pending:
   the unattended supervisor — a small deterministic loop that re-runs `watch` and
@@ -184,9 +185,14 @@ Design decisions we have deliberately left open, in case you'd like to weigh in
   onto `PATH` yet. Likely resolution: drop the Python entry point (the module
   stays runnable via `python -m sensorwatch`); the alternative is a distinct
   binary name. Decided with the Phase 1 docs handoff (LEO-342).
-- **Notification transports.** The notify adapter ships with email first;
-  which push channels (ntfy, Pushover, others) earn built-in adapters, and
-  whether a "critical" tier warrants acknowledge-required semantics.
+- **Notification transports.** *Decided (shipped in LEO-339).* The notify adapter
+  routes channels per severity from a machine-local `notify.toml`. Built-in:
+  **ntfy** (the zero-account default via hosted `ntfy.sh`; a long random topic is
+  the shared secret), **Pushover** (the acknowledge-required upgrade path —
+  emergency priority + a receipt), and generic **SMTP** (bring-your-own
+  credentials). The dead-man's switch alerts through a **separate** ntfy watchdog
+  topic so it shares no failure mode with the path it watches (wired in LEO-340).
+  `outbox`/`stderr` remain as fallbacks.
 - **Digest truncation semantics.** *Decided (shipped in `report`).* `--top`
   first caps reading rows to the largest relative movers plus anything in
   violation; if the JSON still overflows `--max-bytes`, detail is dropped
