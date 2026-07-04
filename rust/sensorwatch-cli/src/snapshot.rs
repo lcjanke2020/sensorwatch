@@ -16,25 +16,7 @@ use sensorwatch::{Reading, Session};
 use serde::Serialize;
 
 use crate::cli::{SnapshotArgs, TypeFilter};
-use crate::labels::type_label;
-
-/// The `type` label a `--type` filter selects. Comparing labels (rather than
-/// enum variants) makes `--type UNKNOWN` match everything that renders as
-/// `"unknown"`, including categories added to the ABI after this build.
-fn filter_label(filter: TypeFilter) -> &'static str {
-    match filter {
-        TypeFilter::None => "None",
-        TypeFilter::Temperature => "Temperature",
-        TypeFilter::Voltage => "Voltage",
-        TypeFilter::Fan => "Fan",
-        TypeFilter::Current => "Current",
-        TypeFilter::Power => "Power",
-        TypeFilter::Clock => "Clock",
-        TypeFilter::Usage => "Usage",
-        TypeFilter::Other => "Other",
-        TypeFilter::Unknown => "unknown",
-    }
-}
+use crate::labels::{filter_label, type_label};
 
 /// Apply the `--type` and `--match` filters.
 fn filter<'a>(
@@ -90,15 +72,7 @@ impl<'a> From<&'a Reading> for Entry<'a> {
 /// with an `indent`-space unit otherwise.
 fn render(readings: &[&Reading], indent: u32) -> serde_json::Result<String> {
     let entries: Vec<Entry<'_>> = readings.iter().copied().map(Entry::from).collect();
-    if indent == 0 {
-        return serde_json::to_string(&entries);
-    }
-    let indent_unit = vec![b' '; indent as usize];
-    let mut out = Vec::new();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent_unit);
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
-    entries.serialize(&mut serializer)?;
-    Ok(String::from_utf8(out).expect("serde_json output is UTF-8"))
+    crate::render::to_json_string(&entries, indent)
 }
 
 /// The only impure step: open a session and copy out one snapshot.

@@ -17,6 +17,7 @@ mod jsonl;
 mod labels;
 mod limits;
 mod logger;
+mod render;
 mod replay;
 mod report;
 mod rules;

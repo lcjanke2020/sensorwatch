@@ -33,11 +33,12 @@ use std::process::ExitCode;
 
 use jiff::{SignedDuration, Zoned};
 
-use crate::cli::{ReportArgs, TypeFilter};
+use crate::cli::ReportArgs;
 use crate::config::Config;
 use crate::digest::{self, parse_duration_secs, parse_when, Aggregator, DayEdge, Emit};
 use crate::engine::Engine;
 use crate::exit;
+use crate::labels;
 use crate::replay::ReplaySource;
 use crate::rules::RuleSet;
 use crate::source::{SampleSource, Tick};
@@ -156,7 +157,7 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     // Case-fold the --match needles once for the whole run: the row filter, the
     // violation filter, and the scan-time violation count all reuse this.
     let match_needles: Vec<String> = args.r#match.iter().map(|s| s.to_lowercase()).collect();
-    let type_filter = type_filter_label(args.type_filter);
+    let type_filter = args.type_filter.map(labels::filter_label);
     let mut source = ReplaySource::from_files(files);
     let mut engine = Engine::new(rules);
     let mut agg = Aggregator::new(config.interval_seconds);
@@ -233,21 +234,4 @@ pub(crate) fn run(args: &ReportArgs) -> ExitCode {
 fn usage(message: impl AsRef<str>) -> ExitCode {
     eprintln!("sensorwatch report: {}", message.as_ref());
     ExitCode::from(exit::USAGE)
-}
-
-/// Map the clap `--type` value onto the canonical reading-type label the digest
-/// filters against — the same vocabulary as `snapshot --type`.
-fn type_filter_label(filter: Option<TypeFilter>) -> Option<&'static str> {
-    filter.map(|f| match f {
-        TypeFilter::None => "None",
-        TypeFilter::Temperature => "Temperature",
-        TypeFilter::Voltage => "Voltage",
-        TypeFilter::Fan => "Fan",
-        TypeFilter::Current => "Current",
-        TypeFilter::Power => "Power",
-        TypeFilter::Clock => "Clock",
-        TypeFilter::Usage => "Usage",
-        TypeFilter::Other => "Other",
-        TypeFilter::Unknown => "unknown",
-    })
 }

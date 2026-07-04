@@ -2,6 +2,8 @@
 
 use sensorwatch::ReadingType;
 
+use crate::cli::TypeFilter;
+
 /// The JSON `type` label for a reading category — the Title-case vocabulary
 /// the Python tooling uses (`SENSOR_TYPES` in `sensorwatch/hwinfo_shm.py`).
 pub(crate) fn type_label(kind: ReadingType) -> &'static str {
@@ -35,6 +37,26 @@ pub(crate) const CANONICAL_LABELS: [&str; 9] = [
     "Other",
 ];
 
+/// The canonical reading-type label a `--type` filter selects — the vocabulary
+/// shared by `snapshot --type` and `report --type`, so the two surfaces cannot
+/// drift. Comparing labels (rather than enum variants) makes `--type UNKNOWN`
+/// match everything that renders as `"unknown"`, including categories added to
+/// the ABI after this build.
+pub(crate) fn filter_label(filter: TypeFilter) -> &'static str {
+    match filter {
+        TypeFilter::None => "None",
+        TypeFilter::Temperature => "Temperature",
+        TypeFilter::Voltage => "Voltage",
+        TypeFilter::Fan => "Fan",
+        TypeFilter::Current => "Current",
+        TypeFilter::Power => "Power",
+        TypeFilter::Clock => "Clock",
+        TypeFilter::Usage => "Usage",
+        TypeFilter::Other => "Other",
+        TypeFilter::Unknown => "unknown",
+    }
+}
+
 /// Fold an arbitrary stream or config `type` string onto the canonical label
 /// set: the nine Title-case labels map to themselves (case-insensitively, so
 /// rule configs may write `"voltage"`); everything else — including the
@@ -65,6 +87,28 @@ mod tests {
         assert_eq!(type_label(ReadingType::Usage), "Usage");
         assert_eq!(type_label(ReadingType::Other), "Other");
         assert_eq!(type_label(ReadingType::Unknown), "unknown");
+    }
+
+    #[test]
+    fn filter_label_stays_in_lockstep_with_the_canonical_vocabulary() {
+        // The nine non-Unknown `--type` variants map, in order, to exactly the
+        // nine canonical labels, and Unknown maps to the bare "unknown"
+        // everything folds to. If `filter_label` and the type vocabulary ever
+        // drift, `snapshot --type`/`report --type` would silently stop
+        // matching what `type_label` emits — this pins them together.
+        let produced = [
+            filter_label(TypeFilter::None),
+            filter_label(TypeFilter::Temperature),
+            filter_label(TypeFilter::Voltage),
+            filter_label(TypeFilter::Fan),
+            filter_label(TypeFilter::Current),
+            filter_label(TypeFilter::Power),
+            filter_label(TypeFilter::Clock),
+            filter_label(TypeFilter::Usage),
+            filter_label(TypeFilter::Other),
+        ];
+        assert_eq!(produced, CANONICAL_LABELS);
+        assert_eq!(filter_label(TypeFilter::Unknown), "unknown");
     }
 
     #[test]

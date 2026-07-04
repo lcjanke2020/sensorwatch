@@ -25,7 +25,7 @@ use serde::Serialize;
 use crate::engine::Transition;
 use crate::event::Event;
 use crate::exit;
-use crate::logger::LOG_PREFIX;
+use crate::logger::{daily_file_path, LOG_PREFIX};
 use crate::source::Sample;
 
 /// The digest's own schema version, independent of the event schema's
@@ -202,7 +202,7 @@ pub(crate) fn candidate_files(
     let mut files = Vec::new();
     let mut date = first;
     loop {
-        let path = log_dir.join(format!("{LOG_PREFIX}{date}.jsonl"));
+        let path = daily_file_path(log_dir, LOG_PREFIX, date);
         if path.is_file() {
             files.push(path);
         }
@@ -633,7 +633,7 @@ impl<'a> Assembled<'a> {
             gaps: &self.gaps,
             readings: &self.rows,
         };
-        render_json(&digest, indent)
+        crate::render::to_json_string(&digest, indent).expect("serializing a Digest cannot fail")
     }
 
     /// Shrink the digest to fit `max_bytes`, dropping detail worst-first: the
@@ -674,23 +674,6 @@ impl<'a> Assembled<'a> {
             ));
         }
     }
-}
-
-/// Serialize a digest: compact for `indent == 0`, else pretty with an
-/// `indent`-space unit. Duplicates the `PrettyFormatter` pattern from the
-/// frozen `snapshot.rs` deliberately (that module must not be touched).
-fn render_json(digest: &Digest<'_>, indent: u32) -> String {
-    if indent == 0 {
-        return serde_json::to_string(digest).expect("serializing a Digest cannot fail");
-    }
-    let indent_unit = vec![b' '; indent as usize];
-    let mut out = Vec::new();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent_unit);
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
-    digest
-        .serialize(&mut serializer)
-        .expect("serializing a Digest cannot fail");
-    String::from_utf8(out).expect("serde_json output is UTF-8")
 }
 
 /// Does a reading row pass the display filters? `--match` is an
