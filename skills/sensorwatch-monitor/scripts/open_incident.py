@@ -98,8 +98,9 @@ def _events_count(lines: list[str]) -> int:
 
 def _trim_to_cap(lines: list[str]) -> list[str]:
     """Keep an incident file under INCIDENT_LINE_CAP by dropping the OLDEST event
-    bullet lines (``- <id> @ …``), leaving exactly one marker. The ``- events:``
-    header stays the cumulative total; the journal keeps the full history.
+    bullet lines (``- <id> @ …``), leaving at most one marker (a write that lands
+    exactly at the cap re-adds none). The ``- events:`` header stays the cumulative
+    total; the journal keeps the full history.
 
     Two invariants the naive version got wrong: (1) prior markers are stripped
     first, so they never accumulate; (2) the newest event line is NEVER dropped —

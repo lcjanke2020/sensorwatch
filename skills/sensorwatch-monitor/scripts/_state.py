@@ -268,8 +268,9 @@ def load_cursor(state_dir: Path) -> dict:
 
 
 def load_escalation(state_dir: Path) -> dict:
-    """Load + shape-check ``escalation.json`` — ``per_rule`` must be an object of
-    objects, else the gate/summary would ``.get`` on a non-dict and crash."""
+    """Load + shape-check ``escalation.json``. Validating the counters here (not at
+    use) means notify.py fails BEFORE delivery on a wrong-shape ledger, instead of
+    raising a ``TypeError`` after the outbox notice is already written."""
     esc = load_json(state_dir / "escalation.json")
     per_rule = esc.get("per_rule", {})
     if not isinstance(per_rule, dict):
@@ -277,6 +278,11 @@ def load_escalation(state_dir: Path) -> dict:
     for rule, info in per_rule.items():
         if not isinstance(info, dict):
             raise Fatal(f"escalation.json: per_rule[{rule!r}] is not an object")
+    if not _is_int(esc.get("notifications_today", 0)):
+        raise Fatal("escalation.json: notifications_today is not an int")
+    date = esc.get("date")
+    if date is not None and not isinstance(date, str):
+        raise Fatal("escalation.json: date is not a string")
     return esc
 
 

@@ -603,7 +603,7 @@ def test_incident_file_trimmed_to_line_cap(tmp_path):
         assert r.returncode == 0, r.stderr
     body = (state / "incidents" / "open" / "caprule.md").read_text(encoding="utf-8")
     assert len(body.splitlines()) <= 80          # INCIDENT_LINE_CAP enforced on write
-    assert body.count("older events trimmed") == 1   # ONE marker, not accumulating
+    assert body.count("older events trimmed") <= 1   # at most one marker, never accumulating
     assert f"- events: {total}" in body           # count stays cumulative, not line-limited
     assert f"caprule-{total} @" in body           # the newest event survives (dedup intact)
     assert body.count(" @ ") >= 5                 # real event lines remain, not all markers
@@ -640,6 +640,26 @@ def test_corrupt_escalation_is_fatal(tmp_path):
                    "--severity", "critical", "--state", "fired", "--now", T0)
     assert r.returncode == 1
     assert "per_rule" in r.stderr
+
+
+def test_corrupt_escalation_counters_are_fatal_before_delivery(tmp_path):
+    # A bad notifications_today / date type must be caught by load_escalation, so
+    # neither the gate nor notify raises a TypeError — and notify fails BEFORE the
+    # adapter runs (no outbox notice a retry could duplicate).
+    state = tmp_path / "state"
+    init_state(state)
+    (state / "escalation.json").write_text(
+        '{"schema_version":1,"per_rule":{},"date":"2026-02-18","notifications_today":"oops"}',
+        encoding="utf-8")
+    gate = run_script("escalation_gate.py", "--state-dir", str(state), "--rule", "r",
+                      "--severity", "critical", "--state", "fired", "--now", T0)
+    assert gate.returncode == 1
+    assert "notifications_today" in gate.stderr
+
+    nfy = _notify(state, "r", now=T0)
+    assert nfy.returncode == 1
+    assert list((state / "outbox").glob("*.md")) == []
+    assert '"action":"notify"' not in journal_text(state)
 
 
 # ---- notify hardening ----
@@ -761,3 +781,9 @@ def test_heartbeat_maintenance_stamps_date_and_journals(tmp_path):
     assert json.loads(r.stdout)["last_maintenance_date"] == "2026-03-01"
     assert read_json(state / "heartbeat.json")["last_maintenance_date"] == "2026-03-01"
     assert '"action":"maintenance"' in journal_text(state)
+
+
+def test_heartbeat_blind_after_must_be_positive(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    assert _heartbeat(state, "failure", blind_after=0).returncode == 2

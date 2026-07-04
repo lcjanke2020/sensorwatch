@@ -113,7 +113,12 @@ Then, **in this order**:
 
    i.e. `open_incident.py` (journals, writes the incident file) runs **before**
    `ack_event.py` (updates the cursor, moves the spool file). Benign classifies
-   into the journal only — no incident file. Then re-arm.
+   into the journal only — no incident file.
+5. **Record the liveness success and re-arm.** An event wake means the watcher
+   ran fine, so run `heartbeat.py --kind heartbeat` (it sets `last_heartbeat` and
+   **resets `consecutive_watch_failures` to 0** — that counter must reflect only
+   *consecutive* failures, so a successful event between failures clears it), then
+   re-arm.
 
 **On heartbeat (exit 0).** A timeout with no fire means "all quiet." Do a light
 pass: record it (`heartbeat.py --kind heartbeat` — sets `last_heartbeat`, resets

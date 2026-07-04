@@ -51,6 +51,8 @@ def _load_heartbeat(state_dir: Path) -> dict:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.blind_after < 1:
+        raise st.Usage("--blind-after must be >= 1")
     state_dir = st.resolve_state_dir(args.state_dir)
     now = st.resolve_now(args.now)
     hb_path = state_dir / "heartbeat.json"
@@ -72,10 +74,11 @@ def run(args: argparse.Namespace) -> int:
                  "monitoring_blind": failures >= args.blind_after})
         return 0
 
-    # maintenance
+    # maintenance — journal first (the bundle's recording-before-state anchor),
+    # then stamp the date.
+    st.journal_append(state_dir, now, "maintenance", detail={"date": st.date_str(now)})
     hb["last_maintenance_date"] = st.date_str(now)
     st.save_json_atomic(hb_path, hb)
-    st.journal_append(state_dir, now, "maintenance", detail={"date": st.date_str(now)})
     st.emit({"kind": "maintenance", "last_maintenance_date": hb["last_maintenance_date"]})
     return 0
 
