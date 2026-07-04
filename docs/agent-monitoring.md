@@ -4,7 +4,7 @@ How sensorwatch lets an AI agent *monitor* hardware over days and weeks without
 burning context — and why the design generalizes to any "agent that keeps an
 eye on something." This document lands with the `watch` subcommand (LEO-336);
 it is the reference for the event contract that `watch` emits and the
-monitoring agent (Phase 2) will consume.
+[`sensorwatch-monitor` skill](../skills/sensorwatch-monitor/SKILL.md) consumes.
 
 ## Overview
 
@@ -27,8 +27,8 @@ something has provably happened. The process exiting *is* the wake-up.
 | 1. Always-on logger | Byte-stable JSONL capture of every sample | `log`, or `watch --follow` |
 | 2. Deterministic watcher | Rules over samples → fired/cleared events | `watch` + `[[rules]]` |
 | 3. Wake-up transport | The process exit *is* the signal; spool is durable handoff | `watch` exit codes + `--spool-dir` |
-| 4. Agent triage protocol | Wake → read event → bounded digest → act | `sensorwatch-monitor` skill (Phase 2) |
-| 5. Durable state directory | Ack cursor, open incidents, baseline, escalation ledger | agent-owned state dir (Phase 2) |
+| 4. Agent triage protocol | Wake → read event → bounded digest → act | [`sensorwatch-monitor` skill](../skills/sensorwatch-monitor/SKILL.md) |
+| 5. Durable state directory | Ack cursor, open incidents, baseline, escalation ledger | [`sensorwatch-monitor` state dir](../skills/sensorwatch-monitor/SKILL.md#state-directory) |
 
 **1. Always-on logger.** `log` (and `watch --follow`) append one JSON record
 per sample to `sensors_YYYY-MM-DD.jsonl`, with daily rotation and retention.
@@ -57,15 +57,18 @@ at-least-once durable handoff that survives an agent that was not listening.
 the ~1 KB event → pull one size-capped `sensorwatch report` digest → act. It
 never reads raw logs — `report` (shipped in `rust/sensorwatch-cli`) is the
 sanctioned bounded window over history. A timeout wake means "heartbeat — verify
-all quiet, re-arm."
+all quiet, re-arm." The full protocol — dedup-first, bounded triage capped at two
+reports, recording-before-acknowledgment — is the
+[`sensorwatch-monitor`](../skills/sensorwatch-monitor/SKILL.md) skill.
 
 **5. Durable state directory.** The agent's memory is a few kilobytes on disk,
 not in the context window: an acknowledgment cursor keyed to event **sequence
 numbers** (at-least-once, crash-safe), open-incident files with snooze
 semantics, a curated baseline of "normal," and an escalation ledger with
-cooldowns. Any fresh session reconstructs the monitor from that summary. This
-layer is agent-owned and separate from `watch`'s own `watch.seq` state
-(ROADMAP Phase 2).
+cooldowns. Any fresh session reconstructs the monitor from that summary — the
+skill's [`state_summary`](../skills/sensorwatch-monitor/SKILL.md#state-directory)
+read, hard-capped at ~4 KB. This layer is agent-owned and separate from `watch`'s
+own `watch.seq` state (ROADMAP Phase 2).
 
 ## The event contract
 

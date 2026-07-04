@@ -184,7 +184,10 @@ yourself — use the Rust CLI's **`watch`** subcommand. It evaluates declarative
 event when a rule fires. Detection is deterministic native code; an agent is
 woken only once something has provably happened. **This is the wake-up
 primitive an agent monitor arms** — the full five-layer architecture is in
-[`docs/agent-monitoring.md`](../../docs/agent-monitoring.md).
+[`docs/agent-monitoring.md`](../../docs/agent-monitoring.md), and the protocol
+for *being* the monitor — arming, triage, and durable ack/incident/escalation
+state — is the separate [`sensorwatch-monitor`](../sensorwatch-monitor/SKILL.md)
+skill (this skill covers the tool mechanics it builds on).
 
 > **Rust CLI only.** Unlike Recipes 1–2, `watch` has **no Python fallback** —
 > the rule engine lives in the Rust CLI. Build it once as in Recipe 1.
