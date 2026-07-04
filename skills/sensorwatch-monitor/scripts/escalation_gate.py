@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """escalation_gate.py — the deterministic escalation decision.
 
-A pure function of the ledger (escalation.json) plus the event's shape. Returns
-a tier and a decision; ``--commit`` records the outcome to the ledger in the same
-invocation, so a fresh session can never re-notify (check-then-commit is atomic).
+A deterministic function of the escalation ledger, the set of currently-open
+critical incidents (``incidents/open/`` — the lifecycle authority), and the
+event's shape. Returns a tier and a decision. ``--commit`` records the tier and
+rolls the daily counter, but **not** the cooldown/daily-count of a delivery —
+that is notify.py's job, on actual delivery (so a crash before delivery cannot
+suppress the redelivery). The gate reads ``last_notified``; notify writes it.
 
     python escalation_gate.py --state-dir <dir> --rule <name> \\
         --severity info|warning|critical --state fired|cleared \\
@@ -54,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _compute_tier(severity: str, state: str, persistence: int, per_rule: dict, rule: str) -> int:
+def _compute_tier(severity: str, state: str, persistence: int, open_criticals: set, rule: str) -> int:
     if state == "cleared":
         return 0  # a clear resolves; escalation is about firing
     if severity == "info":
@@ -63,12 +66,11 @@ def _compute_tier(severity: str, state: str, persistence: int, per_rule: dict, r
         return 2 if persistence >= 3 else 1
     # critical
     tier = 3 if persistence >= 3 else 2
-    open_criticals = {
-        r for r, info in per_rule.items()
-        if info.get("open") and info.get("severity") == "critical"
-    }
-    open_criticals.add(rule)
-    if len(open_criticals) >= 2:
+    # The set of concurrently-open criticals is derived from incidents/open/ —
+    # the single incident-lifecycle authority — so closing an incident (which
+    # moves its file out of open/) can never leave a phantom that promotes an
+    # unrelated critical to tier 4.
+    if len(open_criticals | {rule}) >= 2:
         tier = 4
     return tier
 
@@ -79,10 +81,14 @@ def run(args: argparse.Namespace) -> int:
     today = st.date_str(now)
 
     esc_path = state_dir / "escalation.json"
-    esc = st.load_json(esc_path)
+    esc = st.load_escalation(state_dir)
     per_rule = esc.setdefault("per_rule", {})
 
-    tier = _compute_tier(args.severity, args.state, args.persistence_events, per_rule, args.rule)
+    open_criticals = {
+        inc["rule"] for inc in st.read_open_incidents(state_dir)
+        if inc["severity"] == "critical"
+    }
+    tier = _compute_tier(args.severity, args.state, args.persistence_events, open_criticals, args.rule)
 
     esc_date = esc.get("date")
     today_count = esc.get("notifications_today", 0) if esc_date == today else 0
@@ -113,10 +119,12 @@ def run(args: argparse.Namespace) -> int:
         entry = per_rule.setdefault(args.rule, {})
         entry["severity"] = args.severity
         entry["tier"] = tier
-        entry["open"] = (args.state == "fired")
-        if decision == "allow" and tier >= 2 and args.state == "fired":
-            entry["last_notified"] = st.iso(now)
-            esc["notifications_today"] = esc.get("notifications_today", 0) + 1
+        entry["last_gate"] = st.iso(now)
+        # The per-rule cooldown (last_notified) and the daily count are recorded
+        # by notify.py when a notice is actually delivered — NOT here. Otherwise a
+        # crash between this commit and delivery would arm the cooldown for a
+        # notification that never went out, and the redelivery would be silently
+        # suppressed. "No delivery, no cooldown."
         st.save_json_atomic(esc_path, esc)
         st.journal_append(
             state_dir, now, "gate",

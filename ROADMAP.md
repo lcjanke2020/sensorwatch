@@ -114,8 +114,9 @@ notification transport, are still in progress:
   process exiting *is* the wake-up. A rule event means "triage this"; a timeout
   means "heartbeat — verify all quiet, re-arm."
 - **Bounded context by construction — shipped.** Each wake-up consumes a ~1 KB
-  event plus one size-capped `report` digest, and the hard context-budget rules
-  forbid reading raw logs — the skill states them verbatim.
+  event plus at most two size-capped `report` digests (one per heartbeat), and
+  the hard context-budget rules forbid reading raw logs — the skill states them
+  verbatim.
 - **Durable state on disk, not in the context window — shipped.** The agent's
   memory is a small machine-local state directory: an acknowledgment cursor keyed
   to event sequence numbers (at-least-once handling, crash-safe), open-incident

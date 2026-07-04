@@ -108,11 +108,17 @@ def _is_number(value: object) -> bool:
 # ---- time ----
 
 def parse_iso(text: str) -> datetime:
-    """Parse an ISO-8601 timestamp (accepts a trailing ``Z``)."""
+    """Parse an ISO-8601 timestamp (accepts a trailing ``Z``). A timestamp with
+    no offset is assumed UTC, so aware and naive ``--now`` inputs never mix — a
+    bare subtraction of the two would otherwise raise an uncaught ``TypeError``
+    (outside the JSON + exit-code contract)."""
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except (ValueError, AttributeError) as exc:
         raise Usage(f"not an ISO-8601 timestamp: {text!r}") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def resolve_now(now_arg: str | None) -> datetime:
@@ -165,13 +171,18 @@ def parse_duration(text: str) -> int:
 # ---- filesystem / paths ----
 
 def slugify(name: str) -> str:
-    """Lowercase, fold anything but ``[a-z0-9-_]`` to ``-`` — matches the
-    watcher's spool slug so incident filenames stay filesystem-portable."""
-    out = "".join(
-        ch if (ch.isalnum() and ch.isascii()) or ch in "-_" else "-"
-        for ch in name.lower()
-    )
-    return out.strip("-") or "rule"
+    """Rule name → filesystem-safe slug, byte-identical to the Rust watcher's
+    spool slug (``event.rs`` ``slug``): ASCII-lowercase, every character outside
+    ``[a-z0-9._-]`` folded to ``-``, truncated to 50 bytes, ``"rule"`` if nothing
+    survives — and, crucially, **no** leading/trailing strip. Matching it exactly
+    keeps the incident filename aligned with the spool filename, so two distinct
+    rules (e.g. ``psu.12v`` vs ``psu-12v``) never collide into one incident."""
+    out = []
+    for ch in name:
+        c = chr(ord(ch) + 32) if "A" <= ch <= "Z" else ch  # ASCII-lowercase only
+        out.append(c if ("a" <= c <= "z" or "0" <= c <= "9" or c in "._-") else "-")
+    s = "".join(out)[:50]  # pure ASCII here, so char slice == byte truncation
+    return s or "rule"
 
 
 def resolve_state_dir(state_dir_arg: str | None) -> Path:
@@ -216,18 +227,94 @@ def load_json(path: Path) -> dict:
     return data
 
 
-def save_json_atomic(path: Path, obj: dict) -> None:
-    """Write JSON via a temp file + ``os.replace`` so a reader never sees a
-    half-written state file (a crash leaves the old file intact)."""
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write ``text`` via a temp file + ``os.replace`` so a reader never sees a
+    half-written file (a crash leaves the old file intact). Used for JSON state
+    and for incident Markdown, whose machine-read header must stay consistent."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    text = json.dumps(obj, separators=(",", ":"), sort_keys=False)
     try:
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
     finally:
         if tmp.exists():
             tmp.unlink()
+
+
+def save_json_atomic(path: Path, obj: dict) -> None:
+    """Write JSON atomically (see :func:`write_text_atomic`)."""
+    write_text_atomic(path, json.dumps(obj, separators=(",", ":"), sort_keys=False))
+
+
+def load_cursor(state_dir: Path) -> dict:
+    """Load + shape-check ``cursor.json`` — a controlled Fatal beats an
+    ``AttributeError`` deep in the ack path when the file was hand-edited into a
+    bad shape (it is documented as corrupt-state → exit 1)."""
+    cursor = load_json(state_dir / "cursor.json")
+    if not isinstance(cursor.get("acked_ids_recent", []), list):
+        raise Fatal("cursor.json: acked_ids_recent is not a list")
+    if not _is_int(cursor.get("last_acked_seq", 0)):
+        raise Fatal("cursor.json: last_acked_seq is not an int")
+    return cursor
+
+
+def load_escalation(state_dir: Path) -> dict:
+    """Load + shape-check ``escalation.json`` — ``per_rule`` must be an object of
+    objects, else the gate/summary would ``.get`` on a non-dict and crash."""
+    esc = load_json(state_dir / "escalation.json")
+    per_rule = esc.get("per_rule", {})
+    if not isinstance(per_rule, dict):
+        raise Fatal("escalation.json: per_rule is not an object")
+    for rule, info in per_rule.items():
+        if not isinstance(info, dict):
+            raise Fatal(f"escalation.json: per_rule[{rule!r}] is not an object")
+    return esc
+
+
+# ---- incident header (the one machine-maintained block inside an incident .md) ----
+# open_incident.py is the sole WRITER; state_summary.py and escalation_gate.py are
+# READERS via read_open_incidents. Keep this the single reader/writer pair so the
+# header format cannot silently desync across scripts.
+
+def incident_get_field(lines: list, key: str, default=None):
+    prefix = f"- {key}:"
+    for line in lines:
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return default
+
+
+def incident_set_field(lines: list, key: str, value: str) -> bool:
+    prefix = f"- {key}:"
+    for i, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[i] = f"- {key}: {value}"
+            return True
+    return False
+
+
+def read_open_incidents(state_dir: Path) -> list:
+    """One record per ``incidents/open/*.md``, parsed from its header block."""
+    open_dir = state_dir / "incidents" / "open"
+    out = []
+    if not open_dir.is_dir():
+        return out
+    for path in sorted(open_dir.glob("*.md")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        out.append({
+            "path": path,
+            "rule": incident_get_field(lines, "rule", path.stem),
+            "severity": incident_get_field(lines, "severity", "") or "",
+            "opened": incident_get_field(lines, "opened", "?"),
+            "snooze_until": incident_get_field(lines, "snooze_until", "?"),
+            "events": incident_get_field(lines, "events", "?"),
+            "status": incident_get_field(lines, "status", "open"),
+            "line_count": len(lines),
+        })
+    return out
 
 
 def load_event(path: Path) -> dict:

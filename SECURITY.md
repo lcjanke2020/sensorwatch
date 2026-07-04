@@ -1,6 +1,9 @@
 # Security Analysis: sensorwatch
 
-**Date**: 2026-06-30
+**Date**: 2026-06-30 (agent-skill addendum 2026-07-04: adds the
+`sensorwatch-monitor` skill — stdlib helper scripts that write only inside a
+machine-local state dir; no new listener, input class, or privilege, so the
+threat model is unchanged. See §4.)
 **Scope**: Windows hardware sensor monitoring toolkit reading HWiNFO64 shared
 memory today through a Python package and CLI, a native C core with Python (cffi),
 header-only C++, and Rust bindings, and read-only agent skills; with a planned

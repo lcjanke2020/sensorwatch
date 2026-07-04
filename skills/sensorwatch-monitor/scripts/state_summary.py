@@ -41,33 +41,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _field(lines: list[str], key: str, default: str = "?") -> str:
-    prefix = f"- {key}:"
-    for line in lines:
-        if line.startswith(prefix):
-            return line[len(prefix):].strip() or default
-    return default
-
-
-def _read_open_incidents(state_dir: Path) -> list[dict]:
-    open_dir = state_dir / "incidents" / "open"
-    incidents = []
-    if not open_dir.is_dir():
-        return incidents
-    for path in sorted(open_dir.glob("*.md")):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        incidents.append({
-            "rule": _field(lines, "rule", path.stem),
-            "opened": _field(lines, "opened"),
-            "snooze_until": _field(lines, "snooze_until"),
-            "events": _field(lines, "events", "?"),
-        })
-    return incidents
-
-
 def _pending_stats(state_dir: Path) -> tuple[int, int | None]:
     pending = state_dir / "spool" / "pending"
     if not pending.is_dir():
@@ -98,16 +71,17 @@ def run(args: argparse.Namespace) -> int:
     except OSError as exc:
         raise st.Fatal(f"cannot read bootstrap.md: {exc} (run init_state.py?)") from exc
 
-    cursor = st.load_json(state_dir / "cursor.json")
+    cursor = st.load_cursor(state_dir)
     heartbeat = st.load_json(state_dir / "heartbeat.json")
-    esc = st.load_json(state_dir / "escalation.json")
+    esc = st.load_escalation(state_dir)
 
     today = st.date_str(now)
     notifications_today = esc.get("notifications_today", 0) if esc.get("date") == today else 0
-    open_rules = sum(1 for info in esc.get("per_rule", {}).values() if info.get("open"))
 
     pending_count, lowest_seq = _pending_stats(state_dir)
-    incidents = _read_open_incidents(state_dir)
+    incidents = st.read_open_incidents(state_dir)
+    open_criticals = sum(1 for i in incidents if i["severity"] == "critical")
+    over_cap = sorted(i["rule"] for i in incidents if i["line_count"] > st.INCIDENT_LINE_CAP)
 
     status_lines = [
         f"## monitor status @ {st.iso(now)}",
@@ -117,15 +91,21 @@ def run(args: argparse.Namespace) -> int:
         f"heartbeat: last={heartbeat.get('last_heartbeat', '?')}, "
         f"watch_failures={heartbeat.get('consecutive_watch_failures', 0)}, "
         f"last_maintenance={heartbeat.get('last_maintenance_date', '?')}",
-        f"escalation: notifications_today={notifications_today}, open_rules={open_rules}",
+        f"escalation: notifications_today={notifications_today}, open_criticals={open_criticals}",
         f"spool: pending={pending_count}, "
         f"lowest_pending_seq={'none' if lowest_seq is None else lowest_seq}",
-        f"open incidents ({len(incidents)}):",
     ]
+    if over_cap:
+        status_lines.append(f"! over-cap incidents (run maintenance): {', '.join(over_cap)}")
+    status_lines.append(f"open incidents ({len(incidents)}):")
     base = header + "\n\n" + "\n".join(status_lines)
 
-    base_bytes = len(base.encode("utf-8"))
-    if base_bytes > max_bytes:
+    # Budget accounts for the single trailing newline we emit, so the bytes
+    # written never exceed --max-bytes — a "hard" cap means hard.
+    def emitted(text: str) -> int:
+        return len((text + "\n").encode("utf-8"))
+
+    if emitted(base) > max_bytes:
         header_bytes = len(header.encode("utf-8"))
         header_lines = header.count("\n") + 1
         if header_bytes > max_bytes // 2 or header_lines > st.BOOTSTRAP_LINE_CAP:
@@ -136,7 +116,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             culprit = "the status block"
         raise st.Fatal(
-            f"summary floor {base_bytes}B exceeds --max-bytes "
+            f"summary floor {emitted(base)}B exceeds --max-bytes "
             f"{max_bytes}; {culprit} needs the maintenance pass"
         )
 
@@ -151,7 +131,7 @@ def run(args: argparse.Namespace) -> int:
     kept = 0
     for line in detail_lines:
         trial = output + "\n" + line
-        if len(trial.encode("utf-8")) <= max_bytes:
+        if emitted(trial) <= max_bytes:
             output = trial
             kept += 1
         else:
@@ -160,12 +140,12 @@ def run(args: argparse.Namespace) -> int:
     omitted = len(detail_lines) - kept
     if omitted:
         marker = f"\n  ... {omitted} older incident(s) omitted — run the maintenance pass"
-        while kept > 0 and len((output + marker).encode("utf-8")) > max_bytes:
+        while kept > 0 and emitted(output + marker) > max_bytes:
             output = output.rsplit("\n", 1)[0]
             kept -= 1
             omitted += 1
             marker = f"\n  ... {omitted} older incident(s) omitted — run the maintenance pass"
-        if len((output + marker).encode("utf-8")) <= max_bytes:
+        if emitted(output + marker) <= max_bytes:
             output = output + marker
 
     sys.stdout.write(output + "\n")

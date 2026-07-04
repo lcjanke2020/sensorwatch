@@ -94,9 +94,15 @@ Then, **in this order**:
    debounce on top of the CLI's hysteresis. (`watch` re-fires a persisting
    condition every re-arm by design; snooze is what throttles it here.)
 2. **Cleared event** (`state:"cleared"`): confirm with **one** narrow `report`
-   (scoped with `--match`/`--type`/`--last`), then close the incident
-   (`open_incident.py --close`) and release the escalation slot
-   (`escalation_gate.py --state cleared --commit`).
+   (scoped with `--match`/`--type`/`--last`), then close the incident:
+
+   ```
+   open_incident.py --state-dir <dir> --event-file <spool/pending/…> --close --now <iso>
+   ```
+
+   Closing moves the file out of `incidents/open/`, which **automatically**
+   releases its combination-tier slot — there is no separate ledger flag to
+   clear (the open-incident set is the single lifecycle authority).
 3. **Anything else:** bounded triage — **at most two `report` calls**, consult
    `baseline.md`, and **classify: benign | anomaly | incident.**
 4. **Record before you acknowledge**, in this exact order (crash-safe: a crash
@@ -169,20 +175,20 @@ outbox/                 # the stub notify adapter writes here (until LEO-339)
 
 **JSON vs Markdown.** Machine-updated state is **JSON** (cursor, heartbeat,
 escalation — atomic `tmp`+rename writes). Human-and-agent judgment is
-**Markdown** (bootstrap, baseline, incidents). The `- key: value` header of an
-incident file is the one machine-maintained block inside Markdown —
-`open_incident.py` writes it and `state_summary.py` reads it.
+**Markdown** (bootstrap, baseline, incidents — also written atomically). The
+`- key: value` header of an incident file is the one machine-maintained block
+inside Markdown; `open_incident.py` is its sole writer and `state_summary.py` /
+`escalation_gate.py` its readers (a single reader/writer contract in `_state.py`).
 
-**Caps** (every file has one, enforced by the maintenance pass and the
-`state_summary` tripwire):
+**Caps** — how each is enforced:
 
-| File | Cap | Kind |
+| File | Cap | Enforced by |
 |---|---|---|
-| `bootstrap.md` | 60 lines | Markdown |
-| `baseline.md` | 150 lines | Markdown |
-| `incidents/open/<rule>.md` | 80 lines | Markdown |
-| `cursor.acked_ids_recent` | 64 ids (ring) | JSON |
-| `state_summary` output | 4096 bytes | stdout |
+| `bootstrap.md` | 60 lines | agent + `state_summary` exit 1 if the floor blows 4 KB |
+| `baseline.md` | 150 lines | agent (maintenance pass re-curates it) |
+| `incidents/open/<rule>.md` | 80 lines | `open_incident.py` self-trims on write; `state_summary` flags over-cap |
+| `cursor.acked_ids_recent` | 64 ids (ring) | `ack_event.py` on write |
+| `state_summary` output | 4096 bytes | `state_summary.py` (hard cap, incl. the trailing newline) |
 
 **Snooze semantics.** `open_incident.py` sets `snooze_until = now + --snooze`
 (default `6h`) on open and re-open. While an event's rule has an open incident
@@ -209,7 +215,16 @@ ledger plus the event's shape. It is check-then-commit in one invocation
 | 1 | incident file | `warning` |
 | 2 | notify | `warning` persisting ≥3 events, **or** `critical` |
 | 3 | Linear issue | `critical` persisting ≥3 events |
-| 4 | combination | ≥2 distinct `critical` rules open at once |
+| 4 | combination | ≥2 distinct `critical` rules open at once (counted from `incidents/open/`) |
+
+The decision, then the delivery — two canonical commands:
+
+```
+escalation_gate.py --state-dir <dir> --rule <name> --severity <sev> \
+    --state fired --persistence-events <N> --commit --now <iso>
+notify.py --state-dir <dir> --adapter outbox --rule <name> --severity <sev> \
+    --tier <N> --incident-file <incidents/open/…> --summary "…" --now <iso>
+```
 
 Deterministic **suppression**: at tier ≥2, a fire inside the **6-hour per-rule
 cooldown** → `suppress`; when today's notifications hit the **daily cap
@@ -217,15 +232,18 @@ cooldown** → `suppress`; when today's notifications hit the **daily cap
 the event-storm behavior). The ledger lives on disk (`escalation.json`), so
 cooldowns and the daily count survive a session restart. Pass
 `--persistence-events N` (the incident's accumulated event count) so the gate can
-apply the persistence rules; on a cleared event call
-`escalation_gate.py --state cleared --commit` to release the rule's combination
-slot.
+apply the persistence rules. The combination set is read from `incidents/open/`,
+so closing an incident is all it takes to release its slot.
 
 **Delivery.** `notify.py` ships **stub adapters only** in LEO-338: `outbox`
-(writes an atomic `outbox/<utc-stamp>-<slug>.md`) and `stderr`. The **real
-transport (email default) is deferred to [LEO-339]** — until it lands, tier ≥2
-delivery lands in the outbox. `notify.py` never touches the ledger (that is
-`escalation_gate --commit`'s job).
+(writes an atomic `outbox/<utc-stamp>-<slug>.md`, disambiguated so same-second
+notices never overwrite) and `stderr`. The **real transport (email default) is
+deferred to [LEO-339]** — until it lands, tier ≥2 delivery lands in the outbox.
+`notify.py` is the **sole writer** of the per-rule cooldown (`last_notified`) and
+the daily count: it records them **on delivery**, so a crash between the gate and
+delivery leaves the cooldown un-armed and the redelivery re-notifies instead of
+being silently suppressed. The gate reads those fields to decide; it never
+writes them.
 
 **Linear issues are plain prose that reference incident-file paths — never embed
 sensor data or code-heavy markdown.** This is both public-repo hygiene and Linear
@@ -238,12 +256,16 @@ Run on the **first heartbeat after midnight** (tracked by
 `heartbeat.last_maintenance_date`):
 
 - Journal rotation is **automatic** — it is by filename (`journal-YYYY-MM.jsonl`),
-  no size machinery.
-- **Prune `spool/acked/`** entries older than 30 days.
+  no size machinery. Delete journal months you no longer need.
+- **Prune `spool/acked/`** entries older than 30 days, and prune old
+  `outbox/` notices (neither is pruned automatically).
 - **Re-curate `baseline.md`** toward its 150-line cap (fold in what a quiet week
-  taught you; trim stale ranges).
-- **Verify every capped file is under its cap** — `state_summary.py` exiting `1`
-  is the tripwire that one blew it.
+  taught you; trim stale ranges) — this is the one cap no script enforces.
+- **Verify the capped files.** Incident files self-trim to their 80-line cap on
+  every write (oldest event lines drop first; the journal keeps full history), and
+  `state_summary.py` flags any over-cap incident with a `!` line. The
+  `state_summary.py` exit `1` is the harder tripwire: the summary *floor*
+  (`bootstrap.md` + status) blew the 4 KB cap.
 - Record a `maintenance` line in the journal.
 
 ## Security posture

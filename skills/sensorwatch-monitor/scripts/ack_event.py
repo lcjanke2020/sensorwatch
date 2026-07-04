@@ -60,7 +60,7 @@ def run(args: argparse.Namespace) -> int:
     acked_target = acked_dir / basename
 
     cursor_path = state_dir / "cursor.json"
-    cursor = st.load_json(cursor_path)
+    cursor = st.load_cursor(state_dir)
     ring = cursor.get("acked_ids_recent", [])
 
     # Idempotency: id already acked, or the file already sitting in acked/.

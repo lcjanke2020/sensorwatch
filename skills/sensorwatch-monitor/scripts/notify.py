@@ -9,8 +9,11 @@ LEO-338 ships stub adapters only:
 
 The real transport (email is the default candidate) is LEO-339's decision; until
 then tier >=2 delivery lands in the outbox. Adding a channel = registering one
-function in ADAPTERS. notify NEVER touches the escalation ledger — recording an
-escalation is escalation_gate --commit's job; notify only delivers.
+function in ADAPTERS. On successful delivery notify records the per-rule cooldown
+(last_notified) and bumps the daily notification count — it is the SOLE writer of
+those, so the cooldown is armed only when a notice actually went out (the gate
+reads them to decide; a crash before delivery leaves them un-armed, so the
+redelivery re-notifies instead of being silently suppressed).
 
     python notify.py --state-dir <dir> --adapter outbox|stderr --rule <name> \\
         --severity <s> --tier <n> [--incident-file <path>] [--summary "..."] [--now <iso>]
@@ -31,7 +34,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _state as st  # noqa: E402
 
 
+def _one_line(text: str) -> str:
+    """Collapse any newlines/runs of whitespace to single spaces so a multi-line
+    --summary cannot restructure the notice or corrupt the journal line."""
+    return " ".join(text.split())
+
+
 def _body(args: argparse.Namespace, now_iso: str) -> str:
+    summary = _one_line(args.summary) if args.summary else "See the referenced incident file for detail."
     lines = [
         f"# sensorwatch monitor — {args.severity} (tier {args.tier})",
         "",
@@ -43,7 +53,7 @@ def _body(args: argparse.Namespace, now_iso: str) -> str:
     if args.incident_file:
         lines.append(f"- incident: {args.incident_file}")
     lines.append("")
-    lines.append(args.summary or "See the referenced incident file for detail.")
+    lines.append(summary)
     lines.append("")
     lines.append(
         "_Real transport pending LEO-339; this notice was delivered by a stub "
@@ -53,14 +63,18 @@ def _body(args: argparse.Namespace, now_iso: str) -> str:
 
 
 def _deliver_outbox(state_dir: Path, now, slug: str, body: str) -> str:
-    utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    stamp = utc.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     outbox = state_dir / "outbox"
     outbox.mkdir(parents=True, exist_ok=True)
+    # Second-precision stamps collide when two notices for one rule land in the
+    # same second (or under a pinned --now); disambiguate so neither overwrites
+    # the other. write_text_atomic uses a pid-suffixed tmp + os.replace.
     path = outbox / f"{stamp}-{slug}.md"
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(body, encoding="utf-8")
-    tmp.replace(path)  # atomic
+    n = 1
+    while path.exists():
+        path = outbox / f"{stamp}-{slug}-{n}.md"
+        n += 1
+    st.write_text_atomic(path, body)
     return str(path)
 
 
@@ -84,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--adapter", required=True, help="outbox | stderr")
     parser.add_argument("--rule", required=True)
     parser.add_argument("--severity", required=True, choices=st.SEVERITIES)
-    parser.add_argument("--tier", required=True)
+    parser.add_argument("--tier", required=True, type=int, help="escalation tier (0-4)")
     parser.add_argument("--incident-file", help="path referenced (never embedded) in the notice")
     parser.add_argument("--summary", help="one-line plain-prose summary")
     parser.add_argument("--now", help="ISO-8601 timestamp (default: now UTC)")
@@ -110,6 +124,13 @@ def run(args: argparse.Namespace) -> int:
         detail={"adapter": args.adapter, "tier": args.tier, "target": target},
     )
 
+    # A delivered notice spends the rule's cooldown and a daily-cap slot. Recording
+    # it HERE — after delivery — rather than in escalation_gate --commit is what
+    # closes the lost-notification gap: no delivery, no cooldown, so a redelivery
+    # re-notifies instead of being suppressed. notify is the sole writer of
+    # last_notified / notifications_today; the gate only reads them.
+    _record_delivery(state_dir, now, args.rule)
+
     st.emit({
         "adapter": args.adapter,
         "delivered": True,
@@ -117,6 +138,19 @@ def run(args: argparse.Namespace) -> int:
         "target": target,
     })
     return 0
+
+
+def _record_delivery(state_dir: Path, now, rule: str) -> None:
+    esc_path = state_dir / "escalation.json"
+    esc = st.load_escalation(state_dir)
+    today = st.date_str(now)
+    if esc.get("date") != today:  # daily-count roll-over
+        esc["date"] = today
+        esc["notifications_today"] = 0
+    entry = esc.setdefault("per_rule", {}).setdefault(rule, {})
+    entry["last_notified"] = st.iso(now)
+    esc["notifications_today"] = esc.get("notifications_today", 0) + 1
+    st.save_json_atomic(esc_path, esc)
 
 
 def main(argv: list[str] | None = None) -> int:

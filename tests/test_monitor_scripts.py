@@ -65,12 +65,23 @@ def load_fixture(name):
     return json.loads(fixture_text(name))
 
 
+# The frozen 14-key event contract (docs/agent-monitoring.md) — an independent
+# copy so producer-side drift is caught here, not only at runtime.
+CONTRACT_KEYS = [
+    "schema_version", "seq", "id", "rule", "type", "severity", "state",
+    "timestamp", "sensor", "reading", "value", "unit", "threshold",
+    "samples_in_violation",
+]
+
+
 def _slug(rule):
-    out = "".join(
-        ch if (ch.isalnum() and ch.isascii()) or ch in "-_" else "-"
-        for ch in rule.lower()
-    )
-    return out.strip("-") or "rule"
+    # Mirrors _state.slugify / the Rust watcher slug: ASCII-lowercase, keep
+    # [a-z0-9._-], fold the rest to '-', truncate 50, no strip.
+    out = []
+    for ch in rule:
+        c = chr(ord(ch) + 32) if "A" <= ch <= "Z" else ch
+        out.append(c if ("a" <= c <= "z" or "0" <= c <= "9" or c in "._-") else "-")
+    return "".join(out)[:50] or "rule"
 
 
 def place_event(state, name):
@@ -91,6 +102,43 @@ def journal_text(state):
 
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _notify(state, rule, tier=2, severity="critical", now=T0, adapter="outbox", summary=None):
+    args = ["notify.py", "--state-dir", str(state), "--adapter", adapter, "--rule", rule,
+            "--severity", severity, "--tier", str(tier), "--now", now]
+    if summary is not None:
+        args += ["--summary", summary]
+    return run_script(*args)
+
+
+def _synth_event(**over):
+    """A valid 14-key event dict, overridable — for exercising code paths the three
+    committed fixtures don't cover (arbitrary rule names, many distinct ids)."""
+    event = {
+        "schema_version": 1, "seq": 1, "id": "synth-1", "rule": "synth",
+        "type": "threshold", "severity": "critical", "state": "fired",
+        "timestamp": "2026-02-18T08:00:20-05:00", "sensor": "S", "reading": "R",
+        "value": 1.0, "unit": "V", "threshold": 2.0, "samples_in_violation": 1,
+    }
+    event.update(over)
+    return event
+
+
+def _place_synth(state, event):
+    dest = state / "spool" / "pending" / f"{event['seq']:010d}-{_slug(event['rule'])}.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(event, separators=(",", ":")), encoding="utf-8")
+    return dest
+
+
+def _write_open_incident(state, rule, severity="critical", opened="2026-02-18T08:00:00-05:00"):
+    body = (
+        f"# Incident: {rule}\n- rule: {rule}\n- severity: {severity}\n"
+        f"- classification: incident\n- opened: {opened}\n"
+        f"- snooze_until: 2026-02-18T14:00:00-05:00\n- events: 1\n- status: open\n"
+    )
+    (state / "incidents" / "open" / f"{_slug(rule)}.md").write_text(body, encoding="utf-8")
 
 
 # ---- init_state ----
@@ -290,6 +338,7 @@ def test_close_moves_open_to_closed(tmp_path):
     assert len(closed) == 1
     body = closed[0].read_text(encoding="utf-8")
     assert "- status: closed" in body and "psu-12v-sag-2" in body
+    assert "- events: 2" in body   # cleared event bumps the count (was 1 on open)
 
 
 def test_benign_journals_without_incident_file(tmp_path):
@@ -337,9 +386,12 @@ def test_gate_tier_defaults(tmp_path):
 
 
 def test_gate_cooldown_suppresses(tmp_path):
+    # The cooldown is armed by notify (on delivery), not by the gate — so a crash
+    # before delivery can't suppress the redelivery.
     state = tmp_path / "state"
     init_state(state)
-    _gate(state, "r1", "critical", commit=True, now="2026-02-18T08:00:00-05:00")
+    assert _gate(state, "r1", "critical", now="2026-02-18T08:00:00-05:00")["decision"] == "allow"
+    assert _notify(state, "r1", now="2026-02-18T08:00:00-05:00").returncode == 0
     later = _gate(state, "r1", "critical", now="2026-02-18T11:00:00-05:00")  # +3h
     assert later["decision"] == "suppress"
 
@@ -347,12 +399,12 @@ def test_gate_cooldown_suppresses(tmp_path):
 def test_gate_daily_cap_batches(tmp_path):
     state = tmp_path / "state"
     init_state(state)
-    _gate(state, "r1", "critical", commit=True, daily_cap=1, now=T0)
+    _notify(state, "r1", now=T0)                          # notifications_today -> 1
     batched = _gate(state, "r2", "critical", daily_cap=1, now=T0)
     assert batched["decision"] == "batch"
 
 
-def test_gate_commit_vs_dry_run(tmp_path):
+def test_gate_commit_records_tier_not_cooldown(tmp_path):
     state = tmp_path / "state"
     init_state(state)
     before = (state / "escalation.json").read_text(encoding="utf-8")
@@ -363,26 +415,53 @@ def test_gate_commit_vs_dry_run(tmp_path):
     _gate(state, "r1", "critical", commit=True)
     esc = read_json(state / "escalation.json")
     assert esc["per_rule"]["r1"]["tier"] == 2
-    assert esc["per_rule"]["r1"]["open"] is True
-    assert esc["notifications_today"] == 1
+    assert "last_notified" not in esc["per_rule"]["r1"]   # gate never arms cooldown
+    assert esc["notifications_today"] == 0                # only notify bumps this
     assert '"action":"gate"' in journal_text(state)
+
+    _notify(state, "r1", now=T0)                          # delivery arms cooldown + count
+    esc2 = read_json(state / "escalation.json")
+    assert esc2["notifications_today"] == 1
+    assert "last_notified" in esc2["per_rule"]["r1"]
 
 
 def test_gate_combination_tier_two_open_criticals(tmp_path):
+    # The combination set is derived from incidents/open/, so an open critical
+    # incident for r1 plus a critical fire on r2 => tier 4.
     state = tmp_path / "state"
     init_state(state)
-    _gate(state, "r1", "critical", commit=True)          # r1 now open
-    combo = _gate(state, "r2", "critical")               # r2 + r1 open => tier 4
+    _write_open_incident(state, "r1", severity="critical")
+    combo = _gate(state, "r2", "critical")
     assert combo["tier"] == 4
+    # A single open critical (just the firing rule) stays tier 2.
+    assert _gate(state, "r1", "critical")["tier"] == 2
 
 
-def test_gate_cleared_releases_open_flag(tmp_path):
+def test_close_clears_combination_slot(tmp_path):
+    # Closing an incident removes it from the combination set — no phantom tier-4
+    # for a later unrelated critical (the ledger-desync bug).
     state = tmp_path / "state"
     init_state(state)
-    _gate(state, "r1", "critical", commit=True)
-    assert read_json(state / "escalation.json")["per_rule"]["r1"]["open"] is True
-    _gate(state, "r1", "critical", gstate="cleared", commit=True)
-    assert read_json(state / "escalation.json")["per_rule"]["r1"]["open"] is False
+    dest, _ = place_event(state, "fired-critical-threshold")   # rule psu-12v-sag, critical
+    run_script("open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+               "--classification", "incident", "--now", T0)
+    assert _gate(state, "other-crit", "critical")["tier"] == 4  # psu + other = 2 open
+
+    dclose, _ = place_event(state, "cleared")
+    run_script("open_incident.py", "--state-dir", str(state), "--event-file", str(dclose),
+               "--close", "--now", "2026-02-18T09:00:00-05:00")
+    assert _gate(state, "other-crit", "critical")["tier"] == 2  # phantom gone
+
+
+def test_naive_now_does_not_crash_gate(tmp_path):
+    # A --now without an offset is assumed UTC; mixing it with an aware
+    # last_notified must not raise an uncaught TypeError (empty stdout, exit 1).
+    state = tmp_path / "state"
+    init_state(state)
+    assert _gate(state, "r", "critical", now="2026-02-18T08:00:00")["decision"] == "allow"
+    assert _notify(state, "r", now="2026-02-18T08:00:00Z").returncode == 0   # aware (Z)
+    later = _gate(state, "r", "critical", now="2026-02-18T09:00:00")         # naive, in cooldown
+    assert later["decision"] == "suppress"
 
 
 # ---- notify ----
@@ -479,3 +558,98 @@ def test_journal_monthly_filename_from_now(tmp_path):
                "--now", "2026-03-05T10:00:00-05:00")           # March -> journal-2026-03
     assert (state / "journal" / "journal-2026-02.jsonl").exists()
     assert (state / "journal" / "journal-2026-03.jsonl").exists()
+
+
+# ---- slug / incident collision (must match the Rust watcher slug) ----
+
+def test_slug_keeps_dot_so_incidents_do_not_collide(tmp_path):
+    # 'psu.12v' and 'psu-12v' are two legal, distinct rules; the Rust spool slug
+    # keeps '.', so they must map to two distinct incident files (not one).
+    state = tmp_path / "state"
+    init_state(state)
+    for rule in ("psu.12v", "psu-12v"):
+        dest = _place_synth(state, _synth_event(rule=rule, id=f"{rule}-1"))
+        r = run_script("open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+                       "--classification", "incident", "--now", T0)
+        assert r.returncode == 0, r.stderr
+    files = sorted(p.name for p in (state / "incidents" / "open").glob("*.md"))
+    assert files == ["psu-12v.md", "psu.12v.md"]
+
+
+# ---- incident line cap enforced on write ----
+
+def test_incident_file_trimmed_to_line_cap(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    total = 99
+    for i in range(1, total + 1):
+        dest = _place_synth(state, _synth_event(
+            rule="caprule", seq=i, id=f"caprule-{i}",
+            timestamp=f"2026-02-18T08:{i % 60:02d}:00-05:00"))
+        r = run_script("open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+                       "--classification", "incident", "--now", f"2026-02-18T09:{i % 60:02d}:00-05:00")
+        assert r.returncode == 0, r.stderr
+    body = (state / "incidents" / "open" / "caprule.md").read_text(encoding="utf-8")
+    assert len(body.splitlines()) <= 80          # INCIDENT_LINE_CAP enforced on write
+    assert "trimmed" in body                      # trim marker present
+    assert f"- events: {total}" in body           # count stays cumulative, not line-limited
+
+
+# ---- frozen contract pin (catches producer-side drift on the Python side) ----
+
+def test_fixtures_match_frozen_contract():
+    for name in ("fired-critical-threshold", "cleared", "source-unavailable"):
+        event = load_fixture(name)
+        assert list(event.keys()) == CONTRACT_KEYS, name   # exact keys, exact order
+        assert event["schema_version"] == 1, name
+
+
+# ---- controlled fatals on corrupt ledgers (not raw tracebacks) ----
+
+def test_corrupt_cursor_is_fatal(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    (state / "cursor.json").write_text(
+        '{"schema_version":1,"last_acked_seq":0,"acked_ids_recent":"oops"}', encoding="utf-8")
+    dest, _ = place_event(state, "fired-critical-threshold")
+    r = run_script("ack_event.py", "--state-dir", str(state), "--event-file", str(dest), "--now", T0)
+    assert r.returncode == 1
+    assert "acked_ids_recent" in r.stderr
+
+
+def test_corrupt_escalation_is_fatal(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    (state / "escalation.json").write_text(
+        '{"schema_version":1,"per_rule":["not","objects"]}', encoding="utf-8")
+    r = run_script("escalation_gate.py", "--state-dir", str(state), "--rule", "r",
+                   "--severity", "critical", "--state", "fired", "--now", T0)
+    assert r.returncode == 1
+    assert "per_rule" in r.stderr
+
+
+# ---- notify hardening ----
+
+def test_notify_tier_must_be_int(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    r = run_script("notify.py", "--state-dir", str(state), "--adapter", "outbox", "--rule", "r",
+                   "--severity", "info", "--tier", "not-a-number", "--now", T0)
+    assert r.returncode == 2
+
+
+def test_notify_summary_collapsed_to_one_line(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    r = _notify(state, "r", now=T0, summary="alpha\nbeta\n  gamma")
+    assert r.returncode == 0, r.stderr
+    body = Path(json.loads(r.stdout)["target"]).read_text(encoding="utf-8")
+    assert "alpha beta gamma" in body
+
+
+def test_notify_outbox_no_overwrite_same_second(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    for _ in range(3):
+        assert _notify(state, "r", now=T0).returncode == 0   # same rule + same second
+    assert len(list((state / "outbox").glob("*.md"))) == 3    # none overwritten
