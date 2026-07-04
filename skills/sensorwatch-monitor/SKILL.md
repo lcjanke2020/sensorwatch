@@ -84,8 +84,15 @@ here). In prose:
 session or under the Phase 2 supervisor ([LEO-340]). The spool is the durable,
 at-least-once handoff: an event survives an agent that was not listening.
 
-**On event (exit 10).** Read the ~1 KB event from stdout (or the spool file).
-Then, **in this order**:
+**On event (exit 10).** Read the ~1 KB event from stdout (or the spool file). An
+event wake means the watcher ran fine, so the **first** action — before dedup,
+triage, or ack, and on **every** branch below (continuations included) — is to
+record the liveness success: `heartbeat.py --kind heartbeat` sets
+`last_heartbeat` and **resets `consecutive_watch_failures` to 0** (that counter
+must reflect only *consecutive* watcher failures, so any successful event between
+failures clears it). It runs *before* `ack_event.py`, and it is idempotent, so a
+crash-and-redeliver simply re-runs it — no window can lose the reset. Then, **in
+this order**:
 
 1. **Dedup against the cursor FIRST.** If the event id is already acked
    (`cursor.json`), or its rule has an **open incident still inside its snooze
@@ -113,12 +120,7 @@ Then, **in this order**:
 
    i.e. `open_incident.py` (journals, writes the incident file) runs **before**
    `ack_event.py` (updates the cursor, moves the spool file). Benign classifies
-   into the journal only — no incident file.
-5. **Record the liveness success and re-arm.** An event wake means the watcher
-   ran fine, so run `heartbeat.py --kind heartbeat` (it sets `last_heartbeat` and
-   **resets `consecutive_watch_failures` to 0** — that counter must reflect only
-   *consecutive* failures, so a successful event between failures clears it), then
-   re-arm.
+   into the journal only — no incident file. Then re-arm.
 
 **On heartbeat (exit 0).** A timeout with no fire means "all quiet." Do a light
 pass: record it (`heartbeat.py --kind heartbeat` — sets `last_heartbeat`, resets
