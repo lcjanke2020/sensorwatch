@@ -50,33 +50,14 @@ const VIOLATION_CAP: usize = 512;
 
 pub(crate) fn run(args: &ReportArgs) -> ExitCode {
     // Config + rules. `report` reads the document once and feeds both parsers,
-    // exactly like `watch`; but with no config at all it proceeds over zero
-    // rules rather than erroring (a digest is still useful without alerts).
+    // exactly like `watch` (via the shared loader); but with no config at all it
+    // proceeds over zero rules rather than erroring — a digest is still useful
+    // without alerts — which is why the no-config arm stays here.
     let (rules, config) = match Config::config_path(args.config.as_deref()) {
-        Some(path) => {
-            let text = match std::fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(err) => {
-                    // `config_path` only returns existing paths, so this is an
-                    // I/O fault on a present file — a fatal preparation failure,
-                    // not a usage error.
-                    eprintln!(
-                        "sensorwatch report: could not read config {}: {err}",
-                        path.display()
-                    );
-                    return ExitCode::from(exit::FATAL);
-                }
-            };
-            let rules = match RuleSet::from_toml_str(&text) {
-                Ok(rules) => rules,
-                Err(err) => {
-                    eprintln!("{err}");
-                    return ExitCode::from(exit::USAGE);
-                }
-            };
-            let config = Config::from_toml_str(&text).unwrap_or_default();
-            (rules, config)
-        }
+        Some(path) => match Config::load_rules_and_config(&path, "report") {
+            Ok(pair) => pair,
+            Err(code) => return code,
+        },
         None => {
             // No config resolved, so gap detection runs on the DEFAULT cadence.
             // Reading another machine's logs (the cross-platform "pure file
