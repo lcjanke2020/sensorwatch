@@ -57,6 +57,12 @@ something has provably happened. The process exiting *is* the wake-up.
    `~/.local/state/sensorwatch-monitor` (Linux). `init_state.py` **warns** (does
    not refuse) if the target is inside a git work tree. Every script takes
    `--state-dir` (or `$SENSORWATCH_MONITOR_STATE`); there is no in-repo default.
+5. **(Optional) Notification channels are configured** — write
+   `<state>/notify.toml` (see **Delivery** below). The zero-account default is
+   ntfy: generate a topic with
+   `python -c "import secrets; print('sensorwatch-' + secrets.token_urlsafe(16))"`,
+   subscribe to it in the ntfy app (or your own server), and route it per
+   severity. With no `notify.toml`, tier ≥2 notices fall back to `outbox/`.
 
 Each helper script prints a JSON result on stdout, diagnostics on stderr, and
 exits `0` success / `1` fatal (unreadable state) / `2` usage (bad args or a
@@ -174,12 +180,13 @@ baseline.md             # curated "normal" for this machine    (Markdown, cap 15
 cursor.json             # ack cursor: last_acked_seq + recent-id ring (cap 64)
 heartbeat.json          # last heartbeat, consecutive_watch_failures, last_maintenance_date
 escalation.json         # per-rule cooldown/tier ledger + today's notification count
+notify.toml             # channel routing + transport config (operator-written, optional)
 journal/journal-YYYY-MM.jsonl   # append-only action log, one JSON object per action
 incidents/open/<rule>.md        # one open incident per rule  (Markdown, cap 80 lines)
 incidents/closed/               # closed incidents (moved here on --close)
 spool/pending/          # watch --spool-dir points HERE; ack moves files out
 spool/acked/            # acked events; the maintenance pass prunes >30 days
-outbox/                 # the stub notify adapter writes here (until LEO-339)
+outbox/                 # notify's durable fallback when no notify.toml is present
 ```
 
 **JSON vs Markdown.** Machine-updated state is **JSON** (cursor, heartbeat,
@@ -239,9 +246,13 @@ The decision, then the delivery — two canonical commands:
 ```
 escalation_gate.py --state-dir <dir> --rule <name> --severity <sev> \
     --state fired --persistence-events <N> --commit --now <iso>
-notify.py --state-dir <dir> --adapter outbox --rule <name> --severity <sev> \
+notify.py --state-dir <dir> --rule <name> --severity <sev> \
     --tier <N> --incident-file <incidents/open/…> --summary "…" --now <iso>
 ```
+
+The second command runs in **routed mode** — the severity selects the channel
+list from `notify.toml`. Append `--adapter outbox` (or `ntfy` / `pushover` /
+`smtp`) to force a single channel instead (e.g. a dry run to the outbox).
 
 Deterministic **suppression**: at tier ≥2, a fire inside the **6-hour per-rule
 cooldown** → `suppress`; when today's notifications hit the **daily cap
@@ -252,20 +263,107 @@ cooldowns and the daily count survive a session restart. Pass
 apply the persistence rules. The combination set is read from `incidents/open/`,
 so closing an incident is all it takes to release its slot.
 
-**Delivery.** `notify.py` ships **stub adapters only** in LEO-338: `outbox`
-(writes an atomic `outbox/<utc-stamp>-<slug>.md`, disambiguated so same-second
-notices never overwrite) and `stderr`. The **real transport (email default) is
-deferred to [LEO-339]** — until it lands, tier ≥2 delivery lands in the outbox.
+**Delivery.** `notify.py` runs in one of two modes. **Routed** (no `--adapter`):
+the event's severity selects a channel list from `<state>/notify.toml`, the list
+is delivered in listed order, per-channel outcomes are journaled, and the run
+exits 0 only if **every** channel delivered (1 if any failed). **Explicit**
+(`--adapter X`): force a single channel — a dry run to the `outbox`, or pinning
+one transport. Channels, all stdlib-only:
+
+| Channel | What it does |
+|---|---|
+| `ntfy` | POST the notice to a hosted (`ntfy.sh`) or self-hosted ntfy topic — the **default** transport; zero-account, FCM push via the app. |
+| `pushover` | POST to the Pushover API; emergency priority + a receipt for the acknowledge-required upgrade path. |
+| `smtp` | Submit over generic SMTP (bring-your-own credentials; subsumes transactional email providers — they all expose SMTP). |
+| `outbox` | Write an atomic `outbox/<utc-stamp>-<slug>.md` (disambiguated so same-second notices never overwrite) — the durable fallback when no `notify.toml` is present (a present-but-unrouting file is a config error, not a silent outbox write). |
+| `stderr` | Print the notice to stderr. |
+
+Notice bodies are **reference-only plain prose** — the rule, severity, tier, and
+the incident-file *path*, never sensor readings — so third-party transit (ntfy.sh,
+Pushover, an SMTP relay) carries no hardware data. A long random ntfy topic name
+is the shared secret.
+
+Routing and transport credentials live in `<state>/notify.toml`, machine-local
+and **never in git**: it holds topic names and points at 0600 secret files, the
+repo is public, and `config.toml` is byte-shared with the frozen Python logger. A
+**missing** `notify.toml` falls back to the `outbox` (preserving LEO-338
+behavior); a **present** file must route each severity — a `[severity]` entry (an
+empty list `[]` deliberately mutes) or a top-level `default` — or the run is a
+loud config error (exit 2), so a half-configured file can never silently swallow a
+critical notice in the outbox. Example:
+
+    # <state>/notify.toml — channel routing + transport config (machine-local)
+    default = ["ntfy"]                # channels used when [severity] has no entry
+
+    [severity]
+    info = []                         # empty list = deliberate no-op
+    warning = ["ntfy"]
+    critical = ["ntfy", "pushover"]   # fan-out, delivered in listed order
+
+    [ntfy]
+    server = "https://ntfy.sh"        # default if omitted
+    topic = "sensorwatch-CHANGEME"    # required; a long random topic is the secret
+    token = ""                        # optional Bearer token (self-hosted servers)
+    priority = { info = 3, warning = 4, critical = 5 }   # defaults shown
+
+    [pushover]
+    token_file = "~/.config/sensorwatch/pushover-token"  # 0600, single line
+    user_file  = "~/.config/sensorwatch/pushover-user"   # 0600, single line
+    api_url = "https://api.pushover.net/1/messages.json" # default
+    priority = { info = -1, warning = 0, critical = 2 }  # 2 = emergency (retry/expire)
+    retry = 60
+    expire = 3600
+
+    [smtp]
+    host = "smtp.example.com"         # required
+    port = 587
+    starttls = true
+    username = "alerts@example.com"   # optional; login only when set
+    password_file = "~/.config/sensorwatch/smtp-password"  # required when username set
+    mail_from = "alerts@example.com"  # required
+    mail_to = "you@example.com"       # required
+
+Self-hosting ntfy is a one-line change — point `[ntfy] server` at your instance
+and set `token`; see the [ntfy docs](https://docs.ntfy.sh/).
+
 `notify.py` is the **sole writer** of the per-rule cooldown (`last_notified`) and
-the daily count: it records them **on delivery**, so a crash between the gate and
-delivery leaves the cooldown un-armed and the redelivery re-notifies instead of
-being silently suppressed. The gate reads those fields to decide; it never
-writes them.
+the daily count: it records them **on delivery** (routed mode: iff ≥1 channel
+succeeded), so a crash between the gate and delivery leaves the cooldown un-armed
+and the redelivery re-notifies instead of being silently suppressed. The gate
+reads those fields to decide; it never writes them.
 
 **Linear issues are plain prose that reference incident-file paths — never embed
 sensor data or code-heavy markdown.** This is both public-repo hygiene and Linear
 WAF friendliness: the issue says "see `incidents/open/psu-12v-sag.md` on the
 monitor host," it does not paste readings.
+
+### Dead-man's switch (spec — wired in LEO-340)
+
+An on-box watchdog that alerts if the monitor itself goes silent. Specified here;
+**wired in [LEO-340]**. It shares **no failure mode** with the notify path it
+watches.
+
+- **Trigger.** A Windows Task Scheduler job runs a self-contained PowerShell
+  one-shot every ~15 min. Parameters arrive as task arguments: `-StateDir`,
+  `-Server`, `-Topic`, `-ThresholdMinutes` (default 70 ≈ 2 × the 1800 s watch
+  timeout + slack).
+- **Logic.** Read `<state>/heartbeat.json`; if the file is **missing, unparsable,
+  or** `last_heartbeat` is older than the threshold → `Invoke-RestMethod -Method
+  Post` to `"$Server/$Topic"` with headers `Title="sensorwatch watchdog: monitor
+  silent"`, `Priority="5"`, `Tags="skull"`, body = short plain prose ("heartbeat
+  stale since <ts>; check the supervisor and watch process"). **Fail-alert, never
+  fail-silent** — a missing or corrupt heartbeat file alerts, it does not stay quiet.
+- **Anti-spam.** A marker file `<state>/deadman-last-alert.txt`, written **only**
+  by this script, throttles re-alerts to at most once every 6 h while the
+  condition persists.
+- **Independence (the hard constraint).** *No Python, no `_state.py` / `notify.py`
+  / `notify.toml` dependency; a **separate** watchdog topic so the alert-topic
+  name never gates the watchdog path.* The watchdog and the thing it watches must
+  not be able to fail together — that is the whole point of a dead-man's switch.
+- **Known limit.** An on-box DMS cannot catch "host asleep / powered off" — sleep
+  also legitimately stops the monitor, so the two are indistinguishable from the
+  box itself. Only an **off-box** observer closes that gap, and it is explicitly
+  **out of scope** here.
 
 ## Maintenance pass
 
@@ -299,5 +397,4 @@ Run on the **first heartbeat after midnight** (tracked by
   repo is public. Keep the state dir machine-local; `init_state.py` warns if it
   is inside a work tree.
 
-[LEO-339]: https://linear.app/leonards-agent-network/issue/LEO-339
 [LEO-340]: https://linear.app/leonards-agent-network/issue/LEO-340

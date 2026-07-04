@@ -15,9 +15,16 @@ Runs identically on the Linux and Windows CI jobs — the scripts are pure,
 stdlib-only, pathlib-portable file manipulation.
 """
 
+import contextlib
+import email            # email.message_from_bytes (import email.policy alone would suffice,
+import email.policy     # but be explicit — the SMTP test uses both)
+import http.server
 import json
+import socketserver
 import subprocess
 import sys
+import threading
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -787,3 +794,538 @@ def test_heartbeat_blind_after_must_be_positive(tmp_path):
     state = tmp_path / "state"
     init_state(state)
     assert _heartbeat(state, "failure", blind_after=0).returncode == 2
+
+
+# ---- notify: real transports + severity-routed fan-out (LEO-339) ------------
+# Scripts run as subprocesses, so transports can't be monkeypatched — point them
+# at local ephemeral servers via a notify.toml written into the tmp state dir.
+# localhost sockets are Windows-CI-safe; stdlib smtpd is gone in 3.12, so the
+# SMTP listener below is hand-rolled.
+
+class _CapturingHandler(http.server.BaseHTTPRequestHandler):
+    """Record each POST (path, headers, body) and return a configurable reply."""
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        self.server.requests.append({
+            "path": self.path,
+            "headers": {k.lower(): v for k, v in self.headers.items()},
+            "body": raw.decode("utf-8", "replace"),
+        })
+        payload = self.server.reply.encode("utf-8")
+        self.send_response(self.server.status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):
+        pass  # keep pytest output clean
+
+
+class _RecordingHTTPServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, status, body):
+        self.status = status
+        self.reply = body
+        self.requests = []
+        super().__init__(("127.0.0.1", 0), _CapturingHandler)
+
+
+@contextlib.contextmanager
+def http_endpoint(status=200, body=""):
+    """An ephemeral localhost HTTP server for the ntfy / pushover POST targets."""
+    server = _RecordingHTTPServer(status, body)
+    server.url = "http://%s:%d" % server.server_address
+    # poll_interval=0.05: shutdown() blocks up to one interval; the default 0.5 s
+    # wastes ~0.47 s per teardown (the just-handled POST resets the select timer).
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class _SMTPHandler(socketserver.StreamRequestHandler):
+    """Just enough SMTP to accept one message: 220 greeting, 250 to EHLO/MAIL/
+    RCPT, 354 to DATA, collect until a lone '.', 250, 221 to QUIT."""
+
+    def handle(self):
+        self.wfile.write(b"220 test ESMTP\r\n")
+        collecting = False
+        lines = []
+        while True:
+            raw = self.rfile.readline()
+            if not raw:
+                break
+            if collecting:
+                if raw.rstrip(b"\r\n") == b".":
+                    # Capture BEFORE the 250 so the payload is set before the
+                    # client sends QUIT and the subprocess exits (no race).
+                    self.server.data_payload = b"".join(lines)
+                    collecting = False
+                    self.wfile.write(b"250 queued\r\n")
+                else:
+                    lines.append(raw)
+                continue
+            cmd = raw.rstrip(b"\r\n").upper()
+            if cmd.startswith((b"EHLO", b"HELO")):
+                self.wfile.write(b"250 test\r\n")
+            elif cmd.startswith(b"DATA"):
+                self.wfile.write(b"354 end with .\r\n")
+                collecting = True
+            elif cmd.startswith(b"QUIT"):
+                self.wfile.write(b"221 bye\r\n")
+                break
+            else:  # MAIL, RCPT, RSET, NOOP, ...
+                self.wfile.write(b"250 ok\r\n")
+
+
+class _RecordingSMTPServer(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self):
+        self.data_payload = b""
+        super().__init__(("127.0.0.1", 0), _SMTPHandler)
+
+
+@contextlib.contextmanager
+def smtp_endpoint():
+    server = _RecordingSMTPServer()
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def write_notify_toml(state, text):
+    (state / "notify.toml").write_text(text, encoding="utf-8")
+
+
+def _secret_file(state, name, value):
+    """Write a single-line secret; return its path as a TOML-safe posix string."""
+    path = state / name
+    path.write_text(value + "\n", encoding="utf-8")
+    return path.as_posix()
+
+
+def _notify_routed(state, rule, tier=2, severity="critical", now=T0, summary=None):
+    """notify.py WITHOUT --adapter: severity-routed fan-out from notify.toml."""
+    args = ["notify.py", "--state-dir", str(state), "--rule", rule,
+            "--severity", severity, "--tier", str(tier), "--now", now]
+    if summary is not None:
+        args += ["--summary", summary]
+    return run_script(*args)
+
+
+def test_notify_ntfy_explicit(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    with http_endpoint() as ntfy:
+        write_notify_toml(state, f'[ntfy]\nserver = "{ntfy.url}"\ntopic = "topic-e2e"\n')
+        r = _notify(state, "psu-12v-sag", severity="critical", tier=2,
+                    adapter="ntfy", summary="sag; see incident")
+    assert r.returncode == 0, r.stderr
+    # Legacy single-channel shape — byte-compatible with LEO-338 explicit mode,
+    # except the target redacts the topic (the shared secret on hosted ntfy.sh).
+    assert json.loads(r.stdout) == {
+        "adapter": "ntfy", "delivered": True, "tier": 2,
+        "target": f"ntfy:{ntfy.url}",
+    }
+    req = ntfy.requests[-1]
+    assert req["path"] == "/topic-e2e"                    # topic still travels in transit
+    assert req["headers"]["priority"] == "5"              # critical default
+    assert req["headers"]["title"] == "sensorwatch monitor - critical (tier 2)"
+    assert req["headers"]["tags"] == "sensorwatch"
+    assert "rule: psu-12v-sag" in req["body"]
+    assert "stub adapter" not in req["body"] and "LEO-339" not in req["body"]
+    assert '"action":"notify"' in journal_text(state)
+    assert "last_notified" in read_json(state / "escalation.json")["per_rule"]["psu-12v-sag"]
+    # ...but the topic must never surface in the durable target: stdout or journal.
+    assert "topic-e2e" not in r.stdout
+    assert "topic-e2e" not in journal_text(state)
+
+
+def test_notify_routed_fanout(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    token = _secret_file(state, "po-token", "po-token-value")
+    user = _secret_file(state, "po-user", "po-user-value")
+    with http_endpoint() as ntfy, http_endpoint(body='{"status":1,"receipt":"r1"}') as po:
+        write_notify_toml(state, "\n".join([
+            "[severity]", 'critical = ["ntfy", "pushover"]',
+            "[ntfy]", f'server = "{ntfy.url}"', 'topic = "t-fan"',
+            "[pushover]", f'api_url = "{po.url}/1/messages.json"',
+            f'token_file = "{token}"', f'user_file = "{user}"',
+        ]))
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["mode"] == "routed" and out["delivered"] is True
+    assert [c["adapter"] for c in out["channels"]] == ["ntfy", "pushover"]
+    assert all(c["ok"] for c in out["channels"])
+    assert len(ntfy.requests) == 1 and len(po.requests) == 1
+    assert "last_notified" in read_json(state / "escalation.json")["per_rule"]["r1"]
+
+
+def test_notify_routed_partial_failure(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    token = _secret_file(state, "po-token", "x")
+    user = _secret_file(state, "po-user", "y")
+    with http_endpoint() as ntfy, http_endpoint(status=500, body="boom") as po:
+        write_notify_toml(state, "\n".join([
+            "[severity]", 'critical = ["ntfy", "pushover"]',
+            "[ntfy]", f'server = "{ntfy.url}"', 'topic = "t"',
+            "[pushover]", f'api_url = "{po.url}/1/messages.json"',
+            f'token_file = "{token}"', f'user_file = "{user}"',
+        ]))
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 1                              # a channel failed
+    out = json.loads(r.stdout)
+    assert out["delivered"] is True                       # ntfy still went out
+    chans = {c["adapter"]: c for c in out["channels"]}
+    assert chans["ntfy"]["ok"] is True
+    assert chans["pushover"]["ok"] is False and "error" in chans["pushover"]
+    # Cooldown ARMED — one channel succeeded, so redelivery must be suppressible.
+    assert "last_notified" in read_json(state / "escalation.json")["per_rule"]["r1"]
+
+
+def test_notify_routed_all_fail(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    token = _secret_file(state, "po-token", "x")
+    user = _secret_file(state, "po-user", "y")
+    with http_endpoint(status=500) as ntfy, http_endpoint(status=500) as po:
+        write_notify_toml(state, "\n".join([
+            "[severity]", 'critical = ["ntfy", "pushover"]',
+            "[ntfy]", f'server = "{ntfy.url}"', 'topic = "t"',
+            "[pushover]", f'api_url = "{po.url}/1/messages.json"',
+            f'token_file = "{token}"', f'user_file = "{user}"',
+        ]))
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 1
+    out = json.loads(r.stdout)
+    assert out["delivered"] is False
+    assert all(c["ok"] is False for c in out["channels"])
+    # Cooldown NOT armed — nothing delivered, so the gate must re-allow on retry.
+    assert "r1" not in read_json(state / "escalation.json")["per_rule"]
+
+
+def test_notify_routed_missing_config_falls_back_to_outbox(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    r = _notify_routed(state, "r1", severity="critical", tier=2)   # no notify.toml
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["mode"] == "routed"
+    ch = out["channels"][0]
+    assert len(out["channels"]) == 1 and ch["adapter"] == "outbox" and ch["ok"] is True
+    assert Path(ch["target"]).exists()
+    assert len(list((state / "outbox").glob("*.md"))) == 1
+
+
+def test_notify_routed_unknown_adapter_in_config_exits_2(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, 'default = ["carrier-pigeon"]\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert list((state / "outbox").glob("*.md")) == []               # no side effects
+    assert '"action":"notify"' not in journal_text(state)
+    assert (state / "escalation.json").read_text(encoding="utf-8") == esc_before
+
+
+def test_notify_routed_empty_severity_list_noop(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, "[severity]\ninfo = []\n")
+    r = _notify_routed(state, "r1", severity="info", tier=0)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["delivered"] is False and out["channels"] == []
+    assert "r1" not in read_json(state / "escalation.json")["per_rule"]   # cooldown untouched
+
+
+def test_notify_pushover_emergency_params(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    token = _secret_file(state, "po-token", "SECRET-TOKEN")
+    user = _secret_file(state, "po-user", "SECRET-USER")
+    with http_endpoint(body='{"status":1,"receipt":"r1"}') as po:
+        write_notify_toml(state, "\n".join([
+            "[severity]", 'critical = ["pushover"]',
+            "[pushover]", f'api_url = "{po.url}/1/messages.json"',
+            f'token_file = "{token}"', f'user_file = "{user}"',
+        ]))
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["channels"][0]["target"] == "pushover:receipt=r1"
+    form = urllib.parse.parse_qs(po.requests[-1]["body"])
+    assert form["priority"] == ["2"]                     # critical = emergency
+    assert form["retry"] == ["60"] and form["expire"] == ["3600"]
+    assert form["title"] == ["sensorwatch monitor - critical (tier 2)"]
+    # The token/user values must never surface in notify's own output or journal.
+    assert "SECRET-TOKEN" not in r.stdout and "SECRET-USER" not in r.stdout
+    assert "SECRET-TOKEN" not in journal_text(state) and "SECRET-USER" not in journal_text(state)
+
+
+def test_notify_pushover_missing_secret_file_is_channel_failure(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    with http_endpoint() as ntfy:
+        write_notify_toml(state, "\n".join([
+            "[severity]", 'critical = ["pushover", "ntfy"]',
+            "[pushover]", 'api_url = "http://127.0.0.1:9/unused"',
+            f'token_file = "{(state / "absent-token").as_posix()}"',
+            f'user_file = "{(state / "absent-user").as_posix()}"',
+            "[ntfy]", f'server = "{ntfy.url}"', 'topic = "t"',
+        ]))
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 1
+    chans = {c["adapter"]: c for c in json.loads(r.stdout)["channels"]}
+    assert chans["pushover"]["ok"] is False and "error" in chans["pushover"]
+    assert chans["ntfy"]["ok"] is True                   # second channel still delivers
+    assert len(ntfy.requests) == 1
+    assert "last_notified" in read_json(state / "escalation.json")["per_rule"]["r1"]
+
+
+def test_notify_smtp_delivers(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    with smtp_endpoint() as smtp:
+        host, port = smtp.server_address
+        write_notify_toml(state, "\n".join([
+            "[severity]", 'critical = ["smtp"]',
+            "[smtp]", f'host = "{host}"', f"port = {port}", "starttls = false",
+            'mail_from = "alerts@example.com"', 'mail_to = "you@example.com"',
+        ]))
+        r = _notify_routed(state, "r1", severity="critical", tier=2,
+                           summary="rail sag; see incident")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["channels"][0] == {
+        "adapter": "smtp", "ok": True, "target": "smtp:you@example.com"}
+    msg = email.message_from_bytes(smtp.data_payload, policy=email.policy.default)
+    assert msg["Subject"] == "sensorwatch monitor - critical (tier 2)"
+    assert msg["From"] == "alerts@example.com" and msg["To"] == "you@example.com"
+    assert "rail sag; see incident" in msg.get_content()   # get_content() decodes any CTE
+
+
+def test_notify_toml_parse_error_exits_2(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, "this is not = = valid toml [[[[\n")
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert list((state / "outbox").glob("*.md")) == []               # no side effects
+    assert '"action":"notify"' not in journal_text(state)
+    assert (state / "escalation.json").read_text(encoding="utf-8") == esc_before
+
+
+# ---- review round 1 fixes: routing footguns must be loud, not silent ----------
+
+def _assert_no_side_effects(state, esc_before):
+    assert list((state / "outbox").glob("*.md")) == []
+    assert '"action":"notify"' not in journal_text(state)
+    assert (state / "escalation.json").read_text(encoding="utf-8") == esc_before
+
+
+def test_notify_routed_unknown_severity_key_exits_2(tmp_path):
+    # A [severity] typo (`critcal`) must be a loud config error — never a silent
+    # miss that falls through to outbox and arms the cooldown.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, '[severity]\ncritcal = ["ntfy"]\n[ntfy]\ntopic = "t"\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert "critcal" in r.stderr
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_routed_present_config_no_route_exits_2(tmp_path):
+    # notify.toml exists and configures ntfy but routes nothing for critical and
+    # has no default → config error, NOT a silent outbox write that arms the 6h
+    # cooldown. The outbox fallback is reserved for a truly-ABSENT file.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, '[severity]\nwarning = ["ntfy"]\n[ntfy]\ntopic = "t"\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_routed_pushover_missing_key_exits_2_no_side_effects(tmp_path):
+    # A missing pushover KEY is a config error caught before ANY delivery, so a
+    # sibling outbox channel can't fire and arm the cooldown for the broken one.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, "\n".join([
+        "[severity]", 'critical = ["outbox", "pushover"]',
+        "[pushover]", 'api_url = "http://127.0.0.1:9/unused"',   # token_file/user_file absent
+    ]))
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    _assert_no_side_effects(state, esc_before)                   # sibling did NOT fire
+
+
+def test_notify_smtp_missing_password_when_username_exits_2(tmp_path):
+    # username set but no password_file KEY = config mistake (exit 2), distinct
+    # from a set-but-missing secret file (a delivery-time failure).
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, "\n".join([
+        "[severity]", 'critical = ["smtp"]',
+        "[smtp]", 'host = "127.0.0.1"', "port = 2525",
+        'mail_from = "a@x"', 'mail_to = "b@y"', 'username = "a@x"',   # password_file absent
+    ]))
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_routed_scalar_priority_exits_2_not_traceback(tmp_path):
+    # A scalar ntfy `priority = 5` (the form ntfy's own docs use) must be a clean
+    # exit-2 config error, not a raw AttributeError traceback (empty stdout).
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, '[severity]\ncritical = ["ntfy"]\n[ntfy]\ntopic = "t"\npriority = 5\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert "priority" in r.stderr and "Traceback" not in r.stderr
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_ntfy_bad_topic_exits_2(tmp_path):
+    # An out-of-charset topic would silently redirect the POST ('#' fragment, '?'
+    # query) or crash the encoder (int, non-ASCII) — all must be exit 2, no side
+    # effects, no traceback (never a silent delivery to the wrong topic).
+    state = tmp_path / "state"
+    init_state(state)
+    for topic_line in ('topic = "secret#extra"', 'topic = "with?query"',
+                       "topic = 123", 'topic = "sensorwatch-café"'):
+        write_notify_toml(state, f'[severity]\ncritical = ["ntfy"]\n[ntfy]\n{topic_line}\n')
+        esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+        assert r.returncode == 2, topic_line
+        assert "topic" in r.stderr and "Traceback" not in r.stderr, topic_line
+        _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_ntfy_non_ascii_token_exits_2(tmp_path):
+    # The Authorization header encodes latin-1; a non-ASCII token would crash it
+    # (and, with a sibling channel, arm the cooldown while the push never goes out).
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state,
+                      '[severity]\ncritical = ["ntfy"]\n[ntfy]\ntopic = "t"\ntoken = "tok→en"\n')
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert "token" in r.stderr
+
+
+def test_notify_priority_unknown_severity_key_exits_2(tmp_path):
+    # A typo in a priority key is as silent as one in [severity] was — it would be
+    # ignored and the built-in default used (e.g. a demoted pushover critical stays
+    # emergency). Must be a loud config error, mirroring the [severity] key check.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(
+        state, '[severity]\ncritical = ["ntfy"]\n[ntfy]\ntopic = "t"\npriority = { critcal = 1 }\n')
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    assert "critcal" in r.stderr
+    _assert_no_side_effects(state, esc_before)
+
+
+def test_notify_pushover_bad_retry_type_exits_2(tmp_path):
+    # A wrong-typed retry/expire would 400 at delivery and let a sibling channel
+    # arm the cooldown — catch it as a config error before any side effect.
+    state = tmp_path / "state"
+    init_state(state)
+    tok = _secret_file(state, "po-token", "x")
+    usr = _secret_file(state, "po-user", "y")
+    write_notify_toml(state, "\n".join([
+        "[severity]", 'critical = ["outbox", "pushover"]',
+        "[pushover]", 'api_url = "http://127.0.0.1:9/x"',
+        f'token_file = "{tok}"', f'user_file = "{usr}"', 'retry = "sixty"',
+    ]))
+    esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 2
+    _assert_no_side_effects(state, esc_before)                   # sibling outbox did NOT fire
+
+
+def test_notify_routed_wrong_typed_transport_field_exits_2(tmp_path):
+    # Present-but-wrong-typed transport fields must be exit-2 config errors caught
+    # BEFORE any delivery — never a delivery-time failure that lets a preceding
+    # sibling (here outbox) fire and arm the cooldown for a config mistake.
+    state = tmp_path / "state"
+    init_state(state)
+    tok = _secret_file(state, "po-token", "x")
+    usr = _secret_file(state, "po-user", "y")
+    cases = [
+        ("ntfy", '[ntfy]\nserver = 123\ntopic = "t"'),
+        ("pushover", f'[pushover]\napi_url = 123\ntoken_file = "{tok}"\nuser_file = "{usr}"'),
+        ("pushover", '[pushover]\ntoken_file = 123\nuser_file = "u"'),
+        ("smtp", '[smtp]\nhost = "127.0.0.1"\nmail_from = "a@x"\nmail_to = "b@y"\nstarttls = "false"'),
+        ("smtp", '[smtp]\nhost = 123\nmail_from = "a@x"\nmail_to = "b@y"'),
+    ]
+    for chan, section in cases:
+        write_notify_toml(state, f'[severity]\ncritical = ["outbox", "{chan}"]\n{section}\n')
+        esc_before = (state / "escalation.json").read_text(encoding="utf-8")
+        r = _notify_routed(state, "r1", severity="critical", tier=2)
+        assert r.returncode == 2, section
+        assert "Traceback" not in r.stderr, section
+        _assert_no_side_effects(state, esc_before)               # sibling outbox did NOT fire
+
+
+def test_notify_explicit_pushover_nonstring_token_file_exits_2(tmp_path):
+    # Explicit mode: a non-string token_file must be a clean exit-2 config error,
+    # not a raw TypeError traceback from Path(123) at delivery.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, '[pushover]\ntoken_file = 123\nuser_file = "u"\n')
+    r = _notify(state, "r1", severity="critical", tier=2, adapter="pushover")
+    assert r.returncode == 2 and "Traceback" not in r.stderr
+
+
+def test_notify_ntfy_schemeless_server_does_not_leak_topic(tmp_path):
+    # A server without a scheme ('ntfy.sh' not 'https://ntfy.sh' — a plausible typo)
+    # makes urllib raise ValueError whose message echoes the full URL, INCLUDING the
+    # secret topic. It must fail sanitized — the topic must never reach stdout, the
+    # journal, or stderr (no raw traceback) — in routed AND explicit mode.
+    state = tmp_path / "state"
+    init_state(state)
+    secret = "supersecrettopic"
+    toml = f'[severity]\ncritical = ["ntfy"]\n[ntfy]\nserver = "ntfy.sh"\ntopic = "{secret}"\n'
+
+    write_notify_toml(state, toml)
+    r = _notify_routed(state, "r1", severity="critical", tier=2)
+    assert r.returncode == 1
+    assert secret not in r.stdout and secret not in r.stderr
+    assert secret not in journal_text(state)
+
+    r2 = _notify(state, "r2", severity="critical", tier=2, adapter="ntfy")
+    assert r2.returncode == 1
+    assert secret not in r2.stdout and secret not in r2.stderr
+    assert "Traceback" not in r2.stderr        # explicit mode: clean Fatal, not a crash
+    assert secret not in journal_text(state)
