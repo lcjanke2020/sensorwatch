@@ -10,7 +10,7 @@ One constraint shapes the sequencing: **the project must be usable at every
 intermediate stage.** Each milestone ships something you can run on its own —
 nothing below depends on a later phase to be useful.
 
-*Last updated: 2026-07-04.*
+*Last updated: 2026-07-05.*
 
 ## Where the project is today
 
@@ -133,13 +133,22 @@ notification transport, are still in progress:
   — **ntfy** (the zero-account default via hosted `ntfy.sh`), **Pushover**, and
   generic **SMTP** — with the `outbox`/`stderr` stubs kept as fallbacks.
 - **Staged runtimes — in progress.** The interactive agent session runs the
-  skill today (cheap to develop and tune against real hardware). Still pending:
-  the unattended supervisor — a small deterministic loop that re-runs `watch` and
-  dispatches each exit to a fresh headless agent invocation, zero context growth,
-  survives reboots — plus a dead-man's switch (a trivial scheduled task checking
-  heartbeat-file age) watching the watcher through an independent alert path. The
-  supervisor and dead-man's switch are LEO-340 (Windows wiring); the Phase 1
-  pilot on real hardware is LEO-341.
+  skill today (cheap to develop and tune against real hardware). The Windows
+  wiring landed in LEO-340: an unattended supervisor — a small deterministic loop
+  that re-runs `watch` and dispatches each exit to a fresh headless agent
+  invocation, zero context growth, survives reboots — plus a dead-man's switch (a
+  trivial scheduled task checking heartbeat-file age) that watches the watcher
+  through an independent alert path. The **Phase 1 pilot (LEO-341) is now
+  underway**: a week-long interactive session monitoring a real Windows machine
+  (an AMD Ryzen 9 9950X, an MSI MEG Ai1600T PSU, and GPU temperatures), with
+  deterministic rules on the PSU +12V rail, CPU and GPU temperatures, and
+  sensor-feed liveness, and the dead-man's switch armed. Early operation is clean;
+  the pilot is tuning the rule set against real behavior, measuring the
+  token-per-wake budget, and running two fault drills (dead-man's switch and
+  kill-mid-triage). The headless supervisor graduates from the pilot once a week
+  of stable operation and both drills pass. Generalizable findings — worked
+  **examples** and **`sensorwatch-monitor` skill refinements** — are expected to
+  land in this repo in **mid-July 2026**, after the pilot and its wrap-up.
 
 The protocol is deliberately harness-agnostic: it needs only "run a blocking
 process; act on its exit," which any current agent runtime provides.
