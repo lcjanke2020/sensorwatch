@@ -12,6 +12,12 @@ PSU efficiency monitoring is the first use case (see the
 sensor-agnostic: it captures anything HWiNFO exposes — temperatures, voltages,
 currents, power, fan speeds, clocks, and usage.
 
+[![Asking the sensorwatch agent "how's the PSU efficiency been today?" and getting back a scoped, natural-language report of the PSU's efficiency, power, and temperature over the day](docs/images/agent-monitor-psu-query.png)](docs/images/agent-monitor-psu-query.png)
+
+*Ask in plain English how your hardware is doing. The [agent monitor skill](#skills)
+turns a scoped `sensorwatch report` into a natural-language answer — here, a full
+day of PSU efficiency summarized on request, with no log-parsing on your part.*
+
 > **Flagship result:** a ~5.5-hour real-world capture shows the MSI MEG Ai1600T
 > exceeds 80 PLUS Titanium efficiency at every measured load point (peak 94.5%,
 > zero samples below 92%). Data, charts, and analysis:
