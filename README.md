@@ -511,7 +511,9 @@ escalation ladder with cooldowns. Its mechanical writes live in stdlib-only
 helper `scripts/`, and it references the usage skill above for tool mechanics
 rather than duplicating them. It too is read-only with respect to hardware —
 escalation is the action, and its state directory stays out of git
-(see [`SECURITY.md`](SECURITY.md) §4).
+(see [`SECURITY.md`](SECURITY.md) §4). For a copy-from starting point — an
+annotated rule set, an ntfy-based `notify.toml`, and a validation checklist — see
+the worked example in [`examples/monitor-setup/`](examples/monitor-setup/).
 
 ## Roadmap
 
