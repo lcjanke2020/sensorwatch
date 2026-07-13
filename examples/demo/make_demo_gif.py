@@ -49,7 +49,9 @@ def load_font(size: int) -> ImageFont.FreeTypeFont:
         p = Path("C:/Windows/Fonts") / name
         if p.exists():
             return ImageFont.truetype(str(p), size)
-    return ImageFont.load_default()
+    # load_default(size) returns a sized FreeTypeFont (Pillow >= 10.1), so the
+    # fallback matches the return type and still honors the requested size.
+    return ImageFont.load_default(size)
 
 
 FONT = load_font(FONT_SIZE)
@@ -100,7 +102,10 @@ def build_transcript(binary: str) -> list[tuple[str, tuple]]:
     rows += [("# One command, no hardware, any OS -- watch a rule fire:", TEAL)]
     rows += [("$ sensorwatch watch --config demo.toml --replay sensors_demo.jsonl", GREEN)]
     rows += wrap(event, SLATE)
-    rows += [(f"exit {rc1}  -- a rule fired", AMBER)]
+    # Exit 10 is the "a rule fired" contract; don't assert it if the command
+    # exited any other way (a broken demo must not render as a passing one).
+    note = "a rule fired" if rc1 == 10 else "no rule fired"
+    rows += [(f"exit {rc1}  -- {note}", AMBER)]
     rows += [("", FG)]
     rows += [("# Add --follow for the full fire -> clear lifecycle:", TEAL)]
     rows += [("$ sensorwatch watch ... --follow  &&  cat logs/events_*.jsonl", GREEN)]
