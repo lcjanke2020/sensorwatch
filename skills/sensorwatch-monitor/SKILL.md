@@ -89,6 +89,11 @@ here). In prose:
 `--spool-dir <state-dir>/spool/pending`, as a background task in a long-lived
 session or under the Phase 2 supervisor (LEO-340). The spool is the durable,
 at-least-once handoff: an event survives an agent that was not listening.
+**`watch` only ever *writes* the spool — it never replays it on re-arm.** So any
+events already in `spool/pending/` (a wake you missed, or a crash before ack) are
+yours to **drain on bootstrap**: before arming a fresh `watch`, process every
+pending file in ascending `seq` order (the pending count and lowest seq are in the
+`state_summary` bootstrap). Re-arming never resurfaces them.
 
 **On event (exit 10).** Read the ~1 KB event from stdout (or the spool file). An
 event wake means the watcher ran fine, so the **first** action — before dedup,
@@ -126,7 +131,9 @@ this order**:
 
    i.e. `open_incident.py` (journals, writes the incident file) runs **before**
    `ack_event.py` (updates the cursor, moves the spool file). Benign classifies
-   into the journal only — no incident file. Then re-arm.
+   into the journal only — no incident file. (`open_incident.py` requires
+   `--classification benign|anomaly|incident` on every open; only `--close` may
+   omit it.) Then re-arm.
 
 **On heartbeat (exit 0).** A timeout with no fire means "all quiet." Do a light
 pass: record it (`heartbeat.py --kind heartbeat` — sets `last_heartbeat`, resets
@@ -215,7 +222,12 @@ agent-layer debounce (step 1 above).
 cursor makes processing idempotent. `ack_event.py` advances `last_acked_seq` to
 `max(seq, current)` (a redelivered lower seq never regresses it) and ring-appends
 the event id; a second ack of the same id is a no-op that reports
-`"deduped": true`. `seq` is monotonic-but-not-dense and persisted *before* emit
+`"deduped": true`. The event file must be **inside `spool/pending/`** —
+`ack_event.py` errors on any other path, so a redelivery is cleared by
+re-processing the *surviving pending file*, never by re-acking one already moved to
+`spool/acked/`. Its incident-side partner is `open_incident.py`: re-opening an
+already-recorded event returns `"action": "update-deduped"` (refreshes the snooze;
+never double-appends or double-counts). `seq` is monotonic-but-not-dense and persisted *before* emit
 (a lost write leaves a gap, never a reused number — see the contract doc), so the
 cursor keys off `seq`, never wall clock.
 
