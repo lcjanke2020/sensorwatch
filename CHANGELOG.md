@@ -14,6 +14,10 @@ that has not yet been folded into a tagged Python release is listed under
 
 ## [Unreleased]
 
+_Repository work on `master` since the `0.2.0` Python tag — the Rust CLI, the
+C++/Rust bindings, and the agent skills — is recorded here until the next Python
+release picks it up._
+
 ### Added
 
 - **Rust CLI** (`rust/sensorwatch-cli`, binary `sensorwatch`) built on the safe

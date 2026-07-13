@@ -10,7 +10,7 @@ One constraint shapes the sequencing: **the project must be usable at every
 intermediate stage.** Each milestone ships something you can run on its own —
 nothing below depends on a later phase to be useful.
 
-*Last updated: 2026-07-05.*
+*Last updated: 2026-07-13.*
 
 ## Where the project is today
 
@@ -126,9 +126,12 @@ notification transport, are still in progress:
   reconstructs the monitor from a few-kilobyte state summary. Stdlib-only helper
   scripts do every mechanical write.
 - **Deterministic escalation ladder — shipped.** Journal → incident file →
-  notification → Linear issue → critical-combination tier, driven by rule
+  notification → issue-draft → critical-combination tier, driven by rule
   severity and persistence, with per-rule cooldowns and a global daily cap
-  (batched digest beyond it). Delivery goes through pluggable channels routed
+  (batched digest beyond it). The issue tier currently records a drafted artifact
+  to the `outbox` rather than filing into a tracker; wiring it to a distinct
+  action (an issue-draft file or a webhook) is a Phase 2 / Phase C follow-up from
+  the pilot. Delivery goes through pluggable channels routed
   per severity from a machine-local `notify.toml`; LEO-339 ships real transports
   — **ntfy** (the zero-account default via hosted `ntfy.sh`), **Pushover**, and
   generic **SMTP** — with the `outbox`/`stderr` stubs kept as fallbacks.
@@ -138,17 +141,26 @@ notification transport, are still in progress:
   that re-runs `watch` and dispatches each exit to a fresh headless agent
   invocation, zero context growth, survives reboots — plus a dead-man's switch (a
   trivial scheduled task checking heartbeat-file age) that watches the watcher
-  through an independent alert path. The **Phase 1 pilot (LEO-341) is now
-  underway**: a week-long interactive session monitoring a real Windows machine
-  (an AMD Ryzen 9 9950X, an MSI MEG Ai1600T PSU, and GPU temperatures), with
-  deterministic rules on the PSU +12V rail, CPU and GPU temperatures, and
-  sensor-feed liveness, and the dead-man's switch armed. Early operation is clean;
-  the pilot is tuning the rule set against real behavior, measuring the
-  token-per-wake budget, and running two fault drills (dead-man's switch and
-  kill-mid-triage). The headless supervisor graduates from the pilot once a week
-  of stable operation and both drills pass. Generalizable findings — worked
-  **examples** and **`sensorwatch-monitor` skill refinements** — are expected to
-  land in this repo in **mid-July 2026**, after the pilot and its wrap-up.
+  through an independent alert path. The **Phase 1 pilot (LEO-341) is
+  complete**: a week-long interactive session (2026-07-05 → 07-13) monitored a
+  real Windows machine (an AMD Ryzen 9 9950X, an MSI MEG Ai1600T PSU, and GPU
+  temperatures), with deterministic rules on the PSU +12V rail, CPU and GPU
+  temperatures, and sensor-feed liveness, and the dead-man's switch armed. Eight
+  days of clean coverage held per-wake cost roughly constant; two attended fault
+  drills — a synthetic escalation-ladder run and a real thermal event under load
+  — both delivered a multi-channel alert. The run is written up in
+  [`docs/pilot-field-report.md`](docs/pilot-field-report.md). It surfaced three
+  defects, now queued as **Phase 2 / Phase C follow-ups**: (1) the logger drops
+  samples under full CPU load (harden the sampler under contention; escalate on
+  gap density so a starved logger becomes an alert); (2) arming `watch` one-shot
+  per wake emits no cross-restart `cleared` event, so incidents don't auto-close
+  (run the persistent `watch --follow`, and have the agent reconcile open
+  incidents against a fresh `report` on each heartbeat); (3) the tier-3 issue
+  rung has no distinct wired action — it collapses into the tier-2 notification
+  plus a best-effort `outbox` draft (emit a real issue-draft artifact and/or a
+  config-driven webhook). The headless supervisor graduation, and the
+  generalizable worked **examples** + **`sensorwatch-monitor` skill
+  refinements** (LEO-411), follow from here.
 
 The protocol is deliberately harness-agnostic: it needs only "run a blocking
 process; act on its exit," which any current agent runtime provides.

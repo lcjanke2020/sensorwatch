@@ -44,11 +44,27 @@ LINE_H = FONT_SIZE + 10
 MAX_COLS = 82  # soft-wrap width in characters
 
 
+# Monospace fonts to look for, and where — so regenerating on Linux/macOS gets a
+# real terminal font instead of Pillow's tiny bitmap default.
+FONT_NAMES = (
+    "CascadiaMono.ttf", "CascadiaCode.ttf", "consola.ttf", "lucon.ttf",
+    "DejaVuSansMono.ttf", "LiberationMono-Regular.ttf", "Menlo.ttc",
+)
+FONT_DIRS = (
+    "C:/Windows/Fonts", "/usr/share/fonts", "/usr/local/share/fonts",
+    "/Library/Fonts", "/System/Library/Fonts", str(Path.home() / ".fonts"),
+)
+
+
 def load_font(size: int) -> ImageFont.FreeTypeFont:
-    for name in ("CascadiaMono.ttf", "CascadiaCode.ttf", "consola.ttf", "lucon.ttf"):
-        p = Path("C:/Windows/Fonts") / name
-        if p.exists():
-            return ImageFont.truetype(str(p), size)
+    for directory in FONT_DIRS:
+        base = Path(directory)
+        if not base.is_dir():
+            continue
+        for name in FONT_NAMES:
+            hit = next(base.rglob(name), None)  # Linux nests fonts in subdirs
+            if hit is not None:
+                return ImageFont.truetype(str(hit), size)
     # load_default(size) returns a sized FreeTypeFont (Pillow >= 10.1), so the
     # fallback matches the return type and still honors the requested size.
     return ImageFont.load_default(size)
@@ -91,12 +107,31 @@ def build_transcript(binary: str) -> list[tuple[str, tuple]]:
                               "--replay", "sensors_demo.jsonl"])
     # Real run #2: follow -> events file with fired + cleared.
     shutil.rmtree(HERE / "logs", ignore_errors=True)
-    run(binary, ["watch", "--config", "demo.toml",
-                 "--replay", "sensors_demo.jsonl", "--follow"])
+    _, rc2 = run(binary, ["watch", "--config", "demo.toml",
+                          "--replay", "sensors_demo.jsonl", "--follow"])
     events = []
     for f in sorted(glob.glob(str(HERE / "logs" / "events_*.jsonl"))):
         events += [ln for ln in Path(f).read_text().splitlines() if ln.strip()]
     shutil.rmtree(HERE / "logs", ignore_errors=True)
+
+    # Fail closed: the committed GIF must depict the real, documented contract, so
+    # refuse to render (and overwrite demo.gif) if the demo didn't behave. Without
+    # this, a broken CLI would still produce a confident "passing" recording.
+    problems = []
+    if rc1 != 10:
+        problems.append(f"one-shot exit was {rc1}, expected 10 (a rule fired)")
+    if '"state":"fired"' not in event:
+        problems.append("one-shot stdout carried no fired event")
+    if rc2 != 0:
+        problems.append(f"follow exit was {rc2}, expected 0 (replay exhausted)")
+    if not (len(events) == 2
+            and '"state":"fired"' in events[0]
+            and '"state":"cleared"' in events[1]):
+        problems.append(f"follow events were {events!r}, "
+                        "expected exactly one fired then one cleared")
+    if problems:
+        sys.exit("make_demo_gif: refusing to render — the demo did not behave as "
+                 "documented:\n  - " + "\n  - ".join(problems))
 
     rows: list[tuple[str, tuple]] = []
     rows += [("# One command, no hardware, any OS -- watch a rule fire:", TEAL)]

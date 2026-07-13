@@ -43,6 +43,9 @@ cd examples/demo
 # → one JSON "fired" event on stdout, exit code 10 ("a rule fired")
 ```
 
+On Windows PowerShell, invoke the built binary with backslashes:
+`..\..\rust\target\release\sensorwatch.exe watch --config demo.toml --replay sensors_demo.jsonl`.
+
 Walkthrough, the fixture, and the rule (with its debounce and hysteresis
 guards): [`examples/demo/`](examples/demo/).
 
@@ -75,10 +78,25 @@ guards): [`examples/demo/`](examples/demo/).
 
 ## Requirements
 
-- Windows (x64)
-- Python 3.12+
+Requirements depend on what you're doing:
+
+**To try the replay demo (any OS) — no hardware:**
+
+- [Rust](https://rustup.rs/) 1.82+ (the CI MSRV) and a C compiler for the
+  vendored native core — `cc`/`clang` on Linux/macOS, the MSVC Build Tools on
+  Windows.
+
+**To install and run the Python package / logger:**
+
+- Windows (x64) and Python 3.12+. Prebuilt wheels mean no compiler is needed.
+
+**To monitor live hardware (Windows):**
+
 - [HWiNFO64](https://www.hwinfo.com/) running with **Shared Memory Support**
-  enabled (Settings → Shared Memory Support) and the sensors window open.
+  enabled (Settings → Shared Memory Support) and the sensors window open. On the
+  free (non-Pro) license, HWiNFO disables Shared Memory Support automatically
+  after 12 hours — for genuinely always-on monitoring, use HWiNFO Pro (or
+  periodically re-enable the feed).
 
 ## Install
 
@@ -484,9 +502,9 @@ published crates in the conventional `-sys` split, plus the repo-only CLI:
 - **`sensorwatch`** — a safe, RAII wrapper.
 - **`sensorwatch-cli`** — the `sensorwatch` command-line binary on top of the safe
   wrapper; repo-only (`publish = false`), with a one-shot `snapshot` subcommand,
-  the `log` logger loop, and the `watch` alerting command (`cargo run -p
-  sensorwatch-cli -- watch` from `rust/`, exit codes and JSON shapes in
-  [`rust/sensorwatch-cli/README.md`](rust/sensorwatch-cli/README.md)).
+  the `log` logger loop, the `watch` alerting command, and the `report` history
+  digest (`cargo run -p sensorwatch-cli -- watch` from `rust/`, exit codes and
+  JSON shapes in [`rust/sensorwatch-cli/README.md`](rust/sensorwatch-cli/README.md)).
 
 ```rust
 use sensorwatch::Session;
@@ -561,7 +579,7 @@ flowchart TD
 
     subgraph L4["④ Agent triage — sensorwatch-monitor skill"]
         TRIAGE["wake → read ~1 KB event<br/>→ dedup → bounded report digest"]
-        LADDER["escalation ladder<br/>journal → incident → notify → issue"]
+        LADDER["escalation ladder<br/>journal → incident → notify → issue-draft"]
     end
 
     subgraph L5["⑤ Durable state directory"]

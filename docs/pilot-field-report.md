@@ -32,6 +32,15 @@ sensor stream. The configuration under test:
 - **Delivery:** three notification channels wired for critical events — an ntfy
   push topic, Pushover, and SMTP.
 
+**A note on runtime.** The pilot ran as a *single long-running interactive agent
+session*, not the headless per-wake supervisor that Phase 2 graduates to. What
+kept each wake cheap was the skill's discipline, not process isolation: every
+wake reads only the event (or heartbeat) plus at most one bounded `report`, all
+durable memory lives in the on-disk state directory, and the session is
+periodically compacted. That is exactly the discipline that makes the eventual
+move to independent headless invocations safe — the pilot validated it under
+real load before the supervisor is wired.
+
 ## The quiet baseline
 
 For eight days the interesting thing was that nothing was interesting. The agent
@@ -42,11 +51,13 @@ context** — comfortably inside the 4 KB budget — and reported the same shape
 
 Two things worth calling out from the quiet stretch:
 
-- **Context stayed flat.** Because each wake-up is a fresh, bounded invocation —
-  the durable state lives on disk, not in the conversation — the 350th heartbeat
-  cost the same as the 3rd. This is the whole point of making the exit code the
-  signal and the state directory the memory: an always-on agent whose context
-  does not grow is one you can actually leave running.
+- **Per-wake cost stayed flat.** Each wake read only the event plus at most one
+  bounded `report`, with all durable memory on disk — so a heartbeat late in the
+  run cost about the same (~2 KB) as one early on, held there by periodic
+  compaction rather than by unbounded context growth. This is the whole point of
+  making the exit code the signal and the state directory the memory: it is what
+  lets the same loop graduate from this interactive session to independent
+  headless invocations without the context ballooning.
 - **Maintenance ran unattended.** A nightly maintenance wake pruned old data,
   checked state-dir size caps, and re-verified the baseline — logged as
   `midnight maintenance — 0 prune, caps OK, baseline unchanged`.
@@ -150,8 +161,10 @@ a deliverable you can point at, not a label.
 ## What the pilot validates
 
 - **The context-budget model works in practice, not just in theory.** Hundreds
-  of wake-ups, flat per-wake cost, no context growth. The "state on disk, not in
-  the window" design is what makes an always-on agent affordable to run.
+  of wake-ups at a roughly constant ~2 KB per wake, with durable memory on disk
+  and periodic compaction holding the line. That bounded-per-wake discipline is
+  what will let the loop move from this interactive session to unattended
+  headless invocations without the context growing.
 - **Determinism paid off in testing.** Because rule evaluation is sample-count
   based and replayable, the synthetic drill could force exact firing conditions,
   and the config-error halt was catchable. The parts that need to be trustworthy
@@ -161,8 +174,9 @@ a deliverable you can point at, not a label.
 - **The defects are at the seams, and they are honest ones.** Every one of the
   three lives where two subsystems meet (sampler vs. load, one-shot transport vs.
   incident lifecycle, ladder vs. an unwired tracker). That is where real systems
-  break, and finding them is the pilot's most valuable output. They are tracked
-  as follow-up work; see the [roadmap](../ROADMAP.md).
+  break, and finding them is the pilot's most valuable output. All three are
+  tracked as Phase 2/C follow-ups on the [roadmap](../ROADMAP.md), to be fixed in
+  a subsequent PR.
 
 The monitor spent eight days being boring and one day being useful. Both were the
 point.

@@ -30,6 +30,14 @@ cd examples/demo
 ../../rust/target/release/sensorwatch watch --config demo.toml --replay sensors_demo.jsonl
 ```
 
+On Windows PowerShell, the built binary is `sensorwatch.exe` and paths use
+backslashes:
+
+```powershell
+cd examples\demo
+..\..\rust\target\release\sensorwatch.exe watch --config demo.toml --replay sensors_demo.jsonl
+```
+
 > No build step? Swap the binary for
 > `cargo run --release --manifest-path rust/Cargo.toml -p sensorwatch-cli --`
 > and run it from the repo root, pointing `--config` / `--replay` at
@@ -53,6 +61,7 @@ whole recording and record **both** the fire and the recovery to a daily event
 file:
 
 ```sh
+rm -rf logs   # reset the monotonic seq counter so this run starts at seq 1
 ../../rust/target/release/sensorwatch watch --config demo.toml --replay sensors_demo.jsonl --follow
 cat logs/events_*.jsonl
 ```

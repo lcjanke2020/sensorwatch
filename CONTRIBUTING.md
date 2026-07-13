@@ -105,9 +105,9 @@ gh pr merge --squash --delete-branch
 gh release create vX.Y.Z --target master --generate-notes
 ```
 
-One-time setup before the first release: on PyPI, add a **pending** trusted
-publisher for this repo (owner `lcjanke2020`, repo `sensorwatch`, workflow
-`publish.yml`, environment `pypi`).
+One-time setup, already in place for this repo (repeat only for a new registry
+or fork): on PyPI, add a **pending** trusted publisher for the repo (owner
+`lcjanke2020`, repo `sensorwatch`, workflow `publish.yml`, environment `pypi`).
 
 A **TestPyPI dry-run first is recommended** to validate the whole OIDC path
 without touching real PyPI. Configure a matching pending publisher on
@@ -145,10 +145,11 @@ gh pr merge --squash --delete-branch
 gh release create rust-vX.Y.Z --target master --generate-notes
 ```
 
-**One-time setup before the first release.** crates.io has no "pending publisher" flow
-(unlike PyPI), so the crates must exist before the repo can be linked. Log in to
-crates.io (via GitHub), create a publish-scoped API token, then claim both names with a
-single manual publish (validate the tarball with `--dry-run` first):
+**One-time setup, already completed for this repo (repeat only for a new registry).**
+crates.io has no "pending publisher" flow (unlike PyPI), so the crates must exist
+before the repo can be linked. Log in to crates.io (via GitHub), create a
+publish-scoped API token, then claim both names with a single manual publish
+(validate the tarball with `--dry-run` first):
 
 ```sh
 cd rust
