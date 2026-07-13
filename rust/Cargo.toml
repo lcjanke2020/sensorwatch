@@ -2,9 +2,10 @@
 resolver = "2"
 members = ["sensorwatch-sys", "sensorwatch", "sensorwatch-cli"]
 
-# Shared metadata for the workspace members. Both crates are published to crates.io
-# (name reservation, OIDC trusted publishing, and the two-crate ordered publish landed
-# in LEO-326); these fields feed that release.
+# Shared metadata for the workspace members. Both library crates (sensorwatch-sys and
+# sensorwatch) are published to crates.io (name reservation, OIDC trusted publishing,
+# and the two-crate ordered publish landed in LEO-326); these fields feed that release.
+# sensorwatch-cli stays repo-only (publish = false).
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

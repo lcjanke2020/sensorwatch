@@ -29,6 +29,15 @@ This directory holds three files:
   its exit code, following the
   [`sensorwatch-monitor`](../../skills/sensorwatch-monitor/SKILL.md) skill.
 
+> **Working directory and binary.** Every command in this walkthrough (and in
+> the [test plan](PILOT_TEST_PLAN.md)) runs **from this directory**
+> (`examples/monitor-setup/`), so `config.toml` and fixture paths resolve as
+> written, and repo files are reached with `../../`. And `sensorwatch` always
+> means the **Rust CLI** — if a bare `sensorwatch` resolves to the Python
+> package's console script (which has no `watch`/`report`), use the built binary
+> by path: `../../rust/target/release/sensorwatch` (`sensorwatch.exe` on
+> Windows).
+
 ## 1. Rules — `config.toml`
 
 `watch` evaluates the `[[rules]]` array against the live sample stream. The
@@ -78,7 +87,7 @@ triage script runs (`ack_event.py` errors with "run init_state.py?" otherwise).
 Keep it machine-local, outside any git work tree:
 
 ```sh
-python skills/sensorwatch-monitor/scripts/init_state.py --state-dir <state-dir>
+python ../../skills/sensorwatch-monitor/scripts/init_state.py --state-dir <state-dir>
 ```
 
 **Start the logger** (layer 1) so history accumulates for `report` and the

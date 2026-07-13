@@ -17,8 +17,10 @@ Tier ladder (documented in SKILL.md):
   0 journal-only   info
   1 incident       warning
   2 notify         warning persisting >=3 events, or critical
-  3 issue-draft    critical persisting >=3 events (drafted to outbox; no
-                   tracker wired in — a real issue/webhook is Phase C)
+  3 notify         critical persisting >=3 events (same routed notification as
+                   tier 2 — no distinct issue action is wired in; a durable
+                   draft must be forced via notify.py --adapter outbox, and a
+                   real tracker/webhook action is Phase C)
   4 combination    >=2 distinct critical rules open at once
 
 Decision: allow | suppress (inside the per-rule cooldown) | batch (today's

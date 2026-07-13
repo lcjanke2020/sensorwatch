@@ -48,7 +48,9 @@ metric = "value"               # value | min | max | avg   (default: value)
 op = "<"                       # > | >= | < | <=
 threshold = 11.6               # ATX allows +12V down to 11.4; 11.6 leaves margin
 clear = 11.8                   # re-arm only after recovering past 11.8 V (hysteresis)
-for_samples = 3                # fire on the 3rd consecutive violating sample (debounce)
+for_samples = 3                # fire on the 3rd consecutive violating sample (debounce).
+                               # PILOT_TEST_PLAN.md step 2's fixture provides exactly 3
+                               # violating samples — if you tune this, update that fixture too.
 severity = "critical"
 
 # CPU temperature — a two-tier pattern: a `warning` and a higher `critical` on

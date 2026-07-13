@@ -129,10 +129,11 @@ progress:
 - **Deterministic escalation ladder — shipped.** Journal → incident file →
   notification → issue-draft → critical-combination tier, driven by rule
   severity and persistence, with per-rule cooldowns and a global daily cap
-  (batched digest beyond it). The issue tier currently records a drafted artifact
-  to the `outbox` rather than filing into a tracker; wiring it to a distinct
-  action (an issue-draft file or a webhook) is a Phase 2 / Phase C follow-up from
-  the pilot. Delivery goes through pluggable channels routed
+  (batched digest beyond it). The issue tier currently delivers the same routed
+  notification as tier 2 (a durable `outbox` draft exists only when explicitly
+  forced); wiring it to a distinct action (an issue-draft file or a webhook) is a
+  Phase 2 / Phase C follow-up from the pilot. Delivery goes through pluggable
+  channels routed
   per severity from a machine-local `notify.toml`; LEO-339 ships real transports
   — **ntfy** (the zero-account default via hosted `ntfy.sh`), **Pushover**, and
   generic **SMTP** — with the `outbox`/`stderr` stubs kept as fallbacks.

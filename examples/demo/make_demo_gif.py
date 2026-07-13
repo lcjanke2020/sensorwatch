@@ -65,9 +65,13 @@ def load_font(size: int) -> "ImageFont.FreeTypeFont | ImageFont.ImageFont":
             hit = next(base.rglob(name), None)  # Linux nests fonts in subdirs
             if hit is not None:
                 return ImageFont.truetype(str(hit), size)
-    # load_default(size) returns a sized FreeTypeFont (Pillow >= 10.1), so the
-    # fallback matches the return type and still honors the requested size.
-    return ImageFont.load_default(size)
+    # load_default(size) returns a sized FreeTypeFont on Pillow >= 10.1; older
+    # Pillow takes no size argument, so degrade to the tiny bitmap default
+    # rather than crash (the committed GIF is rendered with a real font anyway).
+    try:
+        return ImageFont.load_default(size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 FONT = load_font(FONT_SIZE)

@@ -8,8 +8,11 @@ crash mid-triage). They use only the CLI and the
 [`sensorwatch-monitor`](../../skills/sensorwatch-monitor/SKILL.md) helper scripts,
 and most run **without waiting for real hardware to misbehave**.
 
-Paths below assume you run from the repo (adjust `sensorwatch` and the
-`skills/sensorwatch-monitor/scripts/*.py` paths to your install). `<state>` is
+Every command below runs **from this directory** (`examples/monitor-setup/`), so
+`config.toml` and fixture paths resolve as written and the helper scripts are
+reached as `../../skills/sensorwatch-monitor/scripts/*.py`. `sensorwatch` means
+the **Rust CLI** — use `../../rust/target/release/sensorwatch` (`.exe` on
+Windows) if the bare name resolves to the Python console script. `<state>` is
 your monitor state directory — initialize it first with `init_state.py` (see the
 [worked-example README](README.md#3-run-the-monitor)). Commands use **POSIX
 shell** syntax (`\` line-continuation); run them in Git Bash or WSL, or adapt
@@ -32,7 +35,8 @@ This is the check people skip and regret. Do it deterministically with
 `--replay`: feed a synthetic log that trips a rule, no hardware required.
 
 Create `fixture-12v-sag.jsonl` — three samples below the `psu-12v-sag` threshold
-(`+12V < 11.6` for 3 samples):
+(three because `config.toml` sets `for_samples = 3` for that rule; if you tune
+either, keep the two in sync):
 
 ```jsonl
 {"timestamp":"2026-01-01T00:00:00.000000-00:00","sensors":[{"sensor":"PSU","reading":"+12V","type":"Voltage","value":11.4,"unit":"V"}]}
@@ -59,7 +63,7 @@ With `notify.toml` in place (ntfy path), send a test notice and confirm it lands
 on your phone/endpoint:
 
 ```sh
-python skills/sensorwatch-monitor/scripts/notify.py --state-dir <state> \
+python ../../skills/sensorwatch-monitor/scripts/notify.py --state-dir <state> \
     --adapter ntfy --rule test --severity warning --tier 2 --summary "pilot test"
 ```
 
@@ -86,14 +90,14 @@ acknowledging it. (Reuse the spool file from step 2, or replay again.)
 1. Open an incident on the pending event, then **stop** — do not ack:
 
    ```sh
-   python skills/sensorwatch-monitor/scripts/open_incident.py --state-dir <state> \
+   python ../../skills/sensorwatch-monitor/scripts/open_incident.py --state-dir <state> \
        --event-file <state>/spool/pending/<seq>-psu-12v-sag.json --classification incident
    ```
 
 2. "Restart" and bootstrap — the unacked event is still in the spool:
 
    ```sh
-   python skills/sensorwatch-monitor/scripts/state_summary.py --state-dir <state>
+   python ../../skills/sensorwatch-monitor/scripts/state_summary.py --state-dir <state>
    ```
 
    - [ ] Shows `pending=1` and one open incident. **`watch` never replays the
@@ -103,12 +107,12 @@ acknowledging it. (Reuse the spool file from step 2, or replay again.)
 
    ```sh
    # Re-opening the same event dedups — no duplicate incident:
-   python skills/sensorwatch-monitor/scripts/open_incident.py --state-dir <state> \
+   python ../../skills/sensorwatch-monitor/scripts/open_incident.py --state-dir <state> \
        --event-file <state>/spool/pending/<seq>-psu-12v-sag.json --classification incident
    # -> "action":"update-deduped"
 
    # Ack drains it (the event file must still be in spool/pending/):
-   python skills/sensorwatch-monitor/scripts/ack_event.py --state-dir <state> \
+   python ../../skills/sensorwatch-monitor/scripts/ack_event.py --state-dir <state> \
        --event-file <state>/spool/pending/<seq>-psu-12v-sag.json
    ```
 

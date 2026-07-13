@@ -33,6 +33,8 @@ server = "https://ntfy.sh"         # default if omitted; self-host by pointing h
 topic = "sensorwatch-CHANGEME"     # REQUIRED. Use a long random string — it is the
                                    # ONLY secret protecting the topic. e.g.
                                    # `sensorwatch-$(openssl rand -hex 12)`
+                                   # NEVER commit a real topic: anyone who has it can
+                                   # read your alerts — and publish fake ones.
 token = ""                         # optional Bearer token (for auth'd self-hosted)
 priority = { info = 3, warning = 4, critical = 5 }   # ntfy priorities (defaults shown)
 
