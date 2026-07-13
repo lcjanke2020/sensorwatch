@@ -1,0 +1,29 @@
+# sensorwatch replay demo — a single alert rule.
+#
+# `watch` evaluates rules like this one against a live sensor feed. Here we run
+# it against the recorded log next to this file (`sensors_demo.jsonl`) with
+# `--replay`, so it fires with no hardware, on any OS.
+#
+# This rule watches the PSU's +12V rail and fires a CRITICAL event when the rail
+# sags below 11.6 V. Two guards keep it from crying wolf:
+#
+#   for_samples = 2  — debounce: the rail must be under threshold for two
+#                      consecutive samples before the rule fires (a single
+#                      noisy dip is ignored).
+#   clear = 11.8     — hysteresis: once fired, the rule only clears when the
+#                      rail recovers back above 11.8 V, not the instant it
+#                      crosses 11.6 again. (For a `<` rule, `clear` must sit on
+#                      the recovery side of `threshold`, i.e. clear >= threshold.)
+
+[[rules]]
+name = "psu-12v-sag"
+kind = "threshold"
+sensor = "MEG Ai1600T"
+reading = "+12V"
+type = "Voltage"
+metric = "value"
+op = "<"
+threshold = 11.6
+clear = 11.8
+for_samples = 2
+severity = "critical"

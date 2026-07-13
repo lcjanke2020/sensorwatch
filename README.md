@@ -27,6 +27,25 @@ day of PSU efficiency summarized on request, with no log-parsing on your part.*
 > zero samples below 92%). Data, charts, and analysis:
 > [`examples/psu-efficiency/`](examples/psu-efficiency/).
 
+## Try it in 60 seconds — no hardware
+
+sensorwatch reads real hardware on Windows, but its alerting engine is
+platform-independent: `watch --replay` runs the exact same rule evaluation over
+a *recorded* log, so you can see a critical alert fire — and clear — on Linux,
+macOS, or Windows with no hardware at all.
+
+![A terminal running the replay demo: one watch --replay command fires a critical psu-12v-sag event and exits 10; adding --follow records the full fired-then-cleared lifecycle](examples/demo/demo.gif)
+
+```sh
+cargo build --release --manifest-path rust/Cargo.toml -p sensorwatch-cli
+cd examples/demo
+../../rust/target/release/sensorwatch watch --config demo.toml --replay sensors_demo.jsonl
+# → one JSON "fired" event on stdout, exit code 10 ("a rule fired")
+```
+
+Walkthrough, the fixture, and the rule (with its debounce and hysteresis
+guards): [`examples/demo/`](examples/demo/).
+
 ## Features
 
 - **Reads HWiNFO64 shared memory** (`Global\HWiNFO_SENS_SM2`) directly via
@@ -516,6 +535,60 @@ helper `scripts/`, and it references the usage skill above for tool mechanics
 rather than duplicating them. It too is read-only with respect to hardware —
 escalation is the action, and its state directory stays out of git
 (see [`SECURITY.md`](SECURITY.md) §4).
+
+The monitor is five layers — a deterministic logger and watcher feed a wake-up
+transport (the `watch` exit code *is* the signal), which drives an agent's
+bounded triage loop backed by a durable state directory:
+
+```mermaid
+flowchart TD
+    HW[["HWiNFO64 shared memory<br/>(read-only)"]]
+
+    subgraph L1["① Always-on logger"]
+        LOG["log / watch --follow"]
+    end
+    JSONL[("sensors_*.jsonl<br/>daily-rotated history")]
+
+    subgraph L2["② Deterministic watcher"]
+        WATCH["watch + rules<br/>thresholds · debounce · hysteresis"]
+    end
+    EV["fired / cleared events<br/>frozen 14-key JSON"]
+
+    subgraph L3["③ Wake-up transport"]
+        EXIT{{"exit code<br/>10 fired · 0 heartbeat · 1/2 fault"}}
+        SPOOL[("spool-dir<br/>atomic per-event files")]
+    end
+
+    subgraph L4["④ Agent triage — sensorwatch-monitor skill"]
+        TRIAGE["wake → read ~1 KB event<br/>→ dedup → bounded report digest"]
+        LADDER["escalation ladder<br/>journal → incident → notify → issue"]
+    end
+
+    subgraph L5["⑤ Durable state directory"]
+        STATE[("ack cursor · open incidents<br/>baseline · escalation ledger")]
+    end
+
+    NOTIFY["notify channels<br/>ntfy · Pushover · SMTP · outbox"]
+
+    HW --> LOG --> JSONL
+    JSONL -. "replay (any OS)" .-> WATCH
+    HW --> WATCH
+    WATCH --> EV --> EXIT
+    EV --> SPOOL
+    EXIT -- "10: wake agent" --> TRIAGE
+    EXIT -- "0: heartbeat" --> TRIAGE
+    SPOOL -. durable handoff .-> TRIAGE
+    TRIAGE --> LADDER
+    LADDER --> NOTIFY
+    TRIAGE <--> STATE
+    LADDER <--> STATE
+```
+
+The layers, the frozen event contract, and the context-budget guarantees are
+detailed in [`docs/agent-monitoring.md`](docs/agent-monitoring.md). An AI agent
+ran this monitor as the always-on watcher for a workstation for a week; the
+soak test, the two fault drills, and the three defects it surfaced are written
+up in [`docs/pilot-field-report.md`](docs/pilot-field-report.md).
 
 ## Roadmap
 
