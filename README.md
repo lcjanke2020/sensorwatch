@@ -1,6 +1,10 @@
 # sensorwatch
 
 [![CI](https://github.com/lcjanke2020/sensorwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/lcjanke2020/sensorwatch/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/sensorwatch?logo=pypi&logoColor=white)](https://pypi.org/project/sensorwatch/)
+[![Python versions](https://img.shields.io/pypi/pyversions/sensorwatch)](https://pypi.org/project/sensorwatch/)
+[![crates.io](https://img.shields.io/crates/v/sensorwatch?logo=rust)](https://crates.io/crates/sensorwatch)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 A lightweight hardware sensor monitor for Windows. It reads [HWiNFO64](https://www.hwinfo.com/)'s
 shared-memory sensor feed and logs readings as JSON Lines with daily file
@@ -490,7 +494,7 @@ when HWiNFO isn't running); `kind` is a `ReadingType` that folds any unrecognize
 category to `Unknown`, like the other bindings. Build and test the workspace with
 `cargo test` from `rust/`. The crates publish to
 [crates.io](https://crates.io/crates/sensorwatch) via OIDC trusted publishing (see
-[CONTRIBUTING](CONTRIBUTING.md#releasing)); once published, add them with
+[CONTRIBUTING](CONTRIBUTING.md#releasing)); add them with
 `cargo add sensorwatch` (the safe wrapper pulls in `sensorwatch-sys`).
 
 ## Skills

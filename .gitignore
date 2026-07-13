@@ -28,8 +28,13 @@ wheelhouse/
 # committed settings.json would override the model choice of anyone who clones it.
 # The local model pin is a symlink into the private settings share (LEO-345).
 .claude/
+.idea/
+*.swp
 *.un~
 *~
+
+# Local scratch space (never committed)
+scratch/
 
 # Agent session working files (LEO-345 flow: bookend/handoff artifacts, never committed)
 PLAN.md

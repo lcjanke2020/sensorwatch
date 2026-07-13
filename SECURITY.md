@@ -16,6 +16,38 @@ cloud service.
 
 ---
 
+## Reporting a Vulnerability
+
+Please report suspected security issues **privately** — do not open a public
+issue, pull request, or discussion for a vulnerability.
+
+- **Preferred:** open a private report through GitHub's
+  ["Report a vulnerability"](https://github.com/lcjanke2020/sensorwatch/security/advisories/new)
+  button (Security → Advisories). This keeps the report confidential until a
+  fix ships and lets us coordinate a disclosure and credit you if you wish.
+
+What to include: the affected version or commit, the platform, and the smallest
+reproduction you can share (a crafted shared-memory buffer or log line, a config
+snippet, or a short script). A proof of concept is welcome but not required.
+
+**Scope reminder.** sensorwatch is a single-user desktop tool that reads
+read-only hardware data and writes local files; it opens no network listeners
+in its current form (see the threat model below). The highest-value reports
+concern the untrusted-input parsers — the HWiNFO shared-memory reader and the
+JSON Lines replay path (`watch --replay` / `report`) — memory-safety or
+denial-of-service in the native C core, or a supply-chain weakness in the build.
+Findings that require local administrator/SYSTEM access, or that target the
+*planned* localhost REST service before it exists, are documented as
+out-of-scope below.
+
+**Response expectations.** This is a personal open-source project maintained on
+a best-effort basis: expect an initial acknowledgement within a few days, not a
+same-day SLA. Valid reports are fixed on a priority proportional to real-world
+impact as calibrated by the threat model, and reporters are credited in the
+release notes unless they prefer to remain anonymous.
+
+---
+
 ## Current and Planned Attack Surface
 
 **Current implementation**:

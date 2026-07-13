@@ -176,7 +176,7 @@ one.
 The architecture — *deterministic watcher → classified event → durable spool →
 ack cursor → bounded digest → agent wake* — is not specific to hardware. It is
 the shape of **any** agent that keeps an eye on a stream of events, and it maps
-cleanly onto autonomous PR review ([LEO-257](https://linear.app/leonards-agent-network/issue/LEO-257)):
+cleanly onto autonomous PR review (LEO-257):
 
 - The **watcher** is a CI/webhook poller instead of a sensor sampler: a
   deterministic rule ("a PR is open, mergeable, and CI is green") replaces a

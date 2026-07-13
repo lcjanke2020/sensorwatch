@@ -87,7 +87,7 @@ here). In prose:
 
 **Arm.** Run a blocking `watch` with a ~30-minute `--timeout` and
 `--spool-dir <state-dir>/spool/pending`, as a background task in a long-lived
-session or under the Phase 2 supervisor ([LEO-340]). The spool is the durable,
+session or under the Phase 2 supervisor (LEO-340). The spool is the durable,
 at-least-once handoff: an event survives an agent that was not listening.
 
 **On event (exit 10).** Read the ~1 KB event from stdout (or the spool file). An
@@ -340,7 +340,7 @@ monitor host," it does not paste readings.
 ### Dead-man's switch (spec — wired in LEO-340)
 
 An on-box watchdog that alerts if the monitor itself goes silent. Specified here;
-**wired in [LEO-340]**. It shares **no failure mode** with the notify path it
+**wired in LEO-340**. It shares **no failure mode** with the notify path it
 watches.
 
 - **Trigger.** A Windows Task Scheduler job runs a self-contained PowerShell
@@ -396,5 +396,3 @@ Run on the **first heartbeat after midnight** (tracked by
 - **State never in git.** Baselines and thresholds reveal hardware specs; the
   repo is public. Keep the state dir machine-local; `init_state.py` warns if it
   is inside a work tree.
-
-[LEO-340]: https://linear.app/leonards-agent-network/issue/LEO-340
