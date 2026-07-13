@@ -43,7 +43,7 @@ flowchart TD
 
     subgraph L4["④ Agent triage — sensorwatch-monitor skill"]
         TRIAGE["wake → read ~1 KB event<br/>→ dedup → bounded report digest"]
-        LADDER["escalation ladder<br/>journal → incident → notify → issue-draft"]
+        LADDER["escalation ladder<br/>journal → incident → notify → issue (Phase C)"]
     end
 
     subgraph L5["⑤ Durable state directory"]

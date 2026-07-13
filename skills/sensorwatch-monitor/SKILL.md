@@ -46,18 +46,21 @@ something has provably happened. The process exiting *is* the wake-up.
 
 1. The **Rust CLI is built** (`rust/sensorwatch-cli`) — see the sensorwatch skill,
    Recipe 1. `watch` has no Python fallback.
-2. **`[[rules]]` are configured** in `config.toml` (threshold / rate / stale /
+2. **Python 3.12+ is available** — every mechanical write in this skill goes
+   through the stdlib-only helper `scripts/*.py`. Invoke them with your
+   platform's launcher (`python`, `python3`, or `py`).
+3. **`[[rules]]` are configured** in `config.toml` (threshold / rate / stale /
    missing / source-unavailable). See the sensorwatch skill, Recipe 3.
-3. The **layer-1 logger is running** (`log`, or `watch --follow`) so `report` has
+4. The **layer-1 logger is running** (`log`, or `watch --follow`) so `report` has
    history to digest.
-4. A **state directory is initialized**: run `scripts/init_state.py --state-dir <dir>`
+5. A **state directory is initialized**: run `scripts/init_state.py --state-dir <dir>`
    once. The state dir is **machine-local and never in git** — baselines and
    thresholds reveal hardware specs and this repo is public. Suggested locations:
    `%LOCALAPPDATA%\sensorwatch-monitor` (Windows) or
    `~/.local/state/sensorwatch-monitor` (Linux). `init_state.py` **warns** (does
    not refuse) if the target is inside a git work tree. Every script takes
    `--state-dir` (or `$SENSORWATCH_MONITOR_STATE`); there is no in-repo default.
-5. **(Optional) Notification channels are configured** — write
+6. **(Optional) Notification channels are configured** — write
    `<state>/notify.toml` (see **Delivery** below). The zero-account default is
    ntfy: generate a topic with
    `python -c "import secrets; print('sensorwatch-' + secrets.token_urlsafe(16))"`,

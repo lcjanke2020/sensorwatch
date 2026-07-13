@@ -97,6 +97,9 @@ Requirements depend on what you're doing:
   free (non-Pro) license, HWiNFO disables Shared Memory Support automatically
   after 12 hours — for genuinely always-on monitoring, use HWiNFO Pro (or
   periodically re-enable the feed).
+- For the **agent monitor** specifically: Python 3.12+ as well — the
+  [`sensorwatch-monitor`](skills/sensorwatch-monitor/SKILL.md) skill's state and
+  triage helpers are stdlib-only Python scripts.
 
 ## Install
 
@@ -105,6 +108,11 @@ From PyPI — Windows wheels are prebuilt, so no compiler is needed:
 ```sh
 pip install sensorwatch
 ```
+
+> Note: the package's `sensorwatch` console script is the **Python logger** — it
+> is not the Rust CLI, which has the `snapshot` / `watch` / `report`
+> subcommands. If both are on your PATH, invoke the Rust binary by path (e.g.
+> `rust/target/release/sensorwatch[.exe]`).
 
 From source — this builds the native cffi extension, so a C compiler is required
 (MSVC on Windows; gcc/clang elsewhere):
@@ -581,7 +589,7 @@ flowchart TD
 
     subgraph L4["④ Agent triage — sensorwatch-monitor skill"]
         TRIAGE["wake → read ~1 KB event<br/>→ dedup → bounded report digest"]
-        LADDER["escalation ladder<br/>journal → incident → notify → issue-draft"]
+        LADDER["escalation ladder<br/>journal → incident → notify → issue (Phase C)"]
     end
 
     subgraph L5["⑤ Durable state directory"]

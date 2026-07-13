@@ -127,7 +127,8 @@ progress:
   reconstructs the monitor from a few-kilobyte state summary. Stdlib-only helper
   scripts do every mechanical write.
 - **Deterministic escalation ladder — shipped.** Journal → incident file →
-  notification → issue-draft → critical-combination tier, driven by rule
+  notification → issue rung (placeholder — see below) → critical-combination
+  tier, driven by rule
   severity and persistence, with per-rule cooldowns and a global daily cap
   (batched digest beyond it). The issue tier currently delivers the same routed
   notification as tier 2 (a durable `outbox` draft exists only when explicitly

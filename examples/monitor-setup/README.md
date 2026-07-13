@@ -25,6 +25,10 @@ This directory holds three files:
   enabled (the sensor source). See the main [README](../../README.md).
 - The **`sensorwatch` CLI** built or installed (`sensorwatch snapshot` should
   print live readings).
+- **Python 3.12+** — the monitor's state and triage helpers
+  (`../../skills/sensorwatch-monitor/scripts/*.py`, stdlib-only) run under
+  Python. If `python` isn't your launcher, substitute `python3` (POSIX/WSL) or
+  `py` (Windows) in the commands below.
 - For the agent loop: an agent runtime that can run a blocking process and act on
   its exit code, following the
   [`sensorwatch-monitor`](../../skills/sensorwatch-monitor/SKILL.md) skill.
