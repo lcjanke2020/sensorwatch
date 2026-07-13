@@ -66,6 +66,14 @@ rm -rf logs   # reset the monotonic seq counter so this run starts at seq 1
 cat logs/events_*.jsonl
 ```
 
+On Windows PowerShell:
+
+```powershell
+Remove-Item -Recurse -Force logs -ErrorAction SilentlyContinue
+..\..\rust\target\release\sensorwatch.exe watch --config demo.toml --replay sensors_demo.jsonl --follow
+Get-Content logs\events_*.jsonl
+```
+
 ```json
 {"schema_version":1,"seq":1,...,"state":"fired","timestamp":"2026-02-18T08:00:20.000000-05:00","value":11.4,...}
 {"schema_version":1,...,"state":"cleared","timestamp":"2026-02-18T08:00:30.000000-05:00","value":11.9,...}

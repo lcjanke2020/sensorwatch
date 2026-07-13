@@ -66,8 +66,31 @@ transits a third-party push service.
 
 ## 3. Run the monitor
 
-The deterministic watcher is the wake-up primitive: arm one blocking `watch`,
-and **the exit code is the message**.
+The monitor is two long-running pieces over a durable state directory. The
+commands below use **POSIX shell** syntax (the `\` line-continuation and the
+`<state-dir>` placeholder) — run them in Git Bash, WSL, or any POSIX shell; in
+PowerShell, put each on one line (or use backtick continuation) and substitute
+your own state-directory path.
+
+**Initialize the state directory** once. It is the agent's durable memory — the
+ack cursor, open incidents, spool, and baseline — and must exist before any
+triage script runs (`ack_event.py` errors with "run init_state.py?" otherwise).
+Keep it machine-local, outside any git work tree:
+
+```sh
+python skills/sensorwatch-monitor/scripts/init_state.py --state-dir <state-dir>
+```
+
+**Start the logger** (layer 1) so history accumulates for `report` and the
+baseline. Live `watch` samples HWiNFO directly and does **not** write the sensor
+log itself, so the logger runs alongside it:
+
+```sh
+sensorwatch log --config config.toml
+```
+
+**Arm the watcher** (layer 2) as a blocking one-shot — **the exit code is the
+message**:
 
 ```sh
 sensorwatch watch \
@@ -79,6 +102,10 @@ sensorwatch watch \
 - **exit 10** — a rule fired; the event is on stdout and spooled. Triage it.
 - **exit 0** — timeout, all quiet (a heartbeat). Do a light pass, re-arm.
 - **exit 2** — config error. Stop and fix the rules (do not re-arm blindly).
+
+(Alternatively, `watch --follow` runs the logger and watcher as one process,
+emitting native `cleared` events; the one-shot arm above is the wake-up-per-event
+topology the agent skill drives.)
 
 An agent turns this into a durable, bounded monitoring loop — the wake-up state
 machine, the state directory, and the escalation ladder are all in the

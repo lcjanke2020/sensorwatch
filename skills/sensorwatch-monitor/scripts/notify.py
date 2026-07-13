@@ -44,7 +44,8 @@ re-notifies instead of being silently suppressed).
         --rule <name> --severity <s> --tier <n> [...]
 
 The body is plain prose that *references* the incident-file path — it never
-embeds sensor data (public-repo + Linear-WAF hygiene). Exit 0 success, 1 fatal
+embeds sensor data (public-repo hygiene, and keeps the draft safe to hand to any
+tracker WAF later). Exit 0 success, 1 fatal
 (any channel failed / unreadable ledger), 2 usage (bad args, unknown adapter,
 malformed notify.toml).
 """

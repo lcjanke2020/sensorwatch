@@ -19,7 +19,8 @@
 # =============================================================================
 
 [general]
-interval_seconds = 10          # sampling cadence for `log`; `watch` reads the log stream
+interval_seconds = 10          # sampling cadence for the log/live-watch samplers
+                               # (live `watch` samples HWiNFO directly; `--replay` reads recorded logs)
 log_dir = "logs"               # where `sensors_*.jsonl` live (relative to CWD or absolute)
 retention_days = 30
 

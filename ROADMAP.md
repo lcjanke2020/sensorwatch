@@ -107,8 +107,9 @@ With `watch` and `report` in place, an AI agent can *monitor* hardware over
 days and weeks — woken by deterministic events plus a low-frequency heartbeat,
 instead of burning cycles polling. The
 [`sensorwatch-monitor`](skills/sensorwatch-monitor/SKILL.md) skill **ships the
-operating protocol** (LEO-338); the unattended runtime around it, and the real
-notification transport, are still in progress:
+operating protocol** (LEO-338); the real notification transport shipped in
+LEO-339 (see below), and the unattended runtime around it is what remains in
+progress:
 
 - **Event-driven wake-ups — shipped.** The agent arms the blocking `watch`; the
   process exiting *is* the wake-up. A rule event means "triage this"; a timeout

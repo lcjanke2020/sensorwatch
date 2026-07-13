@@ -159,7 +159,8 @@ jobs:
           [ "$rc" = 10 ] || { echo "one-shot: expected exit 10, got $rc"; exit 1; }
           echo "$out" | grep -q '"state":"fired"' || { echo "one-shot: no fired event"; exit 1; }
           rm -rf logs
-          "$bin" watch --config demo.toml --replay sensors_demo.jsonl --follow
+          "$bin" watch --config demo.toml --replay sensors_demo.jsonl --follow && rc2=0 || rc2=$?
+          [ "$rc2" = 0 ] || { echo "follow: expected exit 0, got $rc2"; exit 1; }
           grep -q '"state":"fired"'   logs/events_*.jsonl || { echo "follow: no fired event"; exit 1; }
           grep -q '"state":"cleared"' logs/events_*.jsonl || { echo "follow: no cleared event"; exit 1; }
           rm -rf logs

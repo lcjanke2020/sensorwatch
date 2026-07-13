@@ -10,7 +10,10 @@ and most run **without waiting for real hardware to misbehave**.
 
 Paths below assume you run from the repo (adjust `sensorwatch` and the
 `skills/sensorwatch-monitor/scripts/*.py` paths to your install). `<state>` is
-your monitor state directory.
+your monitor state directory — initialize it first with `init_state.py` (see the
+[worked-example README](README.md#3-run-the-monitor)). Commands use **POSIX
+shell** syntax (`\` line-continuation); run them in Git Bash or WSL, or adapt
+them to PowerShell.
 
 ## 1. The config is valid
 
@@ -115,8 +118,10 @@ acknowledging it. (Reuse the spool file from step 2, or replay again.)
 
 ## 6. Curate a baseline
 
-After ~24 h of logging, write `baseline.md` (what "normal" looks like) from a
-digest, not by hand:
+After ~24 h with the **layer-1 logger running** (the `sensorwatch log` from the
+worked-example README §3 — one-shot `watch` alone writes no `sensors_*.jsonl`, so
+`report` would have no history), write `baseline.md` (what "normal" looks like)
+from a digest, not by hand:
 
 ```sh
 sensorwatch report --config config.toml --last 24h

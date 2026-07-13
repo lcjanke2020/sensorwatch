@@ -25,8 +25,9 @@ to hardware — escalation IS the action.
 
 **Escalation.** Notifications route per severity through the channels in
 `notify.toml` (ntfy / Pushover / SMTP; `outbox/` is the fallback when no
-`notify.toml` is present). Linear issues are plain prose that reference
-incident-file paths; they never embed sensor data.
+`notify.toml` is present). The tier-3 issue is a drafted artifact written to
+`outbox/` (no tracker is wired in yet); it is plain prose referencing
+incident-file paths and never embeds sensor data.
 
 **Operator notes.** <who to tell, quiet hours, anything a fresh session must know>
 

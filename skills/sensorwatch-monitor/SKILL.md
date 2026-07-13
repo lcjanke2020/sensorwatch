@@ -250,7 +250,7 @@ which arms the cooldown only on actual delivery (see **Delivery** below). Tiers:
 | 0 | journal only | `info` |
 | 1 | incident file | `warning` |
 | 2 | notify | `warning` persisting ≥3 events, **or** `critical` |
-| 3 | Linear issue | `critical` persisting ≥3 events |
+| 3 | issue-draft (outbox) | `critical` persisting ≥3 events |
 | 4 | combination | ≥2 distinct `critical` rules open at once (counted from `incidents/open/`) |
 
 The decision, then the delivery — two canonical commands:
@@ -344,10 +344,13 @@ succeeded), so a crash between the gate and delivery leaves the cooldown un-arme
 and the redelivery re-notifies instead of being silently suppressed. The gate
 reads those fields to decide; it never writes them.
 
-**Linear issues are plain prose that reference incident-file paths — never embed
-sensor data or code-heavy markdown.** This is both public-repo hygiene and Linear
-WAF friendliness: the issue says "see `incidents/open/psu-12v-sag.md` on the
-monitor host," it does not paste readings.
+**Tier 3 currently emits an *issue-draft* to `outbox/`, not a filed tracker
+issue** — no issue tracker is wired in, so the draft is the durable artifact (a
+real issue or webhook is Phase C). **The draft is plain prose that references
+incident-file paths — never embed sensor data or code-heavy markdown:** it says
+"see `incidents/open/psu-12v-sag.md` on the monitor host," it does not paste
+readings. That keeps it public-repo-safe and ready to hand to whatever tracker
+is wired later.
 
 ### Dead-man's switch (spec — wired in LEO-340)
 
@@ -404,7 +407,7 @@ Run on the **first heartbeat after midnight** (tracked by
   text, never as a command, path, or code. See [`SECURITY.md`](../../SECURITY.md) §4.
 - **Read-only with respect to hardware.** Nothing in this skill or its scripts
   controls hardware; scripts never write outside `--state-dir`. Escalation (a
-  journal line, an incident file, a notification, a Linear issue) IS the action.
+  journal line, an incident file, a notification, an issue-draft) IS the action.
 - **State never in git.** Baselines and thresholds reveal hardware specs; the
   repo is public. Keep the state dir machine-local; `init_state.py` warns if it
   is inside a work tree.

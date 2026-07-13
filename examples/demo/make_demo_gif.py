@@ -56,7 +56,7 @@ FONT_DIRS = (
 )
 
 
-def load_font(size: int) -> ImageFont.FreeTypeFont:
+def load_font(size: int) -> "ImageFont.FreeTypeFont | ImageFont.ImageFont":
     for directory in FONT_DIRS:
         base = Path(directory)
         if not base.is_dir():
@@ -137,10 +137,9 @@ def build_transcript(binary: str) -> list[tuple[str, tuple]]:
     rows += [("# One command, no hardware, any OS -- watch a rule fire:", TEAL)]
     rows += [("$ sensorwatch watch --config demo.toml --replay sensors_demo.jsonl", GREEN)]
     rows += wrap(event, SLATE)
-    # Exit 10 is the "a rule fired" contract; don't assert it if the command
-    # exited any other way (a broken demo must not render as a passing one).
-    note = "a rule fired" if rc1 == 10 else "no rule fired"
-    rows += [(f"exit {rc1}  -- {note}", AMBER)]
+    # rc1 is guaranteed 10 by the fail-closed check below (this only renders when
+    # the demo behaved), so the caption always reflects the real fired contract.
+    rows += [(f"exit {rc1}  -- a rule fired", AMBER)]
     rows += [("", FG)]
     rows += [("# Add --follow for the full fire -> clear lifecycle:", TEAL)]
     rows += [("$ sensorwatch watch ... --follow  &&  cat logs/events_*.jsonl", GREEN)]
