@@ -1,6 +1,6 @@
 # Fuzz targets
 
-Fuzz harnesses for sensorwatch's two untrusted-input parsers. Both run any
+Fuzz harnesses for sensorwatch's two untrusted-input parsers. Both treat any
 crash, sanitizer finding, timeout, or unbounded allocation as a bug
 (`docs/C_CODING_STANDARDS.md` §"Fuzzing the Parser", `SECURITY.md` §1.3). They
 are exercised nightly by `.github/workflows/fuzz.yml`; this note is for running

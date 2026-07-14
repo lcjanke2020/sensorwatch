@@ -29,6 +29,13 @@ static void write_file(const char *dir, const char *name,
         fprintf(stderr, "path too long: %s/%s\n", dir, name);
         exit(1);
     }
+    /* A NULL buffer means sw_test_build_buffer failed (alloc / overflow guard);
+       len is then meaningless. Fail before creating the file so a build failure
+       can never leave a truncated or empty seed behind. */
+    if (buf == NULL) {
+        fprintf(stderr, "buffer build failed for %s\n", name);
+        exit(1);
+    }
     FILE *f = fopen(path, "wb");
     if (f == NULL) {
         perror(path);
@@ -51,7 +58,8 @@ static void write_file(const char *dir, const char *name,
 int main(int argc, char **argv)
 {
     const char *dir = (argc > 1) ? argv[1] : ".";
-    size_t len;
+    size_t len = 0;  /* set by each sw_test_build_buffer; init so a NULL return
+                        never leaves it (and the write_file arg) indeterminate */
 
     /* 1. Canonical valid single reading (== tests/c valid_buffer()). */
     {
