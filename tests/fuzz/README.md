@@ -55,6 +55,6 @@ cargo +nightly fuzz run fixup_python_tokens -- -max_total_time=300
 
 The harness's value is that it catches a regression in the bounds checks. To
 demonstrate: weaken a guard in `src/sw_parse.c` (e.g. delete the
-`sensor_end / entry_end > len` check), rebuild `fuzz_parse`, and run it over
-`corpus/parse` — ASan reports a heap-buffer-overflow within seconds. Revert the
-change afterward.
+`if (sensor_end > len || entry_end > len)` region-bounds check), rebuild
+`fuzz_parse`, and run it over `tests/fuzz/corpus/parse` — ASan reports a
+heap-buffer-overflow within seconds. Revert the change afterward.

@@ -34,10 +34,17 @@ static void write_file(const char *dir, const char *name,
         perror(path);
         exit(1);
     }
-    if (buf != NULL && len > 0) {
-        fwrite(buf, 1, len, f);
+    /* Fail fast on a short write or a deferred flush error at close: this tool
+       writes committed corpora, so a silently truncated seed must not pass. */
+    if (buf != NULL && len > 0 && fwrite(buf, 1, len, f) != len) {
+        fprintf(stderr, "short write to %s\n", path);
+        fclose(f);
+        exit(1);
     }
-    fclose(f);
+    if (fclose(f) != 0) {
+        perror(path);
+        exit(1);
+    }
     printf("wrote %s (%zu bytes)\n", path, len);
 }
 
