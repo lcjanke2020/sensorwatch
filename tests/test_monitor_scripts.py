@@ -1669,6 +1669,12 @@ def test_reconcile_malformed_meta_exits_2_not_traceback(tmp_path):
         lambda d: d.__setitem__("gaps", [{"from": "a", "to": "b", "seconds": "900"}]),
         lambda d: d.__setitem__("gaps", ["not-an-object"]),
         lambda d: d.__setitem__("gaps", [{"from": 1, "to": "b", "seconds": 900}]),
+        # violations[] shapes: a malformed suffix entry silently skipped
+        # would leave an OLDER clear selected as "latest" and permit a close
+        # the digest can no longer prove.
+        lambda d: d["violations"].append("malformed-later-transition"),
+        lambda d: d["violations"].append({"state": "fired"}),          # no rule
+        lambda d: d["violations"].append({"rule": 7, "state": "fired"}),
     ]
     for i, mutate in enumerate(mutations):
         path = _mutated_digest(tmp_path, "psu-sag-recovered", mutate)

@@ -164,6 +164,16 @@ def _load_digest(path: Path) -> dict:
     for key in ("violations_shown", "violations_total"):
         if key in truncated and not _is_count(truncated[key]):
             raise st.Usage(f"digest meta.truncated.{key} is not a non-negative integer")
+    for i, violation in enumerate(digest["violations"]):
+        # violations[] is the chronological source for "latest transition
+        # wins": silently skipping a malformed entry would discard part of the
+        # suffix and could leave an OLDER clear selected as latest — reject
+        # the whole digest instead.
+        if not isinstance(violation, dict):
+            raise st.Usage(f"digest violations[{i}] is not an object")
+        rule = violation.get("rule")
+        if not isinstance(rule, str) or not rule:
+            raise st.Usage(f"digest violations[{i}].rule is not a non-empty string")
     for i, gap in enumerate(digest["gaps"]):
         # A malformed gap silently skipped would understate density and could
         # turn a truly-degraded window into an "ok" verdict — reject instead.
@@ -220,11 +230,12 @@ def _check_freshness(meta: dict, now) -> tuple[bool, str]:
 def _latest_transitions(violations: list) -> dict:
     """rule -> its last transition event in digest order. violations[] is
     chronological and the byte-cap fitter drops oldest-first, so the last
-    shown match is the rule's true latest transition (see module docstring)."""
+    shown match is the rule's true latest transition (see module docstring).
+    Entry shapes are guaranteed by _load_digest — nothing is skipped here,
+    because a skipped suffix entry could leave an older clear selected."""
     latest: dict = {}
     for event in violations:
-        if isinstance(event, dict) and isinstance(event.get("rule"), str):
-            latest[event["rule"]] = event
+        latest[event["rule"]] = event
     return latest
 
 

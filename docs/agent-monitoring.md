@@ -130,7 +130,7 @@ order:
 | 5 | `type` | string | always | rule kind, kebab-case |
 | 6 | `severity` | string | always | `info` \| `warning` \| `critical` |
 | 7 | `state` | string | always | `fired` \| `cleared` |
-| 8 | `timestamp` | ISO-8601 string | always | triggering sample's timestamp, verbatim (replay-stable) |
+| 8 | `timestamp` | ISO-8601 string (`T` form — no internal whitespace) | always | triggering sample's timestamp, verbatim (replay-stable) |
 | 9 | `sensor` | string\|null | null for source-unavailable | triggering series sensor |
 | 10 | `reading` | string\|null | null for source-unavailable | triggering series reading |
 | 11 | `value` | number\|null | null for missing/source-unavailable or NaN | compared value at the edge |
