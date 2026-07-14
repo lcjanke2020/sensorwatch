@@ -1329,3 +1329,270 @@ def test_notify_ntfy_schemeless_server_does_not_leak_topic(tmp_path):
     assert secret not in r2.stdout and secret not in r2.stderr
     assert "Traceback" not in r2.stderr        # explicit mode: clean Fatal, not a crash
     assert secret not in journal_text(state)
+
+
+# ---- tier-3 issue draft (notify.py --issue-draft) ----
+
+DIGESTS = Path(__file__).resolve().parent / "fixtures" / "digests"
+
+
+def _issue_drafts(state):
+    return sorted((state / "outbox" / "issues").glob("*.md"))
+
+
+def test_init_creates_outbox_issues_dir(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    assert (state / "outbox" / "issues").is_dir()
+
+
+def test_notify_issue_draft_written_and_recorded_once(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    r = run_script(
+        "notify.py", "--state-dir", str(state), "--adapter", "outbox",
+        "--rule", "psu-12v-sag", "--severity", "critical", "--tier", "3",
+        "--issue-draft", "--incident-file", "incidents/open/psu-12v-sag.md",
+        "--summary", "rail sagging; see incident", "--now", T0,
+    )
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    drafts = _issue_drafts(state)
+    assert len(drafts) == 1 and out["issue_draft"] == str(drafts[0])
+    # The notification notice landed in outbox/ proper, NOT under issues/.
+    assert len(list((state / "outbox").glob("*.md"))) == 1
+    body = drafts[0].read_text(encoding="utf-8")
+    assert "Suggested title" in body and "next actions" in body
+    assert "incidents/open/psu-12v-sag.md" in body
+    assert "11.4" not in body                  # never sensor data
+    # ONE invocation = ONE delivery record, draft or not.
+    esc = read_json(state / "escalation.json")
+    assert esc["notifications_today"] == 1
+    assert '"issue_draft"' in journal_text(state)
+
+
+def test_notify_without_flag_writes_no_draft(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    r = _notify(state, "psu-12v-sag", severity="critical", tier=3)
+    assert r.returncode == 0, r.stderr
+    assert "issue_draft" not in json.loads(r.stdout)
+    assert _issue_drafts(state) == []
+
+
+def test_notify_issue_draft_survives_all_channels_failing(tmp_path):
+    # The draft is durable evidence precisely when delivery fails: exit 1,
+    # draft on disk, cooldown NOT armed (so the retry re-notifies — and its
+    # second draft disambiguates rather than overwrites).
+    state = tmp_path / "state"
+    init_state(state)
+    with http_endpoint(status=500) as ntfy:
+        write_notify_toml(state, "\n".join([
+            "[severity]", 'critical = ["ntfy"]',
+            "[ntfy]", f'server = "{ntfy.url}"', 'topic = "t"',
+        ]))
+        r = run_script(
+            "notify.py", "--state-dir", str(state), "--rule", "r1",
+            "--severity", "critical", "--tier", "3", "--issue-draft", "--now", T0,
+        )
+    assert r.returncode == 1
+    out = json.loads(r.stdout)
+    assert out["delivered"] is False
+    drafts = _issue_drafts(state)
+    assert len(drafts) == 1 and out["issue_draft"] == str(drafts[0])
+    assert "r1" not in read_json(state / "escalation.json")["per_rule"]
+
+
+def test_notify_issue_draft_muted_severity_still_writes(tmp_path):
+    # A deliberately-muted severity delivers nothing, but the tier-3 artifact
+    # is independent of channel routing.
+    state = tmp_path / "state"
+    init_state(state)
+    write_notify_toml(state, "[severity]\ncritical = []\n")
+    r = run_script(
+        "notify.py", "--state-dir", str(state), "--rule", "r1",
+        "--severity", "critical", "--tier", "3", "--issue-draft", "--now", T0,
+    )
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["delivered"] is False and out["channels"] == []
+    assert len(_issue_drafts(state)) == 1
+    assert "r1" not in read_json(state / "escalation.json")["per_rule"]
+
+
+def test_notify_issue_draft_same_second_disambiguates(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    for _ in range(2):
+        r = run_script(
+            "notify.py", "--state-dir", str(state), "--adapter", "stderr",
+            "--rule", "r1", "--severity", "critical", "--tier", "3",
+            "--issue-draft", "--now", T0,
+        )
+        assert r.returncode == 0, r.stderr
+    assert len(_issue_drafts(state)) == 2
+
+
+# ---- reconcile_incidents.py (auto-close on recovery + logger_health) ----
+#
+# Digest fixtures are REAL `sensorwatch report` output over the public demo
+# rule/log (committed bytes — see fixtures/digests/README.md), so these tests
+# break on digest-schema drift instead of silently testing a hand-typed shape.
+
+def _reconcile(state, digest, *extra, now="2026-02-18T08:05:00-05:00"):
+    return run_script(
+        "reconcile_incidents.py", "--state-dir", str(state),
+        "--digest", str(DIGESTS / f"{digest}.json"), "--now", now, *extra,
+    )
+
+
+def test_reconcile_recovered_closes_incident(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    r = _reconcile(state, "psu-sag-recovered")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["fresh"] is True and out["closed"] == ["psu-12v-sag"]
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "recovered" and verdict["closed"] is True
+    assert not (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+    closed = state / "incidents" / "closed" / "psu-12v-sag.md"
+    assert closed.exists()
+    text = closed.read_text(encoding="utf-8")
+    assert "- status: closed" in text and "cleared by psu-12v-sag-2" in text
+    journal = journal_text(state)
+    assert '"action":"auto-close"' in journal and '"action":"close"' in journal
+    # No stray temp event file left in the state dir.
+    assert list(state.glob("reconcile-cleared.tmp.*")) == []
+
+
+def test_reconcile_dry_run_touches_nothing(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    journal_before = journal_text(state)
+    r = _reconcile(state, "psu-sag-recovered", "--dry-run")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    (verdict,) = out["verdicts"]
+    assert out["dry_run"] is True and verdict["verdict"] == "recovered"
+    assert out["closed"] == [] and verdict["closed"] is False
+    assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+    assert journal_text(state) == journal_before
+
+
+def test_reconcile_still_firing_no_close(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    r = _reconcile(state, "psu-sag-still-firing", now="2026-02-18T08:00:30-05:00")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "still-firing" and out["closed"] == []
+    assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+
+
+def test_reconcile_no_transition_is_indeterminate(tmp_path):
+    # A rule with no in-window transition is NEVER closed — the window may
+    # simply not span its fire (absence of evidence is not recovery).
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "some-other-rule")
+    r = _reconcile(state, "psu-sag-recovered")
+    assert r.returncode == 0, r.stderr
+    (verdict,) = json.loads(r.stdout)["verdicts"]
+    assert verdict["verdict"] == "indeterminate"
+    assert (state / "incidents" / "open" / "some-other-rule.md").exists()
+
+
+def test_reconcile_stale_feed_blocks_close_despite_cleared(tmp_path):
+    # The stale-feed digest CONTAINS the cleared transition, but last_sample
+    # trails the window end by ~59 min — the freshness gate must win: a dead
+    # logger never looks like recovery.
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    r = _reconcile(state, "psu-sag-stale-feed", now="2026-02-18T09:00:05-05:00")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["fresh"] is False
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate" and "freshness" in verdict["reason"]
+    assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+
+
+def test_reconcile_zero_samples_degraded_and_indeterminate(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    r = _reconcile(state, "zero-samples")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["fresh"] is False
+    assert out["logger_health"]["verdict"] == "degraded"
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate"
+
+
+def test_reconcile_gap_density_degraded(tmp_path):
+    # Four healthy samples around a 1190 s hole: no transitions, fresh feed,
+    # but a single gap over the 15-minute limit → logger_health degraded.
+    state = tmp_path / "state"
+    init_state(state)
+    r = _reconcile(state, "gappy-feed", now="2026-02-18T08:20:20-05:00")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["fresh"] is True and out["checked"] == 0
+    health = out["logger_health"]
+    assert health["verdict"] == "degraded"
+    assert health["largest_gap_seconds"] == 1190 and health["gap_count"] == 1
+
+
+def test_reconcile_healthy_feed_logger_ok(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    r = _reconcile(state, "psu-sag-recovered")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["checked"] == 0 and out["closed"] == []
+    assert out["logger_health"]["verdict"] == "ok"
+
+
+def test_reconcile_malformed_digest_exits_2(tmp_path):
+    state = tmp_path / "state"
+    init_state(state)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    r = run_script(
+        "reconcile_incidents.py", "--state-dir", str(state),
+        "--digest", str(bad), "--now", T0,
+    )
+    assert r.returncode == 2
+    missing = run_script(
+        "reconcile_incidents.py", "--state-dir", str(state),
+        "--digest", str(tmp_path / "nope.json"), "--now", T0,
+    )
+    assert missing.returncode == 2
+
+
+def test_reconcile_close_releases_combination_slot(tmp_path):
+    # Two open criticals put any critical at tier 4; auto-closing one must
+    # release the slot (the gate re-reads incidents/open/ — no phantom).
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    _write_open_incident(state, "some-other-rule")
+    gate_before = run_script(
+        "escalation_gate.py", "--state-dir", str(state), "--rule", "some-other-rule",
+        "--severity", "critical", "--state", "fired", "--now", T0,
+    )
+    assert json.loads(gate_before.stdout)["tier"] == 4
+    r = _reconcile(state, "psu-sag-recovered")
+    assert json.loads(r.stdout)["closed"] == ["psu-12v-sag"]
+    gate_after = run_script(
+        "escalation_gate.py", "--state-dir", str(state), "--rule", "some-other-rule",
+        "--severity", "critical", "--state", "fired", "--now", T0,
+    )
+    assert json.loads(gate_after.stdout)["tier"] == 2

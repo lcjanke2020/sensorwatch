@@ -46,6 +46,7 @@ DIRS = (
     "spool/pending",
     "spool/acked",
     "outbox",
+    "outbox/issues",
 )
 
 

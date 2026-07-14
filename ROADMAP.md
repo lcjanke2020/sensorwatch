@@ -127,14 +127,12 @@ progress:
   reconstructs the monitor from a few-kilobyte state summary. Stdlib-only helper
   scripts do every mechanical write.
 - **Deterministic escalation ladder — shipped.** Journal → incident file →
-  notification → issue rung (placeholder — see below) → critical-combination
-  tier, driven by rule
+  notification → issue draft → critical-combination tier, driven by rule
   severity and persistence, with per-rule cooldowns and a global daily cap
-  (batched digest beyond it). The issue tier currently delivers the same routed
-  notification as tier 2 (a durable `outbox` draft exists only when explicitly
-  forced); wiring it to a distinct action (an issue-draft file or a webhook) is a
-  Phase 2 / Phase C follow-up from the pilot. Delivery goes through pluggable
-  channels routed
+  (batched digest beyond it). The issue tier emits a tracker-ready draft
+  artifact to `outbox/issues/` in the same invocation as the notification
+  (recording the cooldown exactly once); a config-driven webhook is a possible
+  later rung. Delivery goes through pluggable channels routed
   per severity from a machine-local `notify.toml`; LEO-339 ships real transports
   — **ntfy** (the zero-account default via hosted `ntfy.sh`), **Pushover**, and
   generic **SMTP** — with the `outbox`/`stderr` stubs kept as fallbacks.
@@ -153,15 +151,17 @@ progress:
   drills — a synthetic escalation-ladder run and a real thermal event under load
   — both delivered a multi-channel alert. The run is written up in
   [`docs/pilot-field-report.md`](docs/pilot-field-report.md). It surfaced three
-  defects, now queued as **Phase 2 / Phase C follow-ups**: (1) the logger drops
-  samples under full CPU load (harden the sampler under contention; escalate on
-  gap density so a starved logger becomes an alert); (2) arming `watch` one-shot
-  per wake emits no cross-restart `cleared` event, so incidents don't auto-close
-  (run the persistent `watch --follow`, and have the agent reconcile open
-  incidents against a fresh `report` on each heartbeat); (3) the tier-3 issue
-  rung has no distinct wired action — it collapses into the tier-2 notification
-  plus a best-effort `outbox` draft (emit a real issue-draft artifact and/or a
-  config-driven webhook). The headless supervisor graduation, and the
+  defects: (1) the logger drops samples under full CPU load — the monitor now
+  **detects and escalates** on gap density (the heartbeat's reconcile step
+  reports `logger_health` from the digest's `gaps`); hardening the sampler
+  itself under contention remains queued; (2) arming `watch` one-shot per wake
+  emits no cross-restart `cleared` event, so incidents didn't auto-close —
+  **fixed**: the heartbeat wake reconciles open incidents against a fresh
+  `report` and closes recovered ones (`reconcile_incidents.py`; the persistent
+  `watch --follow` remains the single-process alternative); (3) the tier-3
+  issue rung had no distinct wired action — **fixed**: tier 3 emits a
+  tracker-ready issue-draft artifact (`notify.py --issue-draft` →
+  `outbox/issues/`). The headless supervisor graduation, and the
   generalizable worked **examples** + **`sensorwatch-monitor` skill
   refinements** (LEO-411), follow from here.
 

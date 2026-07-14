@@ -123,7 +123,9 @@ this order**:
 
    Closing moves the file out of `incidents/open/`, which **automatically**
    releases its combination-tier slot — there is no separate ledger flag to
-   clear (the open-incident set is the single lifecycle authority).
+   clear (the open-incident set is the single lifecycle authority). A recovery
+   that happens while **no watcher is armed** emits no cleared event; the
+   heartbeat's reconcile step (below) closes those from the `report` digest.
 3. **Anything else:** bounded triage — **at most two `report` calls**, consult
    `baseline.md`, and **classify: benign | anomaly | incident.**
 4. **Record before you acknowledge**, in this exact order (crash-safe: a crash
@@ -140,12 +142,46 @@ this order**:
 
 **On heartbeat (exit 0).** A timeout with no fire means "all quiet." Do a light
 pass: record it (`heartbeat.py --kind heartbeat` — sets `last_heartbeat`, resets
-the failure counter); **one** summary `report`; the deterministic
-**logger-liveness** check from that report's `meta` block (zero-sample digest =
-logger dead / machine off; large `meta.last_sample` lag or a trailing `gaps` entry
-= feed stalled — see the sensorwatch skill, Recipe 4); a review of open incidents
-(any past snooze?); and, on the **first heartbeat after midnight**, the
-[maintenance pass](#maintenance-pass). Then re-arm.
+the failure counter); **one** summary `report`, saved to a file; the
+deterministic **reconcile step** over that digest; and, on the **first heartbeat
+after midnight**, the [maintenance pass](#maintenance-pass). Then re-arm.
+
+The reconcile step is one script call over the digest you just saved:
+
+```
+sensorwatch report --config <config> --last <window> > <state>/last-report.json
+python scripts/reconcile_incidents.py --state-dir <dir> \
+    --digest <state>/last-report.json --now <iso>
+```
+
+It does three deterministic jobs at once (its JSON output carries all three):
+
+1. **Auto-close on recovery.** Arm-per-wake `watch` tracks fired/cleared
+   per-process, so a rule that recovers while no watcher is armed never emits a
+   cross-restart `cleared` event. The reconciler closes that gap: `report`
+   re-derives the window's transitions with the same engine, and any open
+   incident whose **latest** in-window transition is `cleared` is closed through
+   `open_incident.py --close` (journal-first, atomic move — the same close path
+   as a live cleared event). A stale or empty digest fails the freshness gate
+   and every verdict is `indeterminate` — a dead logger never looks like
+   recovery. **Window rule:** when incidents are open, size `--last` to span the
+   *oldest* open incident's `opened` timestamp (from the `state_summary`
+   bootstrap), capped at 48h — a window that misses the fire yields
+   `indeterminate` (never a close), and incidents older than the cap stay
+   manual. (`watch --follow` is the single-process alternative that emits native
+   `cleared` events; under it the reconciler is a no-op safety net.)
+2. **Logger-liveness** (zero-sample digest = logger dead / machine off; large
+   `meta.last_sample` lag = feed stalled — see the sensorwatch skill, Recipe 4).
+3. **Gap-density check** (`logger_health` in the output): if the log was blind
+   for >10% of the window or any single gap exceeds 15 min, the verdict is
+   `degraded` — a logger dropping samples under load is worst exactly when
+   incidents happen. On `degraded`, escalate it like any warning: run the gate
+   and `notify.py` for the synthetic rule `logger-gaps` (normal cooldown and
+   daily cap apply, so a persistently-gappy logger pages once per cooldown, not
+   once per heartbeat).
+
+Review any incidents the reconciler reports `still-firing`/`indeterminate`
+(past snooze? needs a human?) as before.
 
 **On watcher-health failure.** If `watch` dies fatally (exit `1`): re-arm with
 **backoff**, and record the failure (`heartbeat.py --kind failure` increments
@@ -197,6 +233,7 @@ incidents/closed/               # closed incidents (moved here on --close)
 spool/pending/          # watch --spool-dir points HERE; ack moves files out
 spool/acked/            # acked events; the maintenance pass prunes >30 days
 outbox/                 # notify's durable fallback when no notify.toml is present
+outbox/issues/          # tier-3 tracker-ready issue drafts (notify.py --issue-draft)
 ```
 
 **JSON vs Markdown.** Machine-updated state is **JSON** (cursor, heartbeat,
@@ -253,7 +290,7 @@ which arms the cooldown only on actual delivery (see **Delivery** below). Tiers:
 | 0 | journal only | `info` |
 | 1 | incident file | `warning` |
 | 2 | notify | `warning` persisting ≥3 events, **or** `critical` |
-| 3 | notify (distinct issue action not yet wired — see below) | `critical` persisting ≥3 events |
+| 3 | notify + issue draft (`--issue-draft` → `outbox/issues/` — see below) | `critical` persisting ≥3 events |
 | 4 | combination | ≥2 distinct `critical` rules open at once (counted from `incidents/open/`) |
 
 The decision, then the delivery — two canonical commands:
@@ -268,6 +305,8 @@ notify.py --state-dir <dir> --rule <name> --severity <sev> \
 The second command runs in **routed mode** — the severity selects the channel
 list from `notify.toml`. Append `--adapter outbox` (or `ntfy` / `pushover` /
 `smtp`) to force a single channel instead (e.g. a dry run to the outbox).
+**When the gate returns tier ≥ 3, add `--issue-draft`** — the tier-3 action
+(see below).
 
 Deterministic **suppression**: at tier ≥2, a fire inside the **6-hour per-rule
 cooldown** → `suppress`; when today's notifications hit the **daily cap
@@ -347,18 +386,21 @@ succeeded), so a crash between the gate and delivery leaves the cooldown un-arme
 and the redelivery re-notifies instead of being silently suppressed. The gate
 reads those fields to decide; it never writes them.
 
-**Tier 3 has no distinct wired action yet: on the routed path above it delivers
-the same notification as tier 2.** No issue tracker is integrated, and routed
-mode does not write `outbox/` (the outbox is only the fallback when no
-`notify.toml` exists). Wiring a genuinely distinct tier-3 action — a tracker
-issue or webhook — is Phase C. Until then, to leave a durable draft an agent
-**may additionally force one**: `notify.py … --adapter outbox` writes the draft
-file into `outbox/` (note: forced mode also records delivery, so the extra write
-arms the cooldown and counts toward the daily cap). **Draft and notification
-bodies are plain prose that reference incident-file paths — never embed sensor
-data or code-heavy markdown:** say "see `incidents/open/psu-12v-sag.md` on the
-monitor host," do not paste readings. That keeps them public-repo-safe and ready
-to hand to whatever tracker is wired later.
+**Tier 3's distinct action is the issue draft.** `notify.py … --issue-draft`
+delivers the routed notification **and**, in the same invocation, writes a
+tracker-ready draft to `outbox/issues/<utc-stamp>-<slug>.md` — suggested title,
+severity/rule/tier, the incident-file path, and a next-actions checklist. The
+draft is an **artifact, not a delivery**: the invocation records the cooldown
+and daily count exactly once (for the notification), never a second time for
+the draft — so tier 3 costs the same ledger budget as tier 2 while leaving a
+durable deliverable. It is written *before* the delivery attempt, so it exists
+even when every channel fails (that is when durable evidence matters most). No
+issue tracker is integrated — the draft is written to be pasted into whichever
+tracker the operator uses; a config-driven webhook is a possible future rung.
+**Draft and notification bodies are plain prose that reference incident-file
+paths — never embed sensor data or code-heavy markdown:** say "see
+`incidents/open/psu-12v-sag.md` on the monitor host," do not paste readings.
+That keeps them public-repo-safe and ready to hand to any tracker.
 
 ### Dead-man's switch (spec — wired in LEO-340)
 
@@ -396,7 +438,8 @@ Run on the **first heartbeat after midnight** (tracked by
 - Journal rotation is **automatic** — it is by filename (`journal-YYYY-MM.jsonl`),
   no size machinery. Delete journal months you no longer need.
 - **Prune `spool/acked/`** entries older than 30 days, and prune old
-  `outbox/` notices (neither is pruned automatically).
+  `outbox/` notices and already-filed `outbox/issues/` drafts (none are pruned
+  automatically).
 - **Re-curate `baseline.md`** toward its 150-line cap (fold in what a quiet week
   taught you; trim stale ranges) — this is the one cap no script enforces.
 - **Verify the capped files.** Incident files self-trim to their 80-line cap on
