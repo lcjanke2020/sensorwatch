@@ -37,6 +37,14 @@ release picks it up._
   `skills/sensorwatch-monitor/` (the always-on wake-up monitoring protocol: arm
   `watch`, dispatch on its exit code, triage, and record durable state, with a
   deterministic escalation ladder and cooldowns).
+- **Monitor auto-close on recovery** — `reconcile_incidents.py` closes open
+  incidents whose latest re-derived transition in a `report` digest is
+  `cleared` (freshness-gated so a dead logger never looks like recovery), and
+  reports a `logger_health` gap-density verdict the skill escalates on — both
+  pilot follow-ups from the LEO-341 field report.
+- **Tier-3 issue drafts** — `notify.py --issue-draft` writes a tracker-ready
+  draft to `outbox/issues/` in the same invocation as the routed notification,
+  recording the per-rule cooldown exactly once.
 
 ## [0.2.0] - 2026-06-29
 

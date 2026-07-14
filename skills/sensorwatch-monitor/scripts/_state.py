@@ -308,6 +308,53 @@ def incident_set_field(lines: list, key: str, value: str) -> bool:
     return False
 
 
+def incident_latest_event_time(lines: list) -> tuple:
+    """``(newest_event_time | None, unorderable)`` over the event bullets in
+    an incident's ``## Events`` section. Used by the reconciler to order
+    recovery evidence against what the incident has already recorded — a
+    ``cleared`` older than the incident's newest event must never close it
+    (the fire may have happened while the logger was blind).
+
+    Scanning is scoped to ``## Events`` (up to the next ``## `` heading), so
+    prose bullets under ``## Notes`` (e.g. ``- checked @ 3pm``) never affect
+    ordering. Within the section, a bullet is trusted only when it carries
+    **exactly one** ``" @ "`` delimiter — the ``- <id> @ <ts>  <state>  …``
+    shape with an unambiguous boundary. Any other count fails closed
+    (``unorderable`` True): rule names may legally contain ``" @ "`` (the
+    watcher only requires a non-empty name), which would shift a left-split
+    into the ID, and the trailing ``value=<value> <unit>`` field carries
+    UNTRUSTED sensor strings (SECURITY.md §4), which a right-split would let
+    inject the parsed timestamp. Refusing to guess means hostile or exotic
+    content can only ever BLOCK an auto-close, never mis-order one. The same
+    fail-closed applies to an unparseable timestamp: a partial maximum over
+    the remaining bullets could silently omit the newest fire. (validate_event
+    rejects unparseable timestamps before recording, so those arise only from
+    legacy or hand-edited files — exactly the records that should stay with a
+    human.) The timestamp field is consumed up to the format's double-space
+    delimiter, so a legacy space-separated ISO form still reads losslessly."""
+    latest: datetime | None = None
+    unorderable = False
+    in_events = False
+    for line in lines:
+        if line.startswith("## "):
+            in_events = line.strip() == "## Events"
+            continue
+        if not in_events or not line.startswith("- ") or " @ " not in line:
+            continue
+        if line.count(" @ ") != 1:
+            unorderable = True
+            continue
+        token = line.split(" @ ", 1)[1].split("  ", 1)[0].strip()
+        try:
+            ts = parse_iso(token)
+        except Usage:
+            unorderable = True
+            continue
+        if latest is None or ts > latest:
+            latest = ts
+    return latest, unorderable
+
+
 def read_open_incidents(state_dir: Path) -> list:
     """One record per ``incidents/open/*.md``, parsed from its header block."""
     open_dir = state_dir / "incidents" / "open"
@@ -348,6 +395,24 @@ def load_event(path: Path) -> dict:
     return event
 
 
+def _parseable_ts(value: object) -> bool:
+    """A non-empty, ISO-8601-parseable timestamp string **with no internal
+    whitespace** (the ``T`` form the emitter uses). The emitter's timestamps
+    are replay-stable sample timestamps and always qualify; enforcing this
+    here means nothing unorderable is ever RECORDED into the cursor or an
+    incident file (the reconciler's evidence ordering depends on it). The
+    whitespace restriction exists because ``fromisoformat`` also accepts a
+    space-separated datetime, which would round-trip ambiguously through the
+    whitespace-delimited incident-line format."""
+    if not isinstance(value, str) or not value or any(ch.isspace() for ch in value):
+        return False
+    try:
+        parse_iso(value)
+    except Usage:
+        return False
+    return True
+
+
 def validate_event(event: object) -> None:
     """Enforce the frozen contract: object, schema_version 1, all 14 keys
     present with the right type. Unknown extra keys are tolerated."""
@@ -368,7 +433,7 @@ def validate_event(event: object) -> None:
         "type": lambda v: isinstance(v, str),
         "severity": lambda v: v in SEVERITIES,
         "state": lambda v: v in STATES,
-        "timestamp": lambda v: isinstance(v, str) and bool(v),
+        "timestamp": _parseable_ts,
         "sensor": lambda v: v is None or isinstance(v, str),
         "reading": lambda v: v is None or isinstance(v, str),
         "value": lambda v: v is None or _is_number(v),

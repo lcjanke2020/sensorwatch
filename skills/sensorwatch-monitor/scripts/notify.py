@@ -36,9 +36,16 @@ cooldown is armed only when a notice actually went out (the gate reads them to
 decide; a crash before delivery leaves them un-armed, so the redelivery
 re-notifies instead of being silently suppressed).
 
+``--issue-draft`` (the tier-3 action; the SKILL directs it when the gate
+returns tier >= 3) additionally writes a structured, tracker-ready draft to
+``outbox/issues/<utc-stamp>-<slug>.md`` in the SAME invocation. The draft is
+written before the delivery attempt so it exists even when every channel fails
+(durable evidence is most valuable exactly then), and it is NOT a delivery:
+only the notification itself records the cooldown/daily count, exactly once.
+
     # routed: severity -> channels from <state>/notify.toml
     python notify.py --state-dir <dir> --rule <name> --severity <s> --tier <n> \\
-        [--incident-file <path>] [--summary "..."] [--now <iso>]
+        [--issue-draft] [--incident-file <path>] [--summary "..."] [--now <iso>]
     # explicit: force one channel
     python notify.py --state-dir <dir> --adapter outbox|stderr|ntfy|pushover|smtp \\
         --rule <name> --severity <s> --tier <n> [...]
@@ -127,20 +134,26 @@ def _read_secret(path: str | None, what: str) -> str:
         raise st.Fatal(f"cannot read {what}: {exc}") from exc
 
 
+def _unique_stamped_path(directory: Path, now, slug: str) -> Path:
+    """``<dir>/<utc-stamp>-<slug>.md``, disambiguated with ``-<n>``. Second-
+    precision stamps collide when two notices for one rule land in the same
+    second (or under a pinned --now); neither may overwrite the other."""
+    stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = directory / f"{stamp}-{slug}.md"
+    n = 1
+    while path.exists():
+        path = directory / f"{stamp}-{slug}-{n}.md"
+        n += 1
+    return path
+
+
 # ---- delivery channels: (state_dir, now, slug, body, args, cfg) -> target_str ----
 
 def _deliver_outbox(state_dir: Path, now, slug: str, body: str, args, cfg) -> str:
-    stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     outbox = state_dir / "outbox"
     outbox.mkdir(parents=True, exist_ok=True)
-    # Second-precision stamps collide when two notices for one rule land in the
-    # same second (or under a pinned --now); disambiguate so neither overwrites
-    # the other. write_text_atomic uses a pid-suffixed tmp + os.replace.
-    path = outbox / f"{stamp}-{slug}.md"
-    n = 1
-    while path.exists():
-        path = outbox / f"{stamp}-{slug}-{n}.md"
-        n += 1
+    # write_text_atomic uses a pid-suffixed tmp + os.replace.
+    path = _unique_stamped_path(outbox, now, slug)
     st.write_text_atomic(path, body)
     return str(path)
 
@@ -259,6 +272,71 @@ ADAPTERS = {
     "pushover": _deliver_pushover,
     "smtp": _deliver_smtp,
 }
+
+
+# ---- tier-3 issue draft (an artifact, not a delivery channel) ----
+
+def _issue_draft_body(args: argparse.Namespace, now_iso: str) -> str:
+    """A tracker-ready draft: everything a human needs to file the issue by
+    hand. Same hygiene as the notice body — plain prose that *references* the
+    incident file, never sensor data."""
+    summary = _one_line(args.summary) if args.summary else "See the referenced incident file for detail."
+    incident = _one_line(args.incident_file) if args.incident_file else "(no incident file referenced)"
+    lines = [
+        f"# Issue draft: {_one_line(args.rule)} — {args.severity} (tier {args.tier})",
+        "",
+        f"Suggested title: sensorwatch: {_one_line(args.rule)} {args.severity} persisting (tier {args.tier})",
+        "",
+        f"- rule: {_one_line(args.rule)}",
+        f"- severity: {args.severity}",
+        f"- tier: {args.tier}",
+        f"- drafted: {now_iso}",
+        f"- incident: {incident}",
+        "",
+        "## Summary",
+        "",
+        summary,
+        "",
+        "## Timeline",
+        "",
+        "The incident file (path above) carries this rule's event history; the",
+        "journal (journal/journal-YYYY-MM.jsonl) holds the full record.",
+        "",
+        "## Suggested next actions",
+        "",
+        "- [ ] Review the incident file and baseline.md for context",
+        "- [ ] Confirm the reading against an independent source (BIOS / vendor tool)",
+        "- [ ] File in the tracker of record, linking the incident-file path",
+        "- [ ] Once resolved, confirm the incident file shows `closed` (the heartbeat",
+        "      reconciler may have auto-closed it); if not, open_incident.py --close",
+        "",
+        "_Sensor data lives in the incident file, not here._",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _with_issue_draft(payload: dict, issue_draft: str | None) -> dict:
+    """Attach the draft path to a journal-detail / emit payload when present —
+    one helper so the routed/explicit/muted branches cannot drift."""
+    if issue_draft:
+        payload["issue_draft"] = issue_draft
+    return payload
+
+
+def _write_issue_draft(state_dir: Path, now, slug: str, args: argparse.Namespace) -> str:
+    """Write the draft to ``outbox/issues/``. A distinct directory keeps the
+    tier-3 deliverable separate from notification-fallback notices, and the
+    write is NOT a delivery — the caller must not record cooldown/daily-count
+    for it. Failure is Fatal: the draft is the tier-3 deliverable, not a
+    side effect."""
+    issues = state_dir / "outbox" / "issues"
+    try:
+        issues.mkdir(parents=True, exist_ok=True)
+        path = _unique_stamped_path(issues, now, slug)
+        st.write_text_atomic(path, _issue_draft_body(args, st.iso(now)))
+    except OSError as exc:
+        raise st.Fatal(f"issue draft: {exc}") from exc
+    return str(path)
 
 
 # ---- notify.toml (machine-local channel routing + transport config) ----
@@ -439,6 +517,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rule", required=True)
     parser.add_argument("--severity", required=True, choices=st.SEVERITIES)
     parser.add_argument("--tier", required=True, type=int, help="escalation tier (0-4)")
+    parser.add_argument(
+        "--issue-draft", action="store_true",
+        help="also write a tracker-ready draft to outbox/issues/ "
+             "(the tier-3 action; not a delivery — records no cooldown)",
+    )
     parser.add_argument("--incident-file", help="path referenced (never embedded) in the notice")
     parser.add_argument("--summary", help="one-line plain-prose summary")
     parser.add_argument("--now", help="ISO-8601 timestamp (default: now UTC)")
@@ -478,20 +561,26 @@ def _run_explicit(args: argparse.Namespace, state_dir: Path, now, slug: str, bod
     # journaled (which a retry would then duplicate).
     esc = st.load_escalation(state_dir)
 
+    # Draft before delivery: it must exist even when the channel then fails
+    # (exit 1 with the draft on disk beats exit 1 with nothing durable). A
+    # failed-then-retried delivery writes a second, disambiguated draft —
+    # harmless, and preferable to a success path with no draft.
+    issue_draft = _write_issue_draft(state_dir, now, slug, args) if args.issue_draft else None
+
     target = adapter(state_dir, now, slug, body, args, config.get(args.adapter, {}))
 
     st.journal_append(
-        state_dir, now, "notify",
-        rule=args.rule,
-        detail={"adapter": args.adapter, "tier": args.tier, "target": target},
+        state_dir, now, "notify", rule=args.rule,
+        detail=_with_issue_draft(
+            {"adapter": args.adapter, "tier": args.tier, "target": target}, issue_draft),
     )
     _record_delivery(esc, state_dir / "escalation.json", now, args.rule)
-    st.emit({
+    st.emit(_with_issue_draft({
         "adapter": args.adapter,
         "delivered": True,
         "tier": args.tier,
         "target": target,
-    })
+    }, issue_draft))
     return 0
 
 
@@ -510,13 +599,20 @@ def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body:
     # Ledger validation BEFORE any side effect (journaling included).
     esc = st.load_escalation(state_dir)
 
+    # The draft precedes delivery (and survives an all-channels-failed exit 1);
+    # it is written even for a deliberately-muted severity — the tier-3
+    # deliverable is independent of which channels are routed.
+    issue_draft = _write_issue_draft(state_dir, now, slug, args) if args.issue_draft else None
+
     if not adapters:  # empty list = a deliberate no-op for this severity
         st.journal_append(
-            state_dir, now, "notify",
-            rule=args.rule,
-            detail={"mode": "routed", "tier": args.tier, "channels": []},
+            state_dir, now, "notify", rule=args.rule,
+            detail=_with_issue_draft(
+                {"mode": "routed", "tier": args.tier, "channels": []}, issue_draft),
         )
-        st.emit({"delivered": False, "tier": args.tier, "mode": "routed", "channels": []})
+        st.emit(_with_issue_draft(
+            {"delivered": False, "tier": args.tier, "mode": "routed", "channels": []},
+            issue_draft))
         return 0
 
     channels: list[dict] = []
@@ -537,9 +633,9 @@ def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body:
     all_ok = all(c["ok"] for c in channels)
 
     st.journal_append(
-        state_dir, now, "notify",
-        rule=args.rule,
-        detail={"mode": "routed", "tier": args.tier, "channels": channels},
+        state_dir, now, "notify", rule=args.rule,
+        detail=_with_issue_draft(
+            {"mode": "routed", "tier": args.tier, "channels": channels}, issue_draft),
     )
     # A delivered notice spends the rule's cooldown and a daily-cap slot. Recording
     # it HERE — after delivery, and only when ≥1 channel succeeded — is what closes
@@ -549,12 +645,12 @@ def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body:
     if any_ok:
         _record_delivery(esc, state_dir / "escalation.json", now, args.rule)
 
-    st.emit({
+    st.emit(_with_issue_draft({
         "delivered": any_ok,
         "tier": args.tier,
         "mode": "routed",
         "channels": channels,
-    })
+    }, issue_draft))
     return 0 if all_ok else 1
 
 

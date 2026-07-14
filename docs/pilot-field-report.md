@@ -125,7 +125,10 @@ that degrades the evidence you would use to diagnose it.
 system is least healthy. The fix direction is twofold — harden the sampler's
 scheduling under contention, and, because some degradation is unavoidable, make
 the monitor **escalate on gap density** so a starved logger becomes an alert
-rather than a silent blind spot.
+rather than a silent blind spot. *Status:* the escalation half shipped — the
+heartbeat's reconcile step (`reconcile_incidents.py`) computes a `logger_health`
+verdict from the digest's `gaps` and the skill escalates on `degraded`; the
+sampler hardening itself is still queued.
 
 ### (b) Arm-per-wake emits no cross-restart "cleared" event
 
@@ -143,7 +146,9 @@ two clean fixes, and the project wants both: run the persistent
 (the [replay demo](../examples/demo/) shows the full fire → clear lifecycle in a
 single process); **and** teach the agent to reconcile open incidents against a
 fresh `report` on each heartbeat and close the ones no longer in violation, so
-the one-shot topology is self-healing too.
+the one-shot topology is self-healing too. *Status:* the reconcile path shipped
+(`reconcile_incidents.py` — freshness-gated, closes only on a re-derived
+`cleared` transition, conservative on absence of evidence).
 
 ### (c) Tier 3 is a label with no distinct action
 
@@ -155,8 +160,10 @@ distinct actions; it really had three plus a placeholder.
 *What it teaches:* an escalation level is only real if it produces a distinct,
 durable artifact. The fix keeps the design CLI/skill-native rather than reaching
 for a heavyweight integration: at tier 3, emit a real issue-draft artifact (an
-extension of the outbox pattern) and/or a config-driven webhook, so the level is
-a deliverable you can point at, not a label.
+extension of the outbox pattern), so the level is a deliverable you can point
+at, not a label. *Status:* shipped — `notify.py --issue-draft` writes a
+tracker-ready draft to `outbox/issues/` in the same invocation as the
+notification, recording the cooldown exactly once.
 
 ## What the pilot validates
 
@@ -174,9 +181,9 @@ a deliverable you can point at, not a label.
 - **The defects are at the seams, and they are honest ones.** Every one of the
   three lives where two subsystems meet (sampler vs. load, one-shot transport vs.
   incident lifecycle, ladder vs. an unwired tracker). That is where real systems
-  break, and finding them is the pilot's most valuable output. All three are
-  tracked as Phase 2/C follow-ups on the [roadmap](../ROADMAP.md), to be fixed in
-  a subsequent PR.
+  break, and finding them is the pilot's most valuable output. Defects (b) and
+  (c) are fixed, and (a)'s detection half shipped (statuses above and on the
+  [roadmap](../ROADMAP.md)); (a)'s sampler hardening remains queued.
 
 The monitor spent eight days being boring and one day being useful. Both were the
 point.
