@@ -45,6 +45,14 @@ release picks it up._
 - **Tier-3 issue drafts** — `notify.py --issue-draft` writes a tracker-ready
   draft to `outbox/issues/` in the same invocation as the routed notification,
   recording the per-rule cooldown exactly once.
+- **Fuzz harnesses + nightly CI** — a libFuzzer target over the C shared-memory
+  parser (`sw_parse_buffer`, gated behind the `SW_BUILD_FUZZ` CMake option) and
+  cargo-fuzz targets over the Rust JSONL replay parser (`parse_line` /
+  `fixup_python_tokens`), both under AddressSanitizer + UBSan and run nightly by a
+  new `fuzz.yml` workflow. Adds adversarial parser unit cases (32-bit
+  `count × size` wrap, an oversized element, unterminated name/unit fields) with a
+  committed seed corpus. The `sensorwatch-cli` crate gains a thin library target so
+  the fuzz harness can reach the replay parser (`main` is now a shim over it).
 
 ## [0.2.0] - 2026-06-29
 

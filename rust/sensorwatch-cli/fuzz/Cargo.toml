@@ -1,0 +1,38 @@
+[package]
+name = "sensorwatch-cli-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.sensorwatch-cli]
+path = ".."
+
+# An empty [workspace] table makes this crate its own workspace root, detaching
+# it from the parent rust/ workspace. That keeps the nightly-only fuzz deps out
+# of the workspace Cargo.lock and out of the MSRV (1.82) / publish jobs — the
+# fuzz crate is never built by `cargo build --workspace`.
+[workspace]
+
+# Symbols in release so libFuzzer/ASan crash traces are readable.
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "parse_line"
+path = "fuzz_targets/parse_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fixup_python_tokens"
+path = "fuzz_targets/fixup_python_tokens.rs"
+test = false
+doc = false
+bench = false

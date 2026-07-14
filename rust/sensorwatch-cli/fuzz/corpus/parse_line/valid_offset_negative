@@ -1,0 +1,1 @@
+{"timestamp": "2026-02-18T20:00:00.000042+05:30", "sensors": [{"sensor": "CPU Package", "reading": "Core Clock", "type": "Clock", "value": 4550.0, "min": 800.0, "max": 5125.0, "avg": 3901.25, "unit": "MHz"}, {"sensor": "CPU Package", "reading": "Offset Rail", "type": "Other", "value": -0.125, "min": -0.5, "max": 0.007, "avg": -0.0625, "unit": ""}]}

@@ -583,7 +583,7 @@ change could warn when the log directory appears broadly writable/readable.
 | 2 | Keep native core runtime dependency-free beyond system libraries | 2.1, 6.1 | Done |
 | 3 | Preserve copy-then-parse model; expose immutable snapshots, not raw pointers | 1.3 | Done |
 | 4 | Return explicit error codes for source unavailable vs corrupt data | 1.3 | Done |
-| 5 | Run native parser tests under sanitizers and fuzzing | 1.3, 6.2 | ASan/UBSan done; fuzzing planned |
+| 5 | Run native parser tests under sanitizers and fuzzing | 1.3, 6.2 | ASan/UBSan done; libFuzzer (`sw_parse_buffer`) + cargo-fuzz (replay parser) run nightly |
 | 6 | Keep the C++ binding header-only (no compiled artifact, no ABI of its own) over the same `extern "C"` boundary | 2.1 | Done |
 | 7 | Keep the Rust `-sys` FFI auditable: checked-in bindgen output with a CI drift check, no libclang at build time | 2.1 | Done |
 

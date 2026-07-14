@@ -14,6 +14,13 @@ readme = "README.md"
 # (publish-crates.yml) untouched.
 publish = false
 
+# The crate is a library + a thin binary. The library exists so the cargo-fuzz
+# targets under fuzz/ can link the crate and reach the untrusted-input replay
+# parsers (via the narrow `fuzz` module); main.rs is a one-line shim over it.
+[lib]
+name = "sensorwatch_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "sensorwatch"
 path = "src/main.rs"

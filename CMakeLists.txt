@@ -30,7 +30,7 @@ option(SW_BUILD_TESTS    "Build the cmocka unit tests"                      ON)
 option(SW_BUILD_EXAMPLES "Build example programs (sw_dump)"                 OFF)
 option(SW_ENABLE_ASAN    "Build with AddressSanitizer (+UBSan on gcc/clang)" OFF)
 option(SW_ENABLE_ANALYZE "Enable MSVC /analyze static analysis (non-fatal)" OFF)
-option(SW_BUILD_FUZZ     "Build fuzz targets (follow-up; not yet provided)" OFF)
+option(SW_BUILD_FUZZ     "Build libFuzzer targets (clang only; implies ASan+UBSan)" OFF)
 
 # Install / package-export rules (install(), find_package(sensorwatch CONFIG)).
 # Default ON for a top-level build, OFF when consumed via add_subdirectory so an
@@ -62,6 +62,23 @@ if(SW_ENABLE_ASAN)
                             -fno-omit-frame-pointer -g)
         add_link_options(-fsanitize=address,undefined)
     endif()
+endif()
+
+# --- Fuzzing: libFuzzer coverage instrumentation + sanitizers, applied globally
+#     (before any targets) so the code under test is instrumented. clang-only:
+#     -fsanitize=fuzzer is not a gcc flag. Self-enables ASan+UBSan, so a fuzz
+#     build needs only -DSW_BUILD_FUZZ=ON (not also -DSW_ENABLE_ASAN). ---
+if(SW_BUILD_FUZZ)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "SW_BUILD_FUZZ requires clang (libFuzzer). Re-configure with "
+            "-DCMAKE_C_COMPILER=clang. Current C compiler: '${CMAKE_C_COMPILER_ID}'.")
+    endif()
+    # fuzzer-no-link instruments every TU for coverage without pulling libFuzzer's
+    # main() into the libraries; the harness target adds -fsanitize=fuzzer to link it.
+    add_compile_options(-fsanitize=fuzzer-no-link,address,undefined
+                        -fno-sanitize-recover=all -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address,undefined)
 endif()
 
 # --- Per-target warning / security flags. Applied only to our own targets so a
@@ -110,6 +127,18 @@ if(SW_BUILD_STATIC OR SW_BUILD_TESTS)
     set_target_properties(sensorwatch_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
     add_library(sensorwatch::sensorwatch_static ALIAS sensorwatch_static)
     sw_set_target_flags(sensorwatch_static)
+endif()
+
+# --- Fuzz target (libFuzzer over the pure parser). Built only with
+#     -DSW_BUILD_FUZZ=ON, which also enables the coverage + sanitizer
+#     instrumentation above. Links the static core to reach the internal
+#     sw_parse_buffer() directly, the same way the cmocka tests do. Kept out of
+#     sw_set_target_flags (the harness is a libFuzzer TU, not shipped code). ---
+if(SW_BUILD_FUZZ)
+    add_executable(fuzz_parse tests/fuzz/fuzz_parse.c)
+    target_include_directories(fuzz_parse PRIVATE src include)
+    target_link_libraries(fuzz_parse PRIVATE sensorwatch_static)
+    target_link_options(fuzz_parse PRIVATE -fsanitize=fuzzer)
 endif()
 
 # Header-only C++ binding (include/sensorwatch/sensorwatch.hpp). An INTERFACE
