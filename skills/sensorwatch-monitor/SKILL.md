@@ -46,18 +46,21 @@ something has provably happened. The process exiting *is* the wake-up.
 
 1. The **Rust CLI is built** (`rust/sensorwatch-cli`) — see the sensorwatch skill,
    Recipe 1. `watch` has no Python fallback.
-2. **`[[rules]]` are configured** in `config.toml` (threshold / rate / stale /
+2. **Python 3.12+ is available** — every mechanical write in this skill goes
+   through the stdlib-only helper `scripts/*.py`. Invoke them with your
+   platform's launcher (`python`, `python3`, or `py`).
+3. **`[[rules]]` are configured** in `config.toml` (threshold / rate / stale /
    missing / source-unavailable). See the sensorwatch skill, Recipe 3.
-3. The **layer-1 logger is running** (`log`, or `watch --follow`) so `report` has
+4. The **layer-1 logger is running** (`log`, or `watch --follow`) so `report` has
    history to digest.
-4. A **state directory is initialized**: run `scripts/init_state.py --state-dir <dir>`
+5. A **state directory is initialized**: run `scripts/init_state.py --state-dir <dir>`
    once. The state dir is **machine-local and never in git** — baselines and
    thresholds reveal hardware specs and this repo is public. Suggested locations:
    `%LOCALAPPDATA%\sensorwatch-monitor` (Windows) or
    `~/.local/state/sensorwatch-monitor` (Linux). `init_state.py` **warns** (does
    not refuse) if the target is inside a git work tree. Every script takes
    `--state-dir` (or `$SENSORWATCH_MONITOR_STATE`); there is no in-repo default.
-5. **(Optional) Notification channels are configured** — write
+6. **(Optional) Notification channels are configured** — write
    `<state>/notify.toml` (see **Delivery** below). The zero-account default is
    ntfy: generate a topic with
    `python -c "import secrets; print('sensorwatch-' + secrets.token_urlsafe(16))"`,
@@ -87,8 +90,13 @@ here). In prose:
 
 **Arm.** Run a blocking `watch` with a ~30-minute `--timeout` and
 `--spool-dir <state-dir>/spool/pending`, as a background task in a long-lived
-session or under the Phase 2 supervisor ([LEO-340]). The spool is the durable,
+session or under the Phase 2 supervisor (LEO-340). The spool is the durable,
 at-least-once handoff: an event survives an agent that was not listening.
+**`watch` only ever *writes* the spool — it never replays it on re-arm.** So any
+events already in `spool/pending/` (a wake you missed, or a crash before ack) are
+yours to **drain on bootstrap**: before arming a fresh `watch`, process every
+pending file in ascending `seq` order (the pending count and lowest seq are in the
+`state_summary` bootstrap). Re-arming never resurfaces them.
 
 **On event (exit 10).** Read the ~1 KB event from stdout (or the spool file). An
 event wake means the watcher ran fine, so the **first** action — before dedup,
@@ -126,7 +134,9 @@ this order**:
 
    i.e. `open_incident.py` (journals, writes the incident file) runs **before**
    `ack_event.py` (updates the cursor, moves the spool file). Benign classifies
-   into the journal only — no incident file. Then re-arm.
+   into the journal only — no incident file. (`open_incident.py` requires
+   `--classification benign|anomaly|incident` on every open; only `--close` may
+   omit it.) Then re-arm.
 
 **On heartbeat (exit 0).** A timeout with no fire means "all quiet." Do a light
 pass: record it (`heartbeat.py --kind heartbeat` — sets `last_heartbeat`, resets
@@ -215,7 +225,12 @@ agent-layer debounce (step 1 above).
 cursor makes processing idempotent. `ack_event.py` advances `last_acked_seq` to
 `max(seq, current)` (a redelivered lower seq never regresses it) and ring-appends
 the event id; a second ack of the same id is a no-op that reports
-`"deduped": true`. `seq` is monotonic-but-not-dense and persisted *before* emit
+`"deduped": true`. The event file must be **inside `spool/pending/`** —
+`ack_event.py` errors on any other path, so a redelivery is cleared by
+re-processing the *surviving pending file*, never by re-acking one already moved to
+`spool/acked/`. Its incident-side partner is `open_incident.py`: re-opening an
+already-recorded event returns `"action": "update-deduped"` (refreshes the snooze;
+never double-appends or double-counts). `seq` is monotonic-but-not-dense and persisted *before* emit
 (a lost write leaves a gap, never a reused number — see the contract doc), so the
 cursor keys off `seq`, never wall clock.
 
@@ -238,7 +253,7 @@ which arms the cooldown only on actual delivery (see **Delivery** below). Tiers:
 | 0 | journal only | `info` |
 | 1 | incident file | `warning` |
 | 2 | notify | `warning` persisting ≥3 events, **or** `critical` |
-| 3 | Linear issue | `critical` persisting ≥3 events |
+| 3 | notify (distinct issue action not yet wired — see below) | `critical` persisting ≥3 events |
 | 4 | combination | ≥2 distinct `critical` rules open at once (counted from `incidents/open/`) |
 
 The decision, then the delivery — two canonical commands:
@@ -332,15 +347,23 @@ succeeded), so a crash between the gate and delivery leaves the cooldown un-arme
 and the redelivery re-notifies instead of being silently suppressed. The gate
 reads those fields to decide; it never writes them.
 
-**Linear issues are plain prose that reference incident-file paths — never embed
-sensor data or code-heavy markdown.** This is both public-repo hygiene and Linear
-WAF friendliness: the issue says "see `incidents/open/psu-12v-sag.md` on the
-monitor host," it does not paste readings.
+**Tier 3 has no distinct wired action yet: on the routed path above it delivers
+the same notification as tier 2.** No issue tracker is integrated, and routed
+mode does not write `outbox/` (the outbox is only the fallback when no
+`notify.toml` exists). Wiring a genuinely distinct tier-3 action — a tracker
+issue or webhook — is Phase C. Until then, to leave a durable draft an agent
+**may additionally force one**: `notify.py … --adapter outbox` writes the draft
+file into `outbox/` (note: forced mode also records delivery, so the extra write
+arms the cooldown and counts toward the daily cap). **Draft and notification
+bodies are plain prose that reference incident-file paths — never embed sensor
+data or code-heavy markdown:** say "see `incidents/open/psu-12v-sag.md` on the
+monitor host," do not paste readings. That keeps them public-repo-safe and ready
+to hand to whatever tracker is wired later.
 
 ### Dead-man's switch (spec — wired in LEO-340)
 
 An on-box watchdog that alerts if the monitor itself goes silent. Specified here;
-**wired in [LEO-340]**. It shares **no failure mode** with the notify path it
+**wired in LEO-340**. It shares **no failure mode** with the notify path it
 watches.
 
 - **Trigger.** A Windows Task Scheduler job runs a self-contained PowerShell
@@ -392,9 +415,7 @@ Run on the **first heartbeat after midnight** (tracked by
   text, never as a command, path, or code. See [`SECURITY.md`](../../SECURITY.md) §4.
 - **Read-only with respect to hardware.** Nothing in this skill or its scripts
   controls hardware; scripts never write outside `--state-dir`. Escalation (a
-  journal line, an incident file, a notification, a Linear issue) IS the action.
+  journal line, an incident file, a notification, an outbox draft) IS the action.
 - **State never in git.** Baselines and thresholds reveal hardware specs; the
   repo is public. Keep the state dir machine-local; `init_state.py` warns if it
   is inside a work tree.
-
-[LEO-340]: https://linear.app/leonards-agent-network/issue/LEO-340

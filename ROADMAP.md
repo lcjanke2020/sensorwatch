@@ -10,7 +10,7 @@ One constraint shapes the sequencing: **the project must be usable at every
 intermediate stage.** Each milestone ships something you can run on its own —
 nothing below depends on a later phase to be useful.
 
-*Last updated: 2026-07-05.*
+*Last updated: 2026-07-13.*
 
 ## Where the project is today
 
@@ -21,7 +21,7 @@ nothing below depends on a later phase to be useful.
 | Python binding (cffi, API mode) | Shipped — `sensorwatch.native` |
 | C++ binding (header-only, C++17 RAII) | Shipped — [`include/sensorwatch/sensorwatch.hpp`](include/sensorwatch/sensorwatch.hpp) |
 | Rust bindings (`-sys` crate + safe wrapper) | Shipped — [crates.io](https://crates.io/crates/sensorwatch), OIDC trusted publishing |
-| Rust CLI — `snapshot` + `log` + `watch` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
+| Rust CLI — `snapshot` + `log` + `watch` + `report` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
 | CMake `install()` / `find_package(sensorwatch CONFIG)` export | Shipped |
 | Agent skill (portable Agent Skills bundle) | Shipped — [`skills/sensorwatch/`](skills/sensorwatch/) |
 | Agent monitor skill (wake-up protocol + durable state dir) | Shipped — [`skills/sensorwatch-monitor/`](skills/sensorwatch-monitor/) |
@@ -107,8 +107,9 @@ With `watch` and `report` in place, an AI agent can *monitor* hardware over
 days and weeks — woken by deterministic events plus a low-frequency heartbeat,
 instead of burning cycles polling. The
 [`sensorwatch-monitor`](skills/sensorwatch-monitor/SKILL.md) skill **ships the
-operating protocol** (LEO-338); the unattended runtime around it, and the real
-notification transport, are still in progress:
+operating protocol** (LEO-338); the real notification transport shipped in
+LEO-339 (see below), and the unattended runtime around it is what remains in
+progress:
 
 - **Event-driven wake-ups — shipped.** The agent arms the blocking `watch`; the
   process exiting *is* the wake-up. A rule event means "triage this"; a timeout
@@ -126,9 +127,14 @@ notification transport, are still in progress:
   reconstructs the monitor from a few-kilobyte state summary. Stdlib-only helper
   scripts do every mechanical write.
 - **Deterministic escalation ladder — shipped.** Journal → incident file →
-  notification → Linear issue → critical-combination tier, driven by rule
+  notification → issue rung (placeholder — see below) → critical-combination
+  tier, driven by rule
   severity and persistence, with per-rule cooldowns and a global daily cap
-  (batched digest beyond it). Delivery goes through pluggable channels routed
+  (batched digest beyond it). The issue tier currently delivers the same routed
+  notification as tier 2 (a durable `outbox` draft exists only when explicitly
+  forced); wiring it to a distinct action (an issue-draft file or a webhook) is a
+  Phase 2 / Phase C follow-up from the pilot. Delivery goes through pluggable
+  channels routed
   per severity from a machine-local `notify.toml`; LEO-339 ships real transports
   — **ntfy** (the zero-account default via hosted `ntfy.sh`), **Pushover**, and
   generic **SMTP** — with the `outbox`/`stderr` stubs kept as fallbacks.
@@ -138,17 +144,26 @@ notification transport, are still in progress:
   that re-runs `watch` and dispatches each exit to a fresh headless agent
   invocation, zero context growth, survives reboots — plus a dead-man's switch (a
   trivial scheduled task checking heartbeat-file age) that watches the watcher
-  through an independent alert path. The **Phase 1 pilot (LEO-341) is now
-  underway**: a week-long interactive session monitoring a real Windows machine
-  (an AMD Ryzen 9 9950X, an MSI MEG Ai1600T PSU, and GPU temperatures), with
-  deterministic rules on the PSU +12V rail, CPU and GPU temperatures, and
-  sensor-feed liveness, and the dead-man's switch armed. Early operation is clean;
-  the pilot is tuning the rule set against real behavior, measuring the
-  token-per-wake budget, and running two fault drills (dead-man's switch and
-  kill-mid-triage). The headless supervisor graduates from the pilot once a week
-  of stable operation and both drills pass. Generalizable findings — worked
-  **examples** and **`sensorwatch-monitor` skill refinements** — are expected to
-  land in this repo in **mid-July 2026**, after the pilot and its wrap-up.
+  through an independent alert path. The **Phase 1 pilot (LEO-341) is
+  complete**: a week-long interactive session (2026-07-05 → 07-13) monitored a
+  real Windows machine (an AMD Ryzen 9 9950X, an MSI MEG Ai1600T PSU, and GPU
+  temperatures), with deterministic rules on the PSU +12V rail, CPU and GPU
+  temperatures, and sensor-feed liveness, and the dead-man's switch armed. Eight
+  days of clean coverage held per-wake cost roughly constant; two attended fault
+  drills — a synthetic escalation-ladder run and a real thermal event under load
+  — both delivered a multi-channel alert. The run is written up in
+  [`docs/pilot-field-report.md`](docs/pilot-field-report.md). It surfaced three
+  defects, now queued as **Phase 2 / Phase C follow-ups**: (1) the logger drops
+  samples under full CPU load (harden the sampler under contention; escalate on
+  gap density so a starved logger becomes an alert); (2) arming `watch` one-shot
+  per wake emits no cross-restart `cleared` event, so incidents don't auto-close
+  (run the persistent `watch --follow`, and have the agent reconcile open
+  incidents against a fresh `report` on each heartbeat); (3) the tier-3 issue
+  rung has no distinct wired action — it collapses into the tier-2 notification
+  plus a best-effort `outbox` draft (emit a real issue-draft artifact and/or a
+  config-driven webhook). The headless supervisor graduation, and the
+  generalizable worked **examples** + **`sensorwatch-monitor` skill
+  refinements** (LEO-411), follow from here.
 
 The protocol is deliberately harness-agnostic: it needs only "run a blocking
 process; act on its exit," which any current agent runtime provides.

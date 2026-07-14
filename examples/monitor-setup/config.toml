@@ -1,0 +1,136 @@
+# =============================================================================
+# sensorwatch monitor — worked example config
+# =============================================================================
+# A complete `config.toml` for `sensorwatch watch`: the logger sections
+# (`[general]`, `[sensors]`) plus a `[[rules]]` set that exercises all five rule
+# kinds. The `log` subcommand reads `[general]`/`[sensors]` and ignores
+# `[[rules]]`; `watch` validates `[[rules]]` STRICTLY and exits 2 on any invalid
+# rule (a typo'd key is a hard error — `deny_unknown_fields`).
+#
+# Everything below is a STARTING POINT to adapt, not a tuned rule set. The
+# thresholds are deliberately conservative placeholders — see the callouts marked
+# "TUNE:" and validate them against your own hardware before you rely on them
+# (examples/monitor-setup/PILOT_TEST_PLAN.md walks through proving a rule fires).
+#
+# Matchers (`sensor`/`reading`/`type`) are case-insensitive substring on the
+# sensor and reading names and an exact canonical `type` label. Discover the
+# exact names your machine publishes with:  `sensorwatch snapshot`
+# Full key reference + semantics: README.md → "Alert rules (`[[rules]]`)".
+# =============================================================================
+
+[general]
+interval_seconds = 10          # sampling cadence for the log/live-watch samplers
+                               # (live `watch` samples HWiNFO directly; `--replay` reads recorded logs)
+log_dir = "logs"               # where `sensors_*.jsonl` live (relative to CWD or absolute)
+retention_days = 30
+
+[sensors]
+# The include/exclude filter scopes only the sensor LOG, not rule evaluation —
+# rules always see the full stream, so scope each rule with its own matchers.
+include = []                   # empty = capture all HWiNFO sensors
+exclude = []
+
+# -----------------------------------------------------------------------------
+# 1) threshold — the workhorse. Fire when a reading crosses a level, with
+#    hysteresis (`clear`) and debounce (`for_samples`). Requires op + threshold
+#    + at least one matcher (comparing every reading would mix units).
+# -----------------------------------------------------------------------------
+
+# PSU +12V rail sag — the canonical "golden rule". A sagging 12V rail under load
+# is an early PSU-aging / over-current tell. Op "<" fires below `threshold` and
+# re-arms only after recovering past `clear`.
+[[rules]]
+name = "psu-12v-sag"
+kind = "threshold"
+reading = "+12V"               # scope to your PSU too, e.g. sensor = "<your PSU>"
+type = "Voltage"
+metric = "value"               # value | min | max | avg   (default: value)
+op = "<"                       # > | >= | < | <=
+threshold = 11.6               # ATX allows +12V down to 11.4; 11.6 leaves margin
+clear = 11.8                   # re-arm only after recovering past 11.8 V (hysteresis)
+for_samples = 3                # fire on the 3rd consecutive violating sample (debounce).
+                               # PILOT_TEST_PLAN.md step 2's fixture provides exactly 3
+                               # violating samples — if you tune this, update that fixture too.
+severity = "critical"
+
+# CPU temperature — a two-tier pattern: a `warning` and a higher `critical` on
+# the same reading, each with its own clear/debounce.
+[[rules]]
+name = "cpu-temp-hot"
+kind = "threshold"
+reading = "CPU"                # substring — matches your CPU package temp reading
+type = "Temperature"
+op = ">"
+threshold = 90.0               # TUNE: many modern CPUs deliberately run to ~95 °C
+clear = 82.0                   #       under boost — set this ABOVE your normal
+for_samples = 3                #       full-load temp or it will never fire (or
+severity = "warning"           #       always will). Confirm with a load test.
+
+[[rules]]
+name = "cpu-temp-crit"
+kind = "threshold"
+reading = "CPU"
+type = "Temperature"
+op = ">"
+threshold = 100.0              # TUNE: the "something is wrong" ceiling, above the
+clear = 82.0                   #       normal boost target.
+for_samples = 2
+severity = "critical"
+
+# -----------------------------------------------------------------------------
+# 2) rate — fire on the DELTA over a trailing window, not the absolute value.
+#    Catches a fast rise/fall a static threshold would miss. Requires
+#    `window_samples` (>= 2); the delta spans `window_samples - 1` intervals.
+# -----------------------------------------------------------------------------
+
+# GPU temperature climbing fast: a rise of >12 °C across 6 samples (~50 s at a
+# 10 s interval) — e.g. a fan that stopped ramping — before any absolute limit.
+[[rules]]
+name = "gpu-temp-rising"
+kind = "rate"
+reading = "GPU Temperature"
+type = "Temperature"
+metric = "value"
+op = ">"
+threshold = 12.0               # delta units (°C here) over the window
+window_samples = 6             # 6 samples = the delta spans 5 intervals (~50 s)
+for_samples = 1
+severity = "warning"
+
+# -----------------------------------------------------------------------------
+# 3) stale — a matched reading STOPS CHANGING (value frozen) for `for_samples`.
+#    Signals a stuck sensor or halted polling. No op/threshold/metric.
+#    TUNE: pick a reading that normally fluctuates and set `for_samples`
+#    generously, or legitimately-steady idle values will trip it.
+# -----------------------------------------------------------------------------
+[[rules]]
+name = "gpu-temp-stale"
+kind = "stale"
+reading = "GPU Temperature"
+type = "Temperature"
+for_samples = 30               # ~5 min of an unchanging value at a 10 s interval
+severity = "warning"
+
+# -----------------------------------------------------------------------------
+# 4) missing — a previously-seen matched reading DISAPPEARS for `for_samples`.
+#    E.g. a GPU that fell off the bus, or HWiNFO dropped that one sensor.
+#    Distinct from source-unavailable (below), which is the WHOLE feed vanishing.
+# -----------------------------------------------------------------------------
+[[rules]]
+name = "gpu-temp-missing"
+kind = "missing"
+reading = "GPU Temperature"
+type = "Temperature"
+for_samples = 3
+severity = "warning"
+
+# -----------------------------------------------------------------------------
+# 5) source-unavailable — the entire sensor source (HWiNFO's shared memory) is
+#    gone. Takes no matchers (the whole source is down, not one reading). Also
+#    catches HWiNFO's free-tier 12 h shared-memory cutoff.
+# -----------------------------------------------------------------------------
+[[rules]]
+name = "sensors-offline"
+kind = "source-unavailable"
+for_samples = 2
+severity = "warning"

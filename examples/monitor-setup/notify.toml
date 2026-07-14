@@ -1,0 +1,62 @@
+# =============================================================================
+# EXAMPLE notify.toml — channel routing + transport config
+# =============================================================================
+# A real notify.toml is MACHINE-LOCAL and NEVER committed: it names your ntfy
+# topic (a long random topic IS the shared secret) and points at 0600 secret
+# files. It lives in the monitor's state directory, not in the repo. This file
+# is an annotated example to copy from — replace every CHANGEME.
+#
+# Defaults below use the FREE, ZERO-ACCOUNT path: hosted ntfy.sh only. Pushover
+# and SMTP are shown as optional add-ons, commented out. This mirrors the block
+# in the sensorwatch-monitor skill (skills/sensorwatch-monitor/SKILL.md) — the
+# only intentional difference is that `critical` fans out to Pushover THERE and
+# to ntfy-only HERE, to keep the default free.
+#
+# Routing rules: severity selects an ordered channel list. A PRESENT file must
+# route every severity — a `[severity]` entry (empty list `[]` = deliberate
+# mute) or a top-level `default` — or `notify.py` exits 2 (a half-configured
+# file can never silently swallow a critical notice).
+# =============================================================================
+
+default = ["ntfy"]                 # used when [severity] has no entry for a level
+
+[severity]
+info = []                          # empty list = deliberate no-op
+warning = ["ntfy"]
+critical = ["ntfy"]                # free default: still ntfy. Add "pushover" for
+                                   # an acknowledge-required page (see below).
+
+# --- ntfy: the default transport (free, no account) --------------------------
+# Install the ntfy app, subscribe to your topic, done. FCM push to your phone.
+[ntfy]
+server = "https://ntfy.sh"         # default if omitted; self-host by pointing here
+topic = "sensorwatch-CHANGEME"     # REQUIRED. Use a long random string — it is the
+                                   # ONLY secret protecting the topic. e.g.
+                                   # `sensorwatch-$(openssl rand -hex 12)`
+                                   # NEVER commit a real topic: anyone who has it can
+                                   # read your alerts — and publish fake ones.
+token = ""                         # optional Bearer token (for auth'd self-hosted)
+priority = { info = 3, warning = 4, critical = 5 }   # ntfy priorities (defaults shown)
+
+# --- Optional: Pushover (acknowledge-required upgrade) ------------------------
+# Uncomment this block AND add "pushover" to a [severity] route above to enable.
+# Emergency priority (2) retries until you acknowledge on the phone.
+# [pushover]
+# token_file = "~/.config/sensorwatch/pushover-token"  # 0600, single line
+# user_file  = "~/.config/sensorwatch/pushover-user"   # 0600, single line
+# api_url = "https://api.pushover.net/1/messages.json"  # default
+# priority = { info = -1, warning = 0, critical = 2 }   # 2 = emergency (retry/expire)
+# retry = 60
+# expire = 3600
+
+# --- Optional: SMTP (bring-your-own email) -----------------------------------
+# Uncomment AND add "smtp" to a [severity] route to enable. Works with any
+# provider that exposes SMTP (including a local relay).
+# [smtp]
+# host = "smtp.example.com"          # required
+# port = 587
+# starttls = true
+# username = "alerts@example.com"    # optional; login only when set
+# password_file = "~/.config/sensorwatch/smtp-password"  # required when username set
+# mail_from = "alerts@example.com"   # required
+# mail_to = "you@example.com"        # required

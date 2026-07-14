@@ -22,6 +22,50 @@ something has provably happened. The process exiting *is* the wake-up.
 
 ## The five layers
 
+```mermaid
+flowchart TD
+    HW[["HWiNFO64 shared memory<br/>(read-only)"]]
+
+    subgraph L1["① Always-on logger"]
+        LOG["log / watch --follow"]
+    end
+    JSONL[("sensors_*.jsonl<br/>daily-rotated history")]
+
+    subgraph L2["② Deterministic watcher"]
+        WATCH["watch + rules<br/>thresholds · debounce · hysteresis"]
+    end
+    EV["fired / cleared events<br/>frozen 14-key JSON"]
+
+    subgraph L3["③ Wake-up transport"]
+        EXIT{{"exit code<br/>10 fired · 0 heartbeat · 1/2 fault"}}
+        SPOOL[("spool-dir<br/>atomic per-event files")]
+    end
+
+    subgraph L4["④ Agent triage — sensorwatch-monitor skill"]
+        TRIAGE["wake → read ~1 KB event<br/>→ dedup → bounded report digest"]
+        LADDER["escalation ladder<br/>journal → incident → notify → issue (Phase C)"]
+    end
+
+    subgraph L5["⑤ Durable state directory"]
+        STATE[("ack cursor · open incidents<br/>baseline · escalation ledger")]
+    end
+
+    NOTIFY["notify channels<br/>ntfy · Pushover · SMTP · outbox"]
+
+    HW --> LOG --> JSONL
+    JSONL -. "replay (any OS)" .-> WATCH
+    HW --> WATCH
+    WATCH --> EV --> EXIT
+    EV --> SPOOL
+    EXIT -- "10: wake agent" --> TRIAGE
+    EXIT -- "0: heartbeat" --> TRIAGE
+    SPOOL -. durable handoff .-> TRIAGE
+    TRIAGE --> LADDER
+    LADDER --> NOTIFY
+    TRIAGE <--> STATE
+    LADDER <--> STATE
+```
+
 | Layer | What it is | Where it lives |
 |-------|------------|----------------|
 | 1. Always-on logger | Byte-stable JSONL capture of every sample | `log`, or `watch --follow` |
@@ -176,7 +220,7 @@ one.
 The architecture — *deterministic watcher → classified event → durable spool →
 ack cursor → bounded digest → agent wake* — is not specific to hardware. It is
 the shape of **any** agent that keeps an eye on a stream of events, and it maps
-cleanly onto autonomous PR review ([LEO-257](https://linear.app/leonards-agent-network/issue/LEO-257)):
+cleanly onto autonomous PR review (LEO-257):
 
 - The **watcher** is a CI/webhook poller instead of a sensor sampler: a
   deterministic rule ("a PR is open, mergeable, and CI is green") replaces a

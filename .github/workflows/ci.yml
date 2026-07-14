@@ -143,6 +143,28 @@ jobs:
         run: cargo build --workspace --verbose
       - name: Test
         run: cargo test --workspace --verbose
+      # Guards the README "Try it in 60 seconds" promise: the no-hardware replay
+      # demo must keep firing (exit 10) and emit fired+cleared under --follow, on
+      # both Ubuntu and Windows. Uses the debug binary built above.
+      - name: Replay demo smoke test
+        shell: bash
+        working-directory: examples/demo
+        run: |
+          set -euo pipefail
+          bin=../../rust/target/debug/sensorwatch
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          rm -rf logs
+          out=$("$bin" watch --config demo.toml --replay sensors_demo.jsonl) && rc=0 || rc=$?
+          echo "$out"
+          [ "$rc" = 10 ] || { echo "one-shot: expected exit 10, got $rc"; exit 1; }
+          echo "$out" | grep -q '"state":"fired"' || { echo "one-shot: no fired event"; exit 1; }
+          rm -rf logs
+          "$bin" watch --config demo.toml --replay sensors_demo.jsonl --follow && rc2=0 || rc2=$?
+          [ "$rc2" = 0 ] || { echo "follow: expected exit 0, got $rc2"; exit 1; }
+          grep -q '"state":"fired"'   logs/events_*.jsonl || { echo "follow: no fired event"; exit 1; }
+          grep -q '"state":"cleared"' logs/events_*.jsonl || { echo "follow: no cleared event"; exit 1; }
+          rm -rf logs
+          echo "replay demo smoke test OK"
 
   # Regenerate the checked-in FFI bindings and fail if they drift from the header.
   # The Rust analog of the C++ header-compile check / cffi API-mode drift guard,
