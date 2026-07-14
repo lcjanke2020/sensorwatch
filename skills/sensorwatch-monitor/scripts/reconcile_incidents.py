@@ -44,10 +44,12 @@ Trust boundaries, in order:
    requires the cleared transition's timestamp to be strictly newer than the
    incident's newest recorded event line (falling back to the ``opened``
    header when the record has no event lines). Fail closed: if ANY event
-   bullet's timestamp does not parse, the record is unorderable — a partial
-   maximum could omit the newest fire — and the incident stays open for a
-   human (validate_event now rejects unparseable timestamps before recording,
-   so this guards legacy/hand-edited files).
+   bullet in the ``## Events`` section has an unparseable timestamp or an
+   ambiguous delimiter shape (anything but exactly one ``" @ "`` — rule names
+   may legally contain the delimiter, and the value/unit tail is untrusted
+   sensor text), the record is unorderable — a partial or mis-split maximum
+   could omit the newest fire — and the incident stays open for a human.
+   Bullets outside ``## Events`` (e.g. Notes) never affect ordering.
 
 Also emits a ``logger_health`` block computed from the same digest (``gaps[]``
 vs the window length) — the deterministic input for the SKILL's escalate-on-
@@ -162,6 +164,14 @@ def _load_digest(path: Path) -> dict:
     for key in ("violations_shown", "violations_total"):
         if key in truncated and not _is_count(truncated[key]):
             raise st.Usage(f"digest meta.truncated.{key} is not a non-negative integer")
+    for i, gap in enumerate(digest["gaps"]):
+        # A malformed gap silently skipped would understate density and could
+        # turn a truly-degraded window into an "ok" verdict — reject instead.
+        if not isinstance(gap, dict) or not _is_count(gap.get("seconds")):
+            raise st.Usage(f"digest gaps[{i}] is not an object with non-negative integer 'seconds'")
+        for key in ("from", "to"):
+            if key in gap and not isinstance(gap[key], str):
+                raise st.Usage(f"digest gaps[{i}].{key} is not a string")
     return digest
 
 
@@ -226,10 +236,9 @@ def _logger_health(digest: dict, window_seconds: int, fresh: bool, fresh_reason:
     gap_seconds = 0
     largest = 0
     for gap in gaps:
-        seconds = gap.get("seconds") if isinstance(gap, dict) else None
-        if isinstance(seconds, int) and seconds > 0:
-            gap_seconds += seconds
-            largest = max(largest, seconds)
+        seconds = gap["seconds"]  # shape-guaranteed by _load_digest
+        gap_seconds += seconds
+        largest = max(largest, seconds)
     # gaps[] is display-capped (largest 1024 kept); when more existed, the sum
     # underestimates — flag it so "degraded by density" can't silently read as
     # "ok" just because the tail was dropped.
@@ -313,8 +322,8 @@ def _incident_evidence_time(incident: dict) -> tuple:
     latest, unorderable = st.incident_latest_event_time(lines)
     if unorderable:
         return None, (
-            "incident record contains an event line with an unparseable timestamp — "
-            "cannot prove the clear postdates it (fail closed; resolve by hand)"
+            "incident record contains an event line with an unparseable or ambiguous "
+            "timestamp — cannot prove the clear postdates it (fail closed; resolve by hand)"
         )
     if latest is not None:
         return latest, None

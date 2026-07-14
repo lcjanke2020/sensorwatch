@@ -1664,6 +1664,11 @@ def test_reconcile_malformed_meta_exits_2_not_traceback(tmp_path):
         lambda d: d["meta"].__setitem__("samples", "4"),
         lambda d: d["meta"].__setitem__("window", None),
         lambda d: d["meta"].__setitem__("last_sample", 12),
+        # gaps[] shapes: a malformed entry silently skipped would understate
+        # density and could turn a degraded window into an "ok" verdict.
+        lambda d: d.__setitem__("gaps", [{"from": "a", "to": "b", "seconds": "900"}]),
+        lambda d: d.__setitem__("gaps", ["not-an-object"]),
+        lambda d: d.__setitem__("gaps", [{"from": 1, "to": "b", "seconds": 900}]),
     ]
     for i, mutate in enumerate(mutations):
         path = _mutated_digest(tmp_path, "psu-sag-recovered", mutate)
@@ -1748,18 +1753,35 @@ def test_event_unparseable_timestamp_rejected_at_contract(tmp_path):
         assert acked.returncode == 2, bad_ts
 
 
+def _open_real_incident(state, rule="psu-12v-sag", ts="2026-02-18T08:00:10-05:00",
+                        event_id=None, seq=1, opened_now="2026-02-18T08:00:15-05:00"):
+    """Open an incident through the real script so the file has the template
+    shape (header + ## Events + ## Notes); returns the incident path."""
+    ev = _synth_event(rule=rule, id=event_id or f"{rule}-{seq}", seq=seq, timestamp=ts)
+    dest = _place_synth(state, ev)
+    r = run_script(
+        "open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+        "--classification", "incident", "--now", opened_now,
+    )
+    assert r.returncode == 0, r.stderr
+    return state / "incidents" / "open" / f"{_slug(rule)}.md"
+
+
+def _insert_events_line(incident, line):
+    lines = incident.read_text(encoding="utf-8").splitlines()
+    lines.insert(lines.index("## Notes"), line)
+    incident.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def test_reconcile_legacy_space_separated_line_reads_losslessly(tmp_path):
-    # A legacy incident line that recorded a space-separated ISO timestamp
+    # A legacy Events line that recorded a space-separated ISO timestamp
     # must be consumed by the double-space field parser, not truncated to its
     # bare date (midnight) by a first-whitespace tokenizer — truncation would
     # order the 08:03 fire BELOW the digest's 08:00:30 clear and wrongly close.
     state = tmp_path / "state"
     init_state(state)
-    _write_open_incident(state, "psu-12v-sag")
-    incident = state / "incidents" / "open" / "psu-12v-sag.md"
-    lines = incident.read_text(encoding="utf-8").splitlines()
-    lines.append("- psu-12v-sag-88 @ 2026-02-18 08:03:00-05:00  fired  value=11.3 V")
-    incident.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    incident = _open_real_incident(state)
+    _insert_events_line(incident, "- psu-12v-sag-88 @ 2026-02-18 08:03:00-05:00  fired  value=11.3 V")
 
     r = _reconcile(state, "psu-sag-recovered")
     assert r.returncode == 0, r.stderr
@@ -1767,6 +1789,54 @@ def test_reconcile_legacy_space_separated_line_reads_losslessly(tmp_path):
     (verdict,) = out["verdicts"]
     assert verdict["verdict"] == "indeterminate" and "not newer" in verdict["reason"]
     assert out["closed"] == [] and incident.exists()
+
+
+def test_reconcile_delimiter_bearing_rule_name_fails_closed(tmp_path):
+    # The watcher only requires a non-empty rule name, so a LEGAL rule can
+    # contain the " @ " delimiter; its emitter-shaped id then embeds it too,
+    # and a left-split would mistake the id-internal "2000-01-01" for the
+    # timestamp — orderable, wrong, and it would close over the newer 08:03
+    # fire. Exactly-one-delimiter parsing must fail closed instead.
+    state = tmp_path / "state"
+    init_state(state)
+    rule = "rail @ 2000-01-01  marker"
+    incident = _open_real_incident(state, rule=rule, ts="2026-02-18T08:03:00-05:00",
+                                   event_id=f"{rule}-99", seq=99,
+                                   opened_now="2026-02-18T08:03:30-05:00")
+    # A digest whose latest transition for THIS rule is the 08:00:30 clear.
+    def mutate(d):
+        for v in d["violations"]:
+            v["rule"] = rule
+            v["id"] = f"{rule}-{v['seq']}"
+    path = _mutated_digest(tmp_path, "psu-sag-recovered", mutate)
+    r = run_script(
+        "reconcile_incidents.py", "--state-dir", str(state),
+        "--digest", str(path), "--now", "2026-02-18T08:05:00-05:00",
+    )
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate" and "ambiguous" in verdict["reason"]
+    assert out["closed"] == [] and incident.exists()
+    assert '"action":"auto-close"' not in journal_text(state)
+
+
+def test_reconcile_notes_bullets_do_not_block_ordering(tmp_path):
+    # Prose bullets under ## Notes may contain " @ " (e.g. "- checked @ 3pm");
+    # scanning is scoped to ## Events, so they must not make the record
+    # unorderable — the legitimate close still happens.
+    state = tmp_path / "state"
+    init_state(state)
+    incident = _open_real_incident(state)   # valid fire @ 08:00:10
+    with incident.open("a", encoding="utf-8") as fh:
+        fh.write("- checked @ 3pm with the operator\n")
+
+    r = _reconcile(state, "psu-sag-recovered")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "recovered" and verdict["closed"] is True
+    assert out["closed"] == ["psu-12v-sag"]
 
 
 def test_reconcile_density_just_over_threshold_is_degraded_and_truthful(tmp_path):

@@ -309,29 +309,41 @@ def incident_set_field(lines: list, key: str, value: str) -> bool:
 
 
 def incident_latest_event_time(lines: list) -> tuple:
-    """``(newest_event_time | None, unorderable)`` over an incident's
-    ``- <id> @ <ts> …`` event bullets. Used by the reconciler to order recovery
-    evidence against what the incident has already recorded — a ``cleared``
-    older than the incident's newest event must never close it (the fire may
-    have happened while the logger was blind).
+    """``(newest_event_time | None, unorderable)`` over the event bullets in
+    an incident's ``## Events`` section. Used by the reconciler to order
+    recovery evidence against what the incident has already recorded — a
+    ``cleared`` older than the incident's newest event must never close it
+    (the fire may have happened while the logger was blind).
 
-    ``unorderable`` is True when ANY event-shaped bullet carries a timestamp
-    that does not parse: a partial maximum over the remaining bullets could
-    silently omit the newest fire, so consumers must fail closed rather than
-    trust it (validate_event rejects unparseable timestamps before recording,
-    so this arises only from legacy or hand-edited files — exactly the records
-    that should stay with a human)."""
+    Scanning is scoped to ``## Events`` (up to the next ``## `` heading), so
+    prose bullets under ``## Notes`` (e.g. ``- checked @ 3pm``) never affect
+    ordering. Within the section, a bullet is trusted only when it carries
+    **exactly one** ``" @ "`` delimiter — the ``- <id> @ <ts>  <state>  …``
+    shape with an unambiguous boundary. Any other count fails closed
+    (``unorderable`` True): rule names may legally contain ``" @ "`` (the
+    watcher only requires a non-empty name), which would shift a left-split
+    into the ID, and the trailing ``value=<value> <unit>`` field carries
+    UNTRUSTED sensor strings (SECURITY.md §4), which a right-split would let
+    inject the parsed timestamp. Refusing to guess means hostile or exotic
+    content can only ever BLOCK an auto-close, never mis-order one. The same
+    fail-closed applies to an unparseable timestamp: a partial maximum over
+    the remaining bullets could silently omit the newest fire. (validate_event
+    rejects unparseable timestamps before recording, so those arise only from
+    legacy or hand-edited files — exactly the records that should stay with a
+    human.) The timestamp field is consumed up to the format's double-space
+    delimiter, so a legacy space-separated ISO form still reads losslessly."""
     latest: datetime | None = None
     unorderable = False
+    in_events = False
     for line in lines:
-        if not line.startswith("- ") or " @ " not in line:
+        if line.startswith("## "):
+            in_events = line.strip() == "## Events"
             continue
-        # The event-line format is `- <id> @ <ts>  <state>  value=…` — TWO
-        # spaces after the timestamp field. Splitting on that double space
-        # consumes the timestamp losslessly even if a legacy line recorded a
-        # space-separated ISO form ("2026-02-18 08:03:00-05:00"); a first-
-        # whitespace tokenizer would truncate that to its bare date, which
-        # still parses (as midnight) and silently mis-orders the evidence.
+        if not in_events or not line.startswith("- ") or " @ " not in line:
+            continue
+        if line.count(" @ ") != 1:
+            unorderable = True
+            continue
         token = line.split(" @ ", 1)[1].split("  ", 1)[0].strip()
         try:
             ts = parse_iso(token)
