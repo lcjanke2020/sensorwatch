@@ -13,31 +13,45 @@ reconciles every ``incidents/open/*.md`` against it.
 
 Verdict per open incident, from the digest's ``violations[]`` transitions:
 
-* ``recovered``    — the rule's latest in-window transition is ``cleared``.
-  Closed via open_incident.py's ``--close`` path (journal-first, atomic
-  open→closed move), using the digest's re-derived cleared event.
+* ``recovered``    — the rule's latest in-window transition is ``cleared``
+  AND that clear is newer than everything the incident has recorded. Closed
+  via open_incident.py's ``--close`` path (journal-first, atomic open→closed
+  move), using the digest's re-derived cleared event.
 * ``still-firing`` — the latest transition is ``fired``. No change.
 * ``indeterminate`` — no transition for the rule in the window (the window may
-  not span the fire; rules the engine no longer evaluates land here too), or
-  the freshness gate failed. Never closed: absence of evidence is not
-  recovery. These stay manual.
+  not span the fire; rules the engine no longer evaluates land here too), the
+  freshness gate failed, the clear is not newer than the incident's newest
+  recorded event, or the transition's state/shape is unrecognized. Never
+  closed: absence of evidence is not recovery. These stay manual.
 
 Trust boundaries, in order:
 
-1. **Freshness gate.** If the digest has zero samples, or ``meta.last_sample``
-   trails ``meta.window.until`` by more than 3× the sampling interval (the
-   same multiple the digest's own gap detection uses), every verdict is
-   ``indeterminate`` — a dead or stalled logger must never look like recovery.
+1. **Freshness gate.** If the digest's window ended more than
+   ``DIGEST_MAX_AGE_SECONDS`` before ``--now`` (a leftover file from an
+   earlier wake proves nothing about *current* state), the digest has zero
+   samples, or ``meta.last_sample`` trails ``meta.window.until`` by more than
+   3× the sampling interval (the same multiple the digest's own gap detection
+   uses), every verdict is ``indeterminate`` — a dead or stalled logger must
+   never look like recovery.
 2. **Latest transition wins.** ``violations[]`` is chronological, and the
    digest's byte-cap fitter drops violations oldest-first, so the surviving
    transitions are a chronological suffix: the last shown match for a rule IS
    that rule's latest transition. A rule whose transitions were all truncated
    away simply shows none → ``indeterminate`` (conservative by construction).
+3. **Recovery must postdate the incident's record.** The independent watcher
+   can observe a fire while the logger is blind (a gap), after which the log
+   still holds an *older* clear for the same rule. A close therefore also
+   requires the cleared transition's timestamp to be strictly newer than the
+   incident's newest recorded event line (falling back to its ``opened``
+   header when no event line parses; unorderable records stay open).
 
 Also emits a ``logger_health`` block computed from the same digest (``gaps[]``
 vs the window length) — the deterministic input for the SKILL's escalate-on-
 gap-density step. Thresholds: density above ``GAP_DENSITY_THRESHOLD`` of the
-window, or any single gap over ``SINGLE_GAP_MAX_SECONDS``, is ``degraded``.
+window, or any single gap over ``SINGLE_GAP_MAX_SECONDS``, is ``degraded``; a
+feed that fails the freshness gate is ``degraded`` too (a dead tail is the
+blindest gap of all, even though the aggregator emits no trailing ``gaps``
+entry for it).
 
 Read-only against incidents except for closes; ``--dry-run`` writes nothing
 (no journal, no close) and reports what would happen. JSON result on stdout;
@@ -64,6 +78,12 @@ DIGEST_SCHEMA_VERSION = 1
 # Freshness: last_sample may trail window.until by at most this multiple of the
 # sampling interval — the same 3× the digest's own gap detection uses.
 FRESHNESS_INTERVAL_MULTIPLE = 3
+
+# The digest itself must be from THIS wake: a window that ended more than this
+# many seconds before --now is a leftover file (e.g. a crashed wake's
+# last-report.json) and proves nothing about current state. Generous enough
+# for report → triage → reconcile within one wake; far below a watch cycle.
+DIGEST_MAX_AGE_SECONDS = 600
 
 # logger_health thresholds (restated in SKILL.md's heartbeat procedure).
 GAP_DENSITY_THRESHOLD = 0.10   # >10% of the window inside gaps → degraded
@@ -113,7 +133,37 @@ def _load_digest(path: Path) -> dict:
     for key in ("violations", "gaps"):
         if not isinstance(digest.get(key), list):
             raise st.Usage(f"digest {key!r} is not a list")
+    # Everything read downstream is validated HERE, so a malformed digest is
+    # always the documented usage exit 2 — never an uncaught traceback.
+    window = meta.get("window")
+    if not isinstance(window, dict):
+        raise st.Usage("digest meta.window is not an object")
+    for key in ("since", "until"):
+        if not isinstance(window.get(key), str):
+            raise st.Usage(f"digest meta.window.{key} is not a string")
+    if not _is_count(meta.get("samples")):
+        raise st.Usage("digest meta.samples is not a non-negative integer")
+    interval = meta.get("interval_seconds")
+    if not isinstance(interval, int) or isinstance(interval, bool) or interval < 1:
+        raise st.Usage("digest meta.interval_seconds is not a positive integer")
+    last_sample = meta.get("last_sample")
+    if last_sample is not None and not isinstance(last_sample, str):
+        raise st.Usage("digest meta.last_sample is neither null nor a string")
+    truncated = meta.get("truncated", {})
+    if not isinstance(truncated, dict):
+        raise st.Usage("digest meta.truncated is not an object")
+    gaps_total = truncated.get("gaps_total", len(digest["gaps"]))
+    if not _is_count(gaps_total):
+        raise st.Usage("digest meta.truncated.gaps_total is not a non-negative integer")
+    for key in ("violations_shown", "violations_total"):
+        if key in truncated and not _is_count(truncated[key]):
+            raise st.Usage(f"digest meta.truncated.{key} is not a non-negative integer")
     return digest
+
+
+def _is_count(value: object) -> bool:
+    """A non-negative int (bool excluded — JSON true is never a count)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _window_seconds(meta: dict) -> int:
@@ -126,19 +176,24 @@ def _window_seconds(meta: dict) -> int:
     return seconds
 
 
-def _check_freshness(meta: dict) -> tuple[bool, str]:
-    """(fresh, reason). Zero samples or a stale last_sample means the digest
-    cannot prove recovery for anything."""
+def _check_freshness(meta: dict, now) -> tuple[bool, str]:
+    """(fresh, reason). A stale digest FILE, zero samples, or a stale
+    last_sample all mean the digest cannot prove recovery for anything."""
+    until = st.parse_iso(str(meta["window"]["until"]))
+    digest_age = (now - until).total_seconds()
+    if digest_age > DIGEST_MAX_AGE_SECONDS:
+        return False, (
+            f"digest window ended {int(digest_age)}s before --now "
+            f"(> {DIGEST_MAX_AGE_SECONDS}s) — a leftover digest proves nothing current"
+        )
     samples = meta.get("samples", 0)
     if not samples:
         return False, "no samples in window (logger dead or window empty)"
     last_sample = meta.get("last_sample")
     if not last_sample:
         return False, "digest has samples but no last_sample timestamp"
-    until = st.parse_iso(str((meta.get("window") or {}).get("until")))
     last = st.parse_iso(str(last_sample))
-    interval = meta.get("interval_seconds") or 0
-    allowed = max(int(interval), 1) * FRESHNESS_INTERVAL_MULTIPLE
+    allowed = meta["interval_seconds"] * FRESHNESS_INTERVAL_MULTIPLE
     lag = (until - last).total_seconds()
     if lag > allowed:
         return False, (
@@ -159,7 +214,7 @@ def _latest_transitions(violations: list) -> dict:
     return latest
 
 
-def _logger_health(digest: dict, window_seconds: int) -> dict:
+def _logger_health(digest: dict, window_seconds: int, fresh: bool, fresh_reason: str) -> dict:
     meta = digest["meta"]
     gaps = digest["gaps"]
     truncated = meta.get("truncated") or {}
@@ -176,8 +231,12 @@ def _logger_health(digest: dict, window_seconds: int) -> dict:
     # "ok" just because the tail was dropped.
     undercounted = bool(gap_count and len(gaps) < gap_count)
     density = round(gap_seconds / window_seconds, 4)
-    if not meta.get("samples"):
-        verdict, reason = "degraded", "no samples in window"
+    if not fresh:
+        # A dead/stalled tail is the blindest gap of all, but the aggregator
+        # only counts gaps BETWEEN samples — it never emits a trailing entry.
+        # Without this fold, a feed dead for 99% of the window reads "ok" and
+        # the SKILL's degraded-only escalation never fires.
+        verdict, reason = "degraded", f"feed not fresh: {fresh_reason}"
     elif largest > SINGLE_GAP_MAX_SECONDS:
         verdict, reason = "degraded", f"single gap of {largest}s (> {SINGLE_GAP_MAX_SECONDS}s)"
     elif density > GAP_DENSITY_THRESHOLD:
@@ -229,6 +288,55 @@ def _close_via_open_incident(state_dir: Path, event: dict, now_iso: str) -> dict
             tmp.unlink()
 
 
+def _incident_evidence_time(incident: dict):
+    """The newest instant the incident has RECORDED: its latest event-line
+    timestamp, else its ``opened`` header. ``None`` when neither parses — an
+    unorderable record can never be proven recovered."""
+    try:
+        lines = incident["path"].read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    latest = st.incident_latest_event_time(lines)
+    if latest is not None:
+        return latest
+    try:
+        return st.parse_iso(str(incident["opened"]))
+    except st.Usage:
+        return None
+
+
+def _recovered_or_blocked(event: dict, incident: dict) -> dict:
+    """For a latest-transition ``cleared``: ``recovered``, or ``indeterminate``
+    with the blocking reason. Both checks are per-incident so one bad record
+    can never abort the run mid-loop (the JSON output contract survives):
+
+    * the event must satisfy the frozen 14-key contract (it is about to be
+      handed to open_incident.py --close);
+    * the clear must be strictly newer than the incident's newest recorded
+      event — the watcher can observe a fire while the logger is blind, and an
+      older log-derived clear is not evidence that THAT fire recovered.
+    """
+    try:
+        st.validate_event(event)
+        cleared_at = st.parse_iso(str(event["timestamp"]))
+    except st.Usage as exc:
+        return {"verdict": "indeterminate",
+                "reason": f"cleared transition fails the event contract: {exc}"}
+    evidence = _incident_evidence_time(incident)
+    if evidence is None:
+        return {"verdict": "indeterminate",
+                "reason": "incident record has no parseable timestamps — cannot order recovery evidence"}
+    if cleared_at <= evidence:
+        return {"verdict": "indeterminate",
+                "reason": (
+                    f"cleared transition ({event.get('id')} @ {event['timestamp']}) is not newer "
+                    f"than the incident's newest recorded event ({st.iso(evidence)}) — "
+                    "the fire may postdate the log's evidence (e.g. during a logger gap)"
+                )}
+    return {"verdict": "recovered",
+            "reason": f"latest transition is cleared ({event.get('id')}), newer than the incident record"}
+
+
 def run(args: argparse.Namespace) -> int:
     state_dir = st.resolve_state_dir(args.state_dir)
     now = st.resolve_now(args.now)
@@ -236,13 +344,11 @@ def run(args: argparse.Namespace) -> int:
     meta = digest["meta"]
 
     window_seconds = _window_seconds(meta)
-    fresh, fresh_reason = _check_freshness(meta)
-    logger_health = _logger_health(digest, window_seconds)
+    fresh, fresh_reason = _check_freshness(meta, now)
+    logger_health = _logger_health(digest, window_seconds, fresh, fresh_reason)
     latest = _latest_transitions(digest["violations"])
-    truncated = bool(
-        (meta.get("truncated") or {}).get("violations_shown", 0)
-        < (meta.get("truncated") or {}).get("violations_total", 0)
-    )
+    trunc_meta = meta.get("truncated") or {}
+    truncated = trunc_meta.get("violations_shown", 0) < trunc_meta.get("violations_total", 0)
 
     incidents = st.read_open_incidents(state_dir)
     verdicts: list[dict] = []
@@ -256,16 +362,18 @@ def run(args: argparse.Namespace) -> int:
             verdicts.append(record)
             continue
         event = latest.get(rule)
+        state = event.get("state") if event is not None else None
         if event is None:
             reason = "no transition for this rule in the digest window"
             if truncated:
-                reason += " (violations list was truncated — window may need widening)"
+                reason += (
+                    " (the violations list was byte-cap truncated — "
+                    "raise report --max-bytes or narrow the window)"
+                )
             record.update(verdict="indeterminate", reason=reason)
-        elif event.get("state") == "cleared":
-            record.update(verdict="recovered", reason=f"latest transition is cleared ({event.get('id')})")
-            if not args.dry_run:
-                # Validate against the frozen event contract before acting on it.
-                st.validate_event(event)
+        elif state == "cleared":
+            record.update(**_recovered_or_blocked(event, incident))
+            if record["verdict"] == "recovered" and not args.dry_run:
                 # Journal the decision first (recording-before-mutation, as
                 # everywhere else); open_incident then journals the close itself.
                 st.journal_append(
@@ -278,8 +386,13 @@ def run(args: argparse.Namespace) -> int:
                 record["incident_file"] = result.get("incident_file")
                 if record["closed"]:
                     closed.append(rule)
-        else:
+        elif state == "fired":
             record.update(verdict="still-firing", reason=f"latest transition is fired ({event.get('id')})")
+        else:
+            record.update(
+                verdict="indeterminate",
+                reason=f"latest transition has unrecognized state {state!r} — not evidence",
+            )
         verdicts.append(record)
 
     st.emit({

@@ -307,11 +307,20 @@ def _issue_draft_body(args: argparse.Namespace, now_iso: str) -> str:
         "- [ ] Review the incident file and baseline.md for context",
         "- [ ] Confirm the reading against an independent source (BIOS / vendor tool)",
         "- [ ] File in the tracker of record, linking the incident-file path",
-        "- [ ] Close the incident (open_incident.py --close) once resolved",
+        "- [ ] Once resolved, confirm the incident file shows `closed` (the heartbeat",
+        "      reconciler may have auto-closed it); if not, open_incident.py --close",
         "",
         "_Sensor data lives in the incident file, not here._",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _with_issue_draft(payload: dict, issue_draft: str | None) -> dict:
+    """Attach the draft path to a journal-detail / emit payload when present —
+    one helper so the routed/explicit/muted branches cannot drift."""
+    if issue_draft:
+        payload["issue_draft"] = issue_draft
+    return payload
 
 
 def _write_issue_draft(state_dir: Path, now, slug: str, args: argparse.Namespace) -> str:
@@ -560,20 +569,18 @@ def _run_explicit(args: argparse.Namespace, state_dir: Path, now, slug: str, bod
 
     target = adapter(state_dir, now, slug, body, args, config.get(args.adapter, {}))
 
-    detail = {"adapter": args.adapter, "tier": args.tier, "target": target}
-    if issue_draft:
-        detail["issue_draft"] = issue_draft
-    st.journal_append(state_dir, now, "notify", rule=args.rule, detail=detail)
+    st.journal_append(
+        state_dir, now, "notify", rule=args.rule,
+        detail=_with_issue_draft(
+            {"adapter": args.adapter, "tier": args.tier, "target": target}, issue_draft),
+    )
     _record_delivery(esc, state_dir / "escalation.json", now, args.rule)
-    result = {
+    st.emit(_with_issue_draft({
         "adapter": args.adapter,
         "delivered": True,
         "tier": args.tier,
         "target": target,
-    }
-    if issue_draft:
-        result["issue_draft"] = issue_draft
-    st.emit(result)
+    }, issue_draft))
     return 0
 
 
@@ -598,13 +605,14 @@ def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body:
     issue_draft = _write_issue_draft(state_dir, now, slug, args) if args.issue_draft else None
 
     if not adapters:  # empty list = a deliberate no-op for this severity
-        detail = {"mode": "routed", "tier": args.tier, "channels": []}
-        result = {"delivered": False, "tier": args.tier, "mode": "routed", "channels": []}
-        if issue_draft:
-            detail["issue_draft"] = issue_draft
-            result["issue_draft"] = issue_draft
-        st.journal_append(state_dir, now, "notify", rule=args.rule, detail=detail)
-        st.emit(result)
+        st.journal_append(
+            state_dir, now, "notify", rule=args.rule,
+            detail=_with_issue_draft(
+                {"mode": "routed", "tier": args.tier, "channels": []}, issue_draft),
+        )
+        st.emit(_with_issue_draft(
+            {"delivered": False, "tier": args.tier, "mode": "routed", "channels": []},
+            issue_draft))
         return 0
 
     channels: list[dict] = []
@@ -624,10 +632,11 @@ def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body:
     any_ok = any(c["ok"] for c in channels)
     all_ok = all(c["ok"] for c in channels)
 
-    detail = {"mode": "routed", "tier": args.tier, "channels": channels}
-    if issue_draft:
-        detail["issue_draft"] = issue_draft
-    st.journal_append(state_dir, now, "notify", rule=args.rule, detail=detail)
+    st.journal_append(
+        state_dir, now, "notify", rule=args.rule,
+        detail=_with_issue_draft(
+            {"mode": "routed", "tier": args.tier, "channels": channels}, issue_draft),
+    )
     # A delivered notice spends the rule's cooldown and a daily-cap slot. Recording
     # it HERE — after delivery, and only when ≥1 channel succeeded — is what closes
     # the lost-notification gap: no delivery, no cooldown, so a redelivery
@@ -636,15 +645,12 @@ def _run_routed(args: argparse.Namespace, state_dir: Path, now, slug: str, body:
     if any_ok:
         _record_delivery(esc, state_dir / "escalation.json", now, args.rule)
 
-    result = {
+    st.emit(_with_issue_draft({
         "delivered": any_ok,
         "tier": args.tier,
         "mode": "routed",
         "channels": channels,
-    }
-    if issue_draft:
-        result["issue_draft"] = issue_draft
-    st.emit(result)
+    }, issue_draft))
     return 0 if all_ok else 1
 
 

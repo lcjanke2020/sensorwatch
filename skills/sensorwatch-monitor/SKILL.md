@@ -150,7 +150,7 @@ The reconcile step is one script call over the digest you just saved:
 
 ```
 sensorwatch report --config <config> --last <window> > <state>/last-report.json
-python scripts/reconcile_incidents.py --state-dir <dir> \
+reconcile_incidents.py --state-dir <dir> \
     --digest <state>/last-report.json --now <iso>
 ```
 
@@ -162,9 +162,14 @@ It does three deterministic jobs at once (its JSON output carries all three):
    re-derives the window's transitions with the same engine, and any open
    incident whose **latest** in-window transition is `cleared` is closed through
    `open_incident.py --close` (journal-first, atomic move — the same close path
-   as a live cleared event). A stale or empty digest fails the freshness gate
-   and every verdict is `indeterminate` — a dead logger never looks like
-   recovery. **Window rule:** when incidents are open, size `--last` to span the
+   as a live cleared event). Three guards keep it conservative: a stale or
+   empty digest fails the freshness gate and every verdict is `indeterminate`
+   (a dead logger never looks like recovery); the digest must be from **this
+   wake** (a window that ended more than ~10 min before `--now` is rejected as
+   leftover evidence); and the clear must be **newer than the incident's newest
+   recorded event** (the watcher can observe a fire while the logger is blind —
+   an older log-derived clear is not proof that fire recovered). **Window
+   rule:** when incidents are open, size `--last` to span the
    *oldest* open incident's `opened` timestamp (from the `state_summary`
    bootstrap), capped at 48h — a window that misses the fire yields
    `indeterminate` (never a close), and incidents older than the cap stay
@@ -172,13 +177,25 @@ It does three deterministic jobs at once (its JSON output carries all three):
    `cleared` events; under it the reconciler is a no-op safety net.)
 2. **Logger-liveness** (zero-sample digest = logger dead / machine off; large
    `meta.last_sample` lag = feed stalled — see the sensorwatch skill, Recipe 4).
-3. **Gap-density check** (`logger_health` in the output): if the log was blind
-   for >10% of the window or any single gap exceeds 15 min, the verdict is
-   `degraded` — a logger dropping samples under load is worst exactly when
-   incidents happen. On `degraded`, escalate it like any warning: run the gate
-   and `notify.py` for the synthetic rule `logger-gaps` (normal cooldown and
-   daily cap apply, so a persistently-gappy logger pages once per cooldown, not
-   once per heartbeat).
+3. **Gap-density check** (`logger_health` in the output): the verdict is
+   `degraded` when the log was blind for >10% of the window, any single gap
+   exceeds 15 min, or the feed failed the freshness gate (a dead tail is the
+   blindest gap of all) — a logger dropping samples under load is worst
+   exactly when incidents happen. On `degraded`, escalate it as a
+   **monitoring-integrity failure — severity `critical`**, the same class as
+   `monitoring-blind` (a `warning` would land at tier 1, which never notifies
+   and never consults the cooldown; `critical` is tier ≥2 deterministically):
+
+   ```
+   escalation_gate.py --state-dir <dir> --rule logger-gaps --severity critical \
+       --state fired --commit --now <iso>
+   notify.py --state-dir <dir> --rule logger-gaps --severity critical --tier <N> \
+       --summary "logger degraded: <logger_health.reason>" --now <iso>
+   ```
+
+   Run `notify.py` only when the gate says `allow` (pass its returned tier).
+   The tier-≥2 cooldown and daily cap apply as usual, so a persistently-gappy
+   logger pages once per cooldown window, not once per heartbeat.
 
 Review any incidents the reconciler reports `still-firing`/`indeterminate`
 (past snooze? needs a human?) as before.

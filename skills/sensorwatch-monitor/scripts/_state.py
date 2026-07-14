@@ -308,6 +308,26 @@ def incident_set_field(lines: list, key: str, value: str) -> bool:
     return False
 
 
+def incident_latest_event_time(lines: list) -> datetime | None:
+    """The newest timestamp among an incident's ``- <id> @ <ts> …`` event
+    bullets, or ``None`` when none parse. Used by the reconciler to order
+    recovery evidence against what the incident has already recorded — a
+    ``cleared`` older than the incident's newest event must never close it
+    (the fire may have happened while the logger was blind)."""
+    latest: datetime | None = None
+    for line in lines:
+        if not line.startswith("- ") or " @ " not in line:
+            continue
+        token = line.split(" @ ", 1)[1].split()[0]
+        try:
+            ts = parse_iso(token)
+        except Usage:
+            continue
+        if latest is None or ts > latest:
+            latest = ts
+    return latest
+
+
 def read_open_incidents(state_dir: Path) -> list:
     """One record per ``incidents/open/*.md``, parsed from its header block."""
     open_dir = state_dir / "incidents" / "open"

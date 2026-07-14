@@ -1510,7 +1510,10 @@ def test_reconcile_no_transition_is_indeterminate(tmp_path):
 def test_reconcile_stale_feed_blocks_close_despite_cleared(tmp_path):
     # The stale-feed digest CONTAINS the cleared transition, but last_sample
     # trails the window end by ~59 min — the freshness gate must win: a dead
-    # logger never looks like recovery.
+    # logger never looks like recovery. And a dead TAIL is itself degraded
+    # logger health (the aggregator emits no trailing gaps entry, so without
+    # the freshness fold a 99%-blind feed would read "ok" and the SKILL's
+    # degraded-only escalation would never fire).
     state = tmp_path / "state"
     init_state(state)
     _write_open_incident(state, "psu-12v-sag")
@@ -1521,6 +1524,8 @@ def test_reconcile_stale_feed_blocks_close_despite_cleared(tmp_path):
     (verdict,) = out["verdicts"]
     assert verdict["verdict"] == "indeterminate" and "freshness" in verdict["reason"]
     assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+    health = out["logger_health"]
+    assert health["verdict"] == "degraded" and "not fresh" in health["reason"]
 
 
 def test_reconcile_zero_samples_degraded_and_indeterminate(tmp_path):
@@ -1596,3 +1601,122 @@ def test_reconcile_close_releases_combination_slot(tmp_path):
         "--severity", "critical", "--state", "fired", "--now", T0,
     )
     assert json.loads(gate_after.stdout)["tier"] == 2
+
+
+def test_reconcile_stale_clear_cannot_close_newer_fire(tmp_path):
+    # The independent watcher can observe a fire while the logger is blind:
+    # the incident's newest recorded event (08:03) postdates the digest's
+    # cleared transition (08:00:30). That older clear is NOT evidence the
+    # newer fire recovered — the close must be blocked.
+    state = tmp_path / "state"
+    init_state(state)
+    ev = _synth_event(rule="psu-12v-sag", id="psu-12v-sag-99", seq=99,
+                      timestamp="2026-02-18T08:03:00-05:00")
+    dest = _place_synth(state, ev)
+    opened = run_script(
+        "open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+        "--classification", "incident", "--now", "2026-02-18T08:03:30-05:00",
+    )
+    assert opened.returncode == 0, opened.stderr
+    r = _reconcile(state, "psu-sag-recovered")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate" and "not newer" in verdict["reason"]
+    assert out["closed"] == []
+    assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+    assert '"action":"auto-close"' not in journal_text(state)
+
+
+def test_reconcile_leftover_digest_file_is_not_fresh(tmp_path):
+    # The freshness gate must also be about the digest FILE, not just its
+    # internal tail: a valid, internally-fresh digest from a previous wake
+    # (window ended ~a day before --now) proves nothing about current state.
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    r = _reconcile(state, "psu-sag-recovered", now="2026-02-19T20:00:00-05:00")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["fresh"] is False and "leftover" in out["freshness_reason"]
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate"
+    assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+
+
+def _mutated_digest(tmp_path, name, mutate):
+    digest = json.loads((DIGESTS / f"{name}.json").read_text(encoding="utf-8"))
+    mutate(digest)
+    path = tmp_path / "mutated.json"
+    path.write_text(json.dumps(digest), encoding="utf-8")
+    return path
+
+
+def test_reconcile_malformed_meta_exits_2_not_traceback(tmp_path):
+    # Every meta field the reconciler reads is validated up front: malformed
+    # shapes are the documented usage exit 2, never an uncaught traceback.
+    state = tmp_path / "state"
+    init_state(state)
+    mutations = [
+        lambda d: d["meta"].__setitem__("truncated", "x"),
+        lambda d: d["meta"].pop("interval_seconds"),
+        lambda d: d["meta"].__setitem__("interval_seconds", 0),
+        lambda d: d["meta"].__setitem__("samples", "4"),
+        lambda d: d["meta"].__setitem__("window", None),
+        lambda d: d["meta"].__setitem__("last_sample", 12),
+    ]
+    for i, mutate in enumerate(mutations):
+        path = _mutated_digest(tmp_path, "psu-sag-recovered", mutate)
+        r = run_script(
+            "reconcile_incidents.py", "--state-dir", str(state),
+            "--digest", str(path), "--now", "2026-02-18T08:05:00-05:00",
+        )
+        assert r.returncode == 2, f"mutation {i}: {r.returncode}\n{r.stderr}"
+        assert "Traceback" not in r.stderr, f"mutation {i} leaked a traceback"
+
+
+def test_reconcile_unknown_transition_state_is_indeterminate(tmp_path):
+    # An unrecognized state value is not evidence in either direction.
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    path = _mutated_digest(
+        tmp_path, "psu-sag-recovered",
+        lambda d: d["violations"][-1].__setitem__("state", "wobbly"),
+    )
+    r = run_script(
+        "reconcile_incidents.py", "--state-dir", str(state),
+        "--digest", str(path), "--now", "2026-02-18T08:05:00-05:00",
+    )
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate" and "wobbly" in verdict["reason"]
+    assert out["closed"] == []
+    assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+
+
+def test_gate_logger_gaps_critical_first_allows_then_cooldown(tmp_path):
+    # The SKILL's wired gap escalation end-to-end: severity critical puts
+    # logger-gaps at tier 2 deterministically (no persistence needed), the
+    # notify records the cooldown, and the next heartbeat's gate suppresses —
+    # a persistently-gappy logger pages once per cooldown, not per heartbeat.
+    state = tmp_path / "state"
+    init_state(state)
+    first = run_script(
+        "escalation_gate.py", "--state-dir", str(state), "--rule", "logger-gaps",
+        "--severity", "critical", "--state", "fired", "--commit", "--now", T0,
+    )
+    out1 = json.loads(first.stdout)
+    assert out1["tier"] == 2 and out1["decision"] == "allow"
+    delivered = _notify(state, "logger-gaps", tier=2, severity="critical",
+                        now="2026-02-18T08:00:30-05:00",
+                        summary="logger degraded: single gap of 1190s")
+    assert delivered.returncode == 0, delivered.stderr
+    second = run_script(
+        "escalation_gate.py", "--state-dir", str(state), "--rule", "logger-gaps",
+        "--severity", "critical", "--state", "fired", "--commit",
+        "--now", "2026-02-18T08:30:00-05:00",
+    )
+    out2 = json.loads(second.stdout)
+    assert out2["tier"] == 2 and out2["decision"] == "suppress"
