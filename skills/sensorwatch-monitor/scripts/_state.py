@@ -326,7 +326,13 @@ def incident_latest_event_time(lines: list) -> tuple:
     for line in lines:
         if not line.startswith("- ") or " @ " not in line:
             continue
-        token = line.split(" @ ", 1)[1].split()[0]
+        # The event-line format is `- <id> @ <ts>  <state>  value=…` — TWO
+        # spaces after the timestamp field. Splitting on that double space
+        # consumes the timestamp losslessly even if a legacy line recorded a
+        # space-separated ISO form ("2026-02-18 08:03:00-05:00"); a first-
+        # whitespace tokenizer would truncate that to its bare date, which
+        # still parses (as midnight) and silently mis-orders the evidence.
+        token = line.split(" @ ", 1)[1].split("  ", 1)[0].strip()
         try:
             ts = parse_iso(token)
         except Usage:
@@ -378,11 +384,15 @@ def load_event(path: Path) -> dict:
 
 
 def _parseable_ts(value: object) -> bool:
-    """A non-empty, ISO-8601-parseable timestamp string. The emitter's
-    timestamps are replay-stable sample timestamps and always parse; enforcing
-    that here means nothing unorderable is ever RECORDED into the cursor or an
-    incident file (the reconciler's evidence ordering depends on it)."""
-    if not isinstance(value, str) or not value:
+    """A non-empty, ISO-8601-parseable timestamp string **with no internal
+    whitespace** (the ``T`` form the emitter uses). The emitter's timestamps
+    are replay-stable sample timestamps and always qualify; enforcing this
+    here means nothing unorderable is ever RECORDED into the cursor or an
+    incident file (the reconciler's evidence ordering depends on it). The
+    whitespace restriction exists because ``fromisoformat`` also accepts a
+    space-separated datetime, which would round-trip ambiguously through the
+    whitespace-delimited incident-line format."""
+    if not isinstance(value, str) or not value or any(ch.isspace() for ch in value):
         return False
     try:
         parse_iso(value)

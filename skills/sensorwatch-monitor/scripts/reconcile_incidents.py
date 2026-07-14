@@ -235,9 +235,11 @@ def _logger_health(digest: dict, window_seconds: int, fresh: bool, fresh_reason:
     # "ok" just because the tail was dropped.
     undercounted = bool(gap_count and len(gaps) < gap_count)
     # Compare the RAW ratio; round only for display — rounding first would
-    # read a just-over-threshold density (e.g. 0.10004) as ok.
+    # read a just-over-threshold density (e.g. 0.10004) as ok. Six decimals
+    # keep a boundary value distinguishable from the threshold itself, so a
+    # degraded reason never prints the contradiction "0.1 (> 0.1)".
     raw_density = gap_seconds / window_seconds
-    density = round(raw_density, 4)
+    density = round(raw_density, 6)
     if not fresh:
         # A dead/stalled tail is the blindest gap of all, but the aggregator
         # only counts gaps BETWEEN samples — it never emits a trailing entry.
@@ -248,7 +250,7 @@ def _logger_health(digest: dict, window_seconds: int, fresh: bool, fresh_reason:
         verdict, reason = "degraded", f"single gap of {largest}s (> {SINGLE_GAP_MAX_SECONDS}s)"
     elif raw_density > GAP_DENSITY_THRESHOLD:
         verdict, reason = "degraded", (
-            f"gap density {density} (> {GAP_DENSITY_THRESHOLD} of window)"
+            f"gap density {raw_density:.6f} (> {GAP_DENSITY_THRESHOLD} of window)"
         )
     elif undercounted:
         # The visible gaps pass, but the digest dropped some — don't certify ok.

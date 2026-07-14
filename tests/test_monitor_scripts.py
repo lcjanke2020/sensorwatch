@@ -1728,20 +1728,75 @@ def test_reconcile_unparseable_event_line_fails_closed(tmp_path):
 
 def test_event_unparseable_timestamp_rejected_at_contract(tmp_path):
     # The recording side of the same fail-closed rule: an event whose
-    # timestamp does not parse never enters an incident file or the cursor.
+    # timestamp does not parse — or would not round-trip through the
+    # whitespace-delimited incident-line format (fromisoformat accepts a
+    # space-separated datetime, whose bare-date prefix ALSO parses) — never
+    # enters an incident file or the cursor.
     state = tmp_path / "state"
     init_state(state)
-    dest = _place_synth(state, _synth_event(timestamp="not-a-time"))
-    opened = run_script(
-        "open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
-        "--classification", "incident", "--now", T0,
+    for bad_ts in ("not-a-time", "2026-02-18 08:03:00-05:00"):
+        dest = _place_synth(state, _synth_event(timestamp=bad_ts))
+        opened = run_script(
+            "open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+            "--classification", "incident", "--now", T0,
+        )
+        assert opened.returncode == 2, bad_ts
+        assert "timestamp" in opened.stderr
+        assert list((state / "incidents" / "open").glob("*.md")) == []
+        acked = run_script("ack_event.py", "--state-dir", str(state),
+                           "--event-file", str(dest), "--now", T0)
+        assert acked.returncode == 2, bad_ts
+
+
+def test_reconcile_legacy_space_separated_line_reads_losslessly(tmp_path):
+    # A legacy incident line that recorded a space-separated ISO timestamp
+    # must be consumed by the double-space field parser, not truncated to its
+    # bare date (midnight) by a first-whitespace tokenizer — truncation would
+    # order the 08:03 fire BELOW the digest's 08:00:30 clear and wrongly close.
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    incident = state / "incidents" / "open" / "psu-12v-sag.md"
+    lines = incident.read_text(encoding="utf-8").splitlines()
+    lines.append("- psu-12v-sag-88 @ 2026-02-18 08:03:00-05:00  fired  value=11.3 V")
+    incident.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    r = _reconcile(state, "psu-sag-recovered")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate" and "not newer" in verdict["reason"]
+    assert out["closed"] == [] and incident.exists()
+
+
+def test_reconcile_density_just_over_threshold_is_degraded_and_truthful(tmp_path):
+    # Boundary case: 2501 gap-seconds in a 25000s window (raw 0.10004, which
+    # ROUNDS to the 0.1 threshold at 4 decimals). Must be degraded via the
+    # density branch — with all gaps under the single-gap limit — and the
+    # operator-facing reason must not print the contradiction "0.1 (> 0.1)".
+    state = tmp_path / "state"
+    init_state(state)
+
+    def mutate(d):
+        d["meta"]["window"]["since"] = "2026-02-18T06:23:35Z"  # until - 25000s
+        d["gaps"] = [
+            {"from": "a", "to": "b", "seconds": 834},
+            {"from": "c", "to": "d", "seconds": 834},
+            {"from": "e", "to": "f", "seconds": 833},
+        ]
+        d["meta"]["truncated"]["gaps_shown"] = 3
+        d["meta"]["truncated"]["gaps_total"] = 3
+
+    path = _mutated_digest(tmp_path, "gappy-feed", mutate)
+    r = run_script(
+        "reconcile_incidents.py", "--state-dir", str(state),
+        "--digest", str(path), "--now", "2026-02-18T08:20:20-05:00",
     )
-    assert opened.returncode == 2
-    assert "timestamp" in opened.stderr
-    assert list((state / "incidents" / "open").glob("*.md")) == []
-    acked = run_script("ack_event.py", "--state-dir", str(state),
-                       "--event-file", str(dest), "--now", T0)
-    assert acked.returncode == 2
+    assert r.returncode == 0, r.stderr
+    health = json.loads(r.stdout)["logger_health"]
+    assert health["verdict"] == "degraded"
+    assert "0.100040" in health["reason"] and "0.1 (" not in health["reason"]
+    assert health["density"] == 0.10004 and health["largest_gap_seconds"] == 834
 
 
 def test_gate_logger_gaps_critical_first_allows_then_cooldown(tmp_path):
