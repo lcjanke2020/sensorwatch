@@ -205,6 +205,14 @@ def _check_freshness(meta: dict, now) -> tuple[bool, str]:
     last_sample all mean the digest cannot prove recovery for anything."""
     until = st.parse_iso(str(meta["window"]["until"]))
     digest_age = (now - until).total_seconds()
+    if digest_age < 0:
+        # The digest is generated BEFORE reconcile in the same wake, so its
+        # window can never legitimately end after --now. A future-dated window
+        # means a clock error or the wrong --now — not fresh evidence.
+        return False, (
+            f"digest window ends {int(-digest_age)}s AFTER --now — "
+            "future-dated (clock error or wrong --now)"
+        )
     if digest_age > DIGEST_MAX_AGE_SECONDS:
         return False, (
             f"digest window ended {int(digest_age)}s before --now "
@@ -219,6 +227,14 @@ def _check_freshness(meta: dict, now) -> tuple[bool, str]:
     last = st.parse_iso(str(last_sample))
     allowed = meta["interval_seconds"] * FRESHNESS_INTERVAL_MULTIPLE
     lag = (until - last).total_seconds()
+    if lag < 0:
+        # last_sample beyond the window end is internally inconsistent (the
+        # window bounds what report scanned) — a malformed or buggy digest,
+        # not fresh evidence.
+        return False, (
+            f"last_sample is {int(-lag)}s after the window end — "
+            "internally inconsistent digest"
+        )
     if lag > allowed:
         return False, (
             f"last_sample trails window end by {int(lag)}s "

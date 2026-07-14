@@ -1845,6 +1845,45 @@ def test_reconcile_notes_bullets_do_not_block_ordering(tmp_path):
     assert out["closed"] == ["psu-12v-sag"]
 
 
+def test_reconcile_future_dated_digest_is_not_fresh(tmp_path):
+    # The digest is generated before reconcile within one wake, so a window
+    # ending AFTER --now is a clock error or the wrong --now — never fresh
+    # evidence (window until is 08:00:35; --now is 5s earlier).
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    r = _reconcile(state, "psu-sag-recovered", now="2026-02-18T08:00:30-05:00")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["fresh"] is False and "future-dated" in out["freshness_reason"]
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate"
+    assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+
+
+def test_reconcile_last_sample_after_window_end_is_not_fresh(tmp_path):
+    # last_sample beyond the window end is internally inconsistent (the window
+    # bounds what report scanned) — must fail the freshness gate, not slip
+    # through as a negative lag.
+    state = tmp_path / "state"
+    init_state(state)
+    _write_open_incident(state, "psu-12v-sag")
+    path = _mutated_digest(
+        tmp_path, "psu-sag-recovered",
+        lambda d: d["meta"].__setitem__("last_sample", "2026-02-18T08:05:00-05:00"),
+    )
+    r = run_script(
+        "reconcile_incidents.py", "--state-dir", str(state),
+        "--digest", str(path), "--now", "2026-02-18T08:05:30-05:00",
+    )
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["fresh"] is False and "inconsistent" in out["freshness_reason"]
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate"
+    assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
+
+
 def test_reconcile_density_just_over_threshold_is_degraded_and_truthful(tmp_path):
     # Boundary case: 2501 gap-seconds in a 25000s window (raw 0.10004, which
     # ROUNDS to the 0.1 threshold at 4 decimals). Must be degraded via the
