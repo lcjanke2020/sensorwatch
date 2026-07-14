@@ -42,8 +42,12 @@ Trust boundaries, in order:
    can observe a fire while the logger is blind (a gap), after which the log
    still holds an *older* clear for the same rule. A close therefore also
    requires the cleared transition's timestamp to be strictly newer than the
-   incident's newest recorded event line (falling back to its ``opened``
-   header when no event line parses; unorderable records stay open).
+   incident's newest recorded event line (falling back to the ``opened``
+   header when the record has no event lines). Fail closed: if ANY event
+   bullet's timestamp does not parse, the record is unorderable — a partial
+   maximum could omit the newest fire — and the incident stays open for a
+   human (validate_event now rejects unparseable timestamps before recording,
+   so this guards legacy/hand-edited files).
 
 Also emits a ``logger_health`` block computed from the same digest (``gaps[]``
 vs the window length) — the deterministic input for the SKILL's escalate-on-
@@ -167,9 +171,9 @@ def _is_count(value: object) -> bool:
 
 
 def _window_seconds(meta: dict) -> int:
-    window = meta.get("window") or {}
-    since = st.parse_iso(str(window.get("since")))
-    until = st.parse_iso(str(window.get("until")))
+    window = meta["window"]  # shape-guaranteed by _load_digest
+    since = st.parse_iso(window["since"])
+    until = st.parse_iso(window["until"])
     seconds = int((until - since).total_seconds())
     if seconds <= 0:
         raise st.Usage(f"digest window is empty or inverted ({window})")
@@ -230,7 +234,10 @@ def _logger_health(digest: dict, window_seconds: int, fresh: bool, fresh_reason:
     # underestimates — flag it so "degraded by density" can't silently read as
     # "ok" just because the tail was dropped.
     undercounted = bool(gap_count and len(gaps) < gap_count)
-    density = round(gap_seconds / window_seconds, 4)
+    # Compare the RAW ratio; round only for display — rounding first would
+    # read a just-over-threshold density (e.g. 0.10004) as ok.
+    raw_density = gap_seconds / window_seconds
+    density = round(raw_density, 4)
     if not fresh:
         # A dead/stalled tail is the blindest gap of all, but the aggregator
         # only counts gaps BETWEEN samples — it never emits a trailing entry.
@@ -239,7 +246,7 @@ def _logger_health(digest: dict, window_seconds: int, fresh: bool, fresh_reason:
         verdict, reason = "degraded", f"feed not fresh: {fresh_reason}"
     elif largest > SINGLE_GAP_MAX_SECONDS:
         verdict, reason = "degraded", f"single gap of {largest}s (> {SINGLE_GAP_MAX_SECONDS}s)"
-    elif density > GAP_DENSITY_THRESHOLD:
+    elif raw_density > GAP_DENSITY_THRESHOLD:
         verdict, reason = "degraded", (
             f"gap density {density} (> {GAP_DENSITY_THRESHOLD} of window)"
         )
@@ -288,21 +295,31 @@ def _close_via_open_incident(state_dir: Path, event: dict, now_iso: str) -> dict
             tmp.unlink()
 
 
-def _incident_evidence_time(incident: dict):
-    """The newest instant the incident has RECORDED: its latest event-line
-    timestamp, else its ``opened`` header. ``None`` when neither parses — an
-    unorderable record can never be proven recovered."""
+def _incident_evidence_time(incident: dict) -> tuple:
+    """``(evidence_time, block_reason)`` — the newest instant the incident has
+    RECORDED (latest event-line timestamp, else the ``opened`` header), or
+    ``(None, why)`` when the record cannot be trusted to order evidence.
+
+    Fail-closed rule: if ANY event-shaped bullet has an unparseable timestamp,
+    the whole record is unorderable — a partial maximum over the lines that DO
+    parse could omit the newest fire, which is precisely the fire the ordering
+    guard exists to protect."""
     try:
         lines = incident["path"].read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    latest = st.incident_latest_event_time(lines)
+    except OSError as exc:
+        return None, f"incident file unreadable ({exc.__class__.__name__}) — cannot order recovery evidence"
+    latest, unorderable = st.incident_latest_event_time(lines)
+    if unorderable:
+        return None, (
+            "incident record contains an event line with an unparseable timestamp — "
+            "cannot prove the clear postdates it (fail closed; resolve by hand)"
+        )
     if latest is not None:
-        return latest
+        return latest, None
     try:
-        return st.parse_iso(str(incident["opened"]))
+        return st.parse_iso(str(incident["opened"])), None
     except st.Usage:
-        return None
+        return None, "incident record has no parseable timestamps — cannot order recovery evidence"
 
 
 def _recovered_or_blocked(event: dict, incident: dict) -> dict:
@@ -322,10 +339,9 @@ def _recovered_or_blocked(event: dict, incident: dict) -> dict:
     except st.Usage as exc:
         return {"verdict": "indeterminate",
                 "reason": f"cleared transition fails the event contract: {exc}"}
-    evidence = _incident_evidence_time(incident)
+    evidence, block_reason = _incident_evidence_time(incident)
     if evidence is None:
-        return {"verdict": "indeterminate",
-                "reason": "incident record has no parseable timestamps — cannot order recovery evidence"}
+        return {"verdict": "indeterminate", "reason": block_reason}
     if cleared_at <= evidence:
         return {"verdict": "indeterminate",
                 "reason": (

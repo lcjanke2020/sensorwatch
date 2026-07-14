@@ -1696,6 +1696,54 @@ def test_reconcile_unknown_transition_state_is_indeterminate(tmp_path):
     assert (state / "incidents" / "open" / "psu-12v-sag.md").exists()
 
 
+def test_reconcile_unparseable_event_line_fails_closed(tmp_path):
+    # A record with ANY unparseable event-line timestamp is unorderable: the
+    # bad line could BE the newest fire, so a partial maximum over the lines
+    # that do parse must never approve a close. (validate_event now rejects
+    # such timestamps before recording — this guards legacy/hand-edited files,
+    # simulated here by appending the bad bullet directly.)
+    state = tmp_path / "state"
+    init_state(state)
+    ev = _synth_event(rule="psu-12v-sag", id="psu-12v-sag-1", seq=1,
+                      timestamp="2026-02-18T08:00:10-05:00")
+    dest = _place_synth(state, ev)
+    opened = run_script(
+        "open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+        "--classification", "incident", "--now", "2026-02-18T08:00:15-05:00",
+    )
+    assert opened.returncode == 0, opened.stderr
+    incident = state / "incidents" / "open" / "psu-12v-sag.md"
+    lines = incident.read_text(encoding="utf-8").splitlines()
+    lines.insert(lines.index("## Notes"), "- psu-12v-sag-77 @ not-a-time  fired  value=11.3")
+    incident.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    r = _reconcile(state, "psu-sag-recovered")  # digest clear @ 08:00:30 would otherwise win
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    (verdict,) = out["verdicts"]
+    assert verdict["verdict"] == "indeterminate" and "unparseable" in verdict["reason"]
+    assert out["closed"] == [] and incident.exists()
+    assert '"action":"auto-close"' not in journal_text(state)
+
+
+def test_event_unparseable_timestamp_rejected_at_contract(tmp_path):
+    # The recording side of the same fail-closed rule: an event whose
+    # timestamp does not parse never enters an incident file or the cursor.
+    state = tmp_path / "state"
+    init_state(state)
+    dest = _place_synth(state, _synth_event(timestamp="not-a-time"))
+    opened = run_script(
+        "open_incident.py", "--state-dir", str(state), "--event-file", str(dest),
+        "--classification", "incident", "--now", T0,
+    )
+    assert opened.returncode == 2
+    assert "timestamp" in opened.stderr
+    assert list((state / "incidents" / "open").glob("*.md")) == []
+    acked = run_script("ack_event.py", "--state-dir", str(state),
+                       "--event-file", str(dest), "--now", T0)
+    assert acked.returncode == 2
+
+
 def test_gate_logger_gaps_critical_first_allows_then_cooldown(tmp_path):
     # The SKILL's wired gap escalation end-to-end: severity critical puts
     # logger-gaps at tier 2 deterministically (no persistence needed), the

@@ -308,13 +308,21 @@ def incident_set_field(lines: list, key: str, value: str) -> bool:
     return False
 
 
-def incident_latest_event_time(lines: list) -> datetime | None:
-    """The newest timestamp among an incident's ``- <id> @ <ts> …`` event
-    bullets, or ``None`` when none parse. Used by the reconciler to order
-    recovery evidence against what the incident has already recorded — a
-    ``cleared`` older than the incident's newest event must never close it
-    (the fire may have happened while the logger was blind)."""
+def incident_latest_event_time(lines: list) -> tuple:
+    """``(newest_event_time | None, unorderable)`` over an incident's
+    ``- <id> @ <ts> …`` event bullets. Used by the reconciler to order recovery
+    evidence against what the incident has already recorded — a ``cleared``
+    older than the incident's newest event must never close it (the fire may
+    have happened while the logger was blind).
+
+    ``unorderable`` is True when ANY event-shaped bullet carries a timestamp
+    that does not parse: a partial maximum over the remaining bullets could
+    silently omit the newest fire, so consumers must fail closed rather than
+    trust it (validate_event rejects unparseable timestamps before recording,
+    so this arises only from legacy or hand-edited files — exactly the records
+    that should stay with a human)."""
     latest: datetime | None = None
+    unorderable = False
     for line in lines:
         if not line.startswith("- ") or " @ " not in line:
             continue
@@ -322,10 +330,11 @@ def incident_latest_event_time(lines: list) -> datetime | None:
         try:
             ts = parse_iso(token)
         except Usage:
+            unorderable = True
             continue
         if latest is None or ts > latest:
             latest = ts
-    return latest
+    return latest, unorderable
 
 
 def read_open_incidents(state_dir: Path) -> list:
@@ -368,6 +377,20 @@ def load_event(path: Path) -> dict:
     return event
 
 
+def _parseable_ts(value: object) -> bool:
+    """A non-empty, ISO-8601-parseable timestamp string. The emitter's
+    timestamps are replay-stable sample timestamps and always parse; enforcing
+    that here means nothing unorderable is ever RECORDED into the cursor or an
+    incident file (the reconciler's evidence ordering depends on it)."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parse_iso(value)
+    except Usage:
+        return False
+    return True
+
+
 def validate_event(event: object) -> None:
     """Enforce the frozen contract: object, schema_version 1, all 14 keys
     present with the right type. Unknown extra keys are tolerated."""
@@ -388,7 +411,7 @@ def validate_event(event: object) -> None:
         "type": lambda v: isinstance(v, str),
         "severity": lambda v: v in SEVERITIES,
         "state": lambda v: v in STATES,
-        "timestamp": lambda v: isinstance(v, str) and bool(v),
+        "timestamp": _parseable_ts,
         "sensor": lambda v: v is None or isinstance(v, str),
         "reading": lambda v: v is None or isinstance(v, str),
         "value": lambda v: v is None or _is_number(v),
