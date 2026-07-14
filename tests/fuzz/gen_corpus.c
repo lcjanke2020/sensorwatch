@@ -55,6 +55,21 @@ static void write_file(const char *dir, const char *name,
     printf("wrote %s (%zu bytes)\n", path, len);
 }
 
+/* Build a synthetic buffer or exit. Centralizes the NULL check so every block
+   below can patch/memset the result without first testing it -- sw_test_build_buffer
+   returns NULL only on an allocation failure or its overflow guard. */
+static uint8_t *build_or_die(const sw_test_sensor_t *sensors, uint32_t sensor_count,
+                             const sw_test_entry_t *entries, uint32_t entry_count,
+                             size_t *out_len)
+{
+    uint8_t *buf = sw_test_build_buffer(sensors, sensor_count, entries, entry_count, out_len);
+    if (buf == NULL) {
+        fprintf(stderr, "sw_test_build_buffer failed\n");
+        exit(1);
+    }
+    return buf;
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = (argc > 1) ? argv[1] : ".";
@@ -65,7 +80,7 @@ int main(int argc, char **argv)
     {
         sw_test_sensor_t s[] = { { "MEG Ai1600T", NULL } };
         sw_test_entry_t  e[] = { { 2u, 0u, "+12V", NULL, "V", 12.03 } };
-        uint8_t *b = sw_test_build_buffer(s, 1u, e, 1u, &len);
+        uint8_t *b = build_or_die(s, 1u, e, 1u, &len);
         write_file(dir, "valid_single.bin", b, len);
         free(b);
     }
@@ -80,7 +95,7 @@ int main(int argc, char **argv)
             { 2u, 1u, NULL, "VCore", "V", 1.23 },            /* voltage, orig fallback */
             { 5u, 9u, "Pkg", NULL, "W", 65.0 },              /* power, bad sensor idx */
         };
-        uint8_t *b = sw_test_build_buffer(s, 2u, e, 3u, &len);
+        uint8_t *b = build_or_die(s, 2u, e, 3u, &len);
         write_file(dir, "valid_multi.bin", b, len);
         free(b);
     }
@@ -89,7 +104,7 @@ int main(int argc, char **argv)
     {
         sw_test_sensor_t s[] = { { "S", NULL } };
         sw_test_entry_t  e[] = { { 2u, 0u, "r", NULL, "V", 1.0 } };
-        uint8_t *b = sw_test_build_buffer(s, 1u, e, 1u, &len);
+        uint8_t *b = build_or_die(s, 1u, e, 1u, &len);
         sw_test_patch_u32(b, SW_OFF_ENTRY_COUNT, 0x10000u);
         sw_test_patch_u32(b, SW_OFF_ENTRY_SIZE,  0x10000u);
         write_file(dir, "wrap_count_size.bin", b, len);
@@ -100,7 +115,7 @@ int main(int argc, char **argv)
     {
         sw_test_sensor_t s[] = { { "S", NULL } };
         sw_test_entry_t  e[] = { { 2u, 0u, "r", NULL, "V", 1.0 } };
-        uint8_t *b = sw_test_build_buffer(s, 1u, e, 1u, &len);
+        uint8_t *b = build_or_die(s, 1u, e, 1u, &len);
         sw_test_patch_u32(b, SW_OFF_ENTRY_SIZE, 0x40000000u);
         write_file(dir, "oversize_one.bin", b, len);
         free(b);
@@ -110,7 +125,7 @@ int main(int argc, char **argv)
     {
         sw_test_sensor_t s[] = { { "S", NULL } };
         sw_test_entry_t  e[] = { { 2u, 0u, "r", NULL, "V", 1.0 } };
-        uint8_t *b = sw_test_build_buffer(s, 1u, e, 1u, &len);
+        uint8_t *b = build_or_die(s, 1u, e, 1u, &len);
         memset(b + SW_HEADER_SIZE + SW_SENSOR_OFF_NAME_USER, 'A', SW_NAME_FIELD_LEN);
         uint32_t eoff = 0;
         memcpy(&eoff, b + SW_OFF_ENTRY_OFFSET, sizeof(eoff));
@@ -124,7 +139,7 @@ int main(int argc, char **argv)
     {
         sw_test_sensor_t s[] = { { "S", NULL } };
         sw_test_entry_t  e[] = { { 2u, 0u, "r", NULL, "V", 1.0 } };
-        uint8_t *b = sw_test_build_buffer(s, 1u, e, 1u, &len);
+        uint8_t *b = build_or_die(s, 1u, e, 1u, &len);
         sw_test_patch_u32(b, SW_OFF_MAGIC, 0xDEADBEEFu);
         write_file(dir, "bad_magic.bin", b, len);
         free(b);
@@ -133,7 +148,7 @@ int main(int argc, char **argv)
     /* 7. Valid empty snapshot (zero entries). */
     {
         sw_test_sensor_t s[] = { { "S", NULL } };
-        uint8_t *b = sw_test_build_buffer(s, 1u, NULL, 0u, &len);
+        uint8_t *b = build_or_die(s, 1u, NULL, 0u, &len);
         write_file(dir, "valid_empty.bin", b, len);
         free(b);
     }
