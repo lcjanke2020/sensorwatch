@@ -32,6 +32,12 @@ build-asan/
 /rust/sensorwatch-cli/fuzz/target/
 /rust/sensorwatch-cli/fuzz/artifacts/
 /rust/sensorwatch-cli/fuzz/coverage/
+# libFuzzer writes reproducers to the CWD (the C harness runs from the repo root,
+# and the documented mutation self-test deliberately produces one).
+crash-*
+leak-*
+timeout-*
+oom-*
 
 # Tooling / editor. All of .claude/ stays local: this is a public repo, so a
 # committed settings.json would override the model choice of anyone who clones it.

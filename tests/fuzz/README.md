@@ -47,8 +47,10 @@ lives at `rust/sensorwatch-cli/fuzz/` and needs a **nightly** toolchain.
 
 ```sh
 cd rust/sensorwatch-cli
-cargo +nightly fuzz run parse_line -- -max_total_time=300
-cargo +nightly fuzz run fixup_python_tokens -- -max_total_time=300
+# As with the C target, fuzz into a scratch dir and pass the committed seed dir as
+# read-only input, so cargo-fuzz's default corpus (fuzz/corpus/<target>) stays curated.
+cargo +nightly fuzz run parse_line /tmp/sw-fuzz-parse-line fuzz/corpus/parse_line -- -max_total_time=300
+cargo +nightly fuzz run fixup_python_tokens /tmp/sw-fuzz-fixup fuzz/corpus/fixup_python_tokens -- -max_total_time=300
 ```
 
 ## Mutation self-test
