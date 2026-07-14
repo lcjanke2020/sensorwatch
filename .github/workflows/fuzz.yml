@@ -2,8 +2,10 @@ name: Fuzz
 
 # Nightly fuzzing of sensorwatch's two untrusted-input parsers (LEO-414):
 #   * the C HWiNFO shared-memory parser (sw_parse_buffer) via libFuzzer, and
-#   * the Rust JSONL replay parser (parse_line / fixup_python_tokens) via cargo-fuzz,
-# both under AddressSanitizer + UBSan. This is the repo's first scheduled lane;
+#   * the Rust JSONL replay parser (parse_line / fixup_python_tokens) via cargo-fuzz.
+# The C target runs under AddressSanitizer + UBSan; cargo-fuzz runs the Rust targets
+# under AddressSanitizer (its default; UBSan is a C/C++ sanitizer), with Rust's own
+# debug assertions + integer-overflow checks on. This is the repo's first scheduled lane;
 # LEO-327's sanitizer / static-analysis expansion can ride it later.
 #
 # A crash, sanitizer finding, timeout, or OOM makes the fuzzer exit nonzero and

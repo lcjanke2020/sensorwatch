@@ -117,8 +117,10 @@ if(SW_BUILD_SHARED)
 endif()
 
 # Static library. Tests link this so they can reach internal symbols (the pure
-# parser, decode helpers) and compile against an undecorated ABI (SW_STATIC).
-if(SW_BUILD_STATIC OR SW_BUILD_TESTS)
+# parser, decode helpers) and compile against an undecorated ABI (SW_STATIC); the
+# fuzz target (below) links it too, so SW_BUILD_FUZZ must pull it in even when
+# SW_BUILD_STATIC and SW_BUILD_TESTS are off.
+if(SW_BUILD_STATIC OR SW_BUILD_TESTS OR SW_BUILD_FUZZ)
     add_library(sensorwatch_static STATIC ${SW_SOURCES})
     target_include_directories(sensorwatch_static PUBLIC ${SW_PUBLIC_INCLUDES} PRIVATE src)
     # PUBLIC so it propagates through the export: a consumer linking the static

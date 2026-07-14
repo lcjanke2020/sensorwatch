@@ -45,8 +45,9 @@ and commit the result, or the CI `bindgen-drift` job will fail.
 
 Both untrusted-input parsers — the C shared-memory parser (`sw_parse_buffer`) and
 the Rust JSONL replay parser (`parse_line` / `fixup_python_tokens`) — have fuzz
-harnesses (libFuzzer and cargo-fuzz, under ASan/UBSan) run nightly by the `Fuzz`
-workflow. See [`tests/fuzz/README.md`](tests/fuzz/README.md) to run them locally.
+harnesses (libFuzzer under ASan/UBSan for C, cargo-fuzz under ASan for Rust) run
+nightly by the `Fuzz` workflow. See [`tests/fuzz/README.md`](tests/fuzz/README.md)
+to run them locally.
 
 ## Guidelines
 

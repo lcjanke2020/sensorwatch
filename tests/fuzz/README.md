@@ -43,7 +43,11 @@ clang -I src -I include -I tests/c tests/fuzz/gen_corpus.c tests/c/sw_test_util.
 
 `parse_line` / `fixup_python_tokens` (`rust/sensorwatch-cli/src/replay.rs`) parse
 arbitrary JSONL log files fed to `watch --replay` / `report`. The cargo-fuzz crate
-lives at `rust/sensorwatch-cli/fuzz/` and needs a **nightly** toolchain.
+lives at `rust/sensorwatch-cli/fuzz/` and needs a **nightly** toolchain. cargo-fuzz
+runs under AddressSanitizer (its default; UBSan is a C/C++ sanitizer), with Rust's
+debug assertions and integer-overflow checks on. The `fixup_python_tokens` target
+also asserts semantic invariants (valid JSON is never rewritten; the fixup is
+idempotent), so a string-boundary regression fails the run — not just a crash.
 
 ```sh
 cd rust/sensorwatch-cli
