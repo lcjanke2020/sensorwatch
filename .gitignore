@@ -29,6 +29,8 @@ wheelhouse/
 # ARE committed; only build artifacts and crash reproducers are ignored.
 build-fuzz/
 build-asan/
+build-clang/
+build-clang-asan/
 /rust/sensorwatch-cli/fuzz/target/
 /rust/sensorwatch-cli/fuzz/artifacts/
 /rust/sensorwatch-cli/fuzz/coverage/

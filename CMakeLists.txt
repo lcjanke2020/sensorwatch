@@ -14,6 +14,19 @@ set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# clang-cl reports MSVC=TRUE (it drives the MSVC ABI/CRT) but has its own flag
+# surface: no /sdl, no /analyze, gcc-style -f/-W flags accepted, and sanitizer
+# runtimes that must be named at link time explicitly -- the objects' embedded
+# /DEFAULTLIB directives are not usable when CMake+Ninja invokes lld-link
+# directly (see the SW_ENABLE_ASAN branch below). Detect it once so the flag
+# blocks below can branch. CI configures both C and CXX as clang-cl, so the
+# C-side check governs.
+if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND CMAKE_C_SIMULATE_ID STREQUAL "MSVC")
+    set(SW_CLANG_CL TRUE)
+else()
+    set(SW_CLANG_CL FALSE)
+endif()
+
 # Default to a config with debug info but no MSVC /RTC (RTC is incompatible with
 # ASan). Single-config generators only; multi-config (VS) ignore this.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -28,8 +41,8 @@ option(SW_BUILD_SHARED   "Build the sensorwatch shared library (DLL)"        ON)
 option(SW_BUILD_STATIC   "Build the sensorwatch static library"             ON)
 option(SW_BUILD_TESTS    "Build the cmocka unit tests"                      ON)
 option(SW_BUILD_EXAMPLES "Build example programs (sw_dump)"                 OFF)
-option(SW_ENABLE_ASAN    "Build with AddressSanitizer (+UBSan on gcc/clang)" OFF)
-option(SW_ENABLE_ANALYZE "Enable MSVC /analyze static analysis (non-fatal)" OFF)
+option(SW_ENABLE_ASAN    "Build with AddressSanitizer (+UBSan on gcc/clang; UBSan-trap on clang-cl)" OFF)
+option(SW_ENABLE_ANALYZE "Enable MSVC /analyze static analysis (non-fatal; cl.exe only)" OFF)
 option(SW_BUILD_FUZZ     "Build libFuzzer targets (clang only; implies ASan+UBSan)" OFF)
 
 # Install / package-export rules (install(), find_package(sensorwatch CONFIG)).
@@ -51,8 +64,53 @@ set(SW_PUBLIC_INCLUDES
 
 # --- Sanitizers: applied globally (before any targets) so the sanitizer runtime
 #     is consistent across our code and cmocka. ---
+if(SW_CLANG_CL AND SW_ENABLE_ANALYZE)
+    message(STATUS "SW_ENABLE_ANALYZE (MSVC /analyze) has no effect under clang-cl")
+endif()
+
 if(SW_ENABLE_ASAN)
-    if(MSVC)
+    if(SW_CLANG_CL)
+        # UBSan runs in trap mode: UB becomes an illegal-instruction abort (no
+        # runtime to link, inherently non-recoverable), which fails ctest just
+        # like -fno-sanitize-recover. The full ubsan_standalone runtime is not
+        # wired for direct lld-link linking here. -fno-omit-frame-pointer is
+        # not in clang-cl's accepted -f set and needs the /clang: passthrough.
+        add_compile_options(-fsanitize=address
+                            -fsanitize=undefined -fsanitize-trap=undefined
+                            /clang:-fno-omit-frame-pointer /Zi)
+        # clang-cl's objects do not carry usable ASan-runtime /DEFAULTLIB
+        # directives when the linker is invoked directly (CMake+Ninja calls
+        # lld-link, not the compiler driver), so every image fails with
+        # undefined __asan_* symbols unless the runtime is named explicitly.
+        # Resolve the /MD dynamic-runtime pair from the compiler's resource
+        # dir. Exactly one layout is selected -- per-target lib/<triple> first,
+        # then legacy lib/windows/*-x86_64 -- and the pair must be complete:
+        # a half-present pair or a both-layouts mix would configure fine and
+        # then fail (or double-link) at link time.
+        execute_process(COMMAND ${CMAKE_C_COMPILER} /clang:-print-resource-dir
+                        OUTPUT_VARIABLE SW_CLANG_RESOURCE_DIR
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        COMMAND_ERROR_IS_FATAL ANY)
+        set(SW_RT_PERTARGET "${SW_CLANG_RESOURCE_DIR}/lib/x86_64-pc-windows-msvc")
+        set(SW_RT_LEGACY    "${SW_CLANG_RESOURCE_DIR}/lib/windows")
+        if(EXISTS "${SW_RT_PERTARGET}/clang_rt.asan_dynamic.lib" AND
+           EXISTS "${SW_RT_PERTARGET}/clang_rt.asan_dynamic_runtime_thunk.lib")
+            set(SW_ASAN_RT_LIBS
+                "${SW_RT_PERTARGET}/clang_rt.asan_dynamic.lib"
+                "${SW_RT_PERTARGET}/clang_rt.asan_dynamic_runtime_thunk.lib")
+        elseif(EXISTS "${SW_RT_LEGACY}/clang_rt.asan_dynamic-x86_64.lib" AND
+               EXISTS "${SW_RT_LEGACY}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+            set(SW_ASAN_RT_LIBS
+                "${SW_RT_LEGACY}/clang_rt.asan_dynamic-x86_64.lib"
+                "${SW_RT_LEGACY}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+        else()
+            message(FATAL_ERROR
+                "SW_ENABLE_ASAN with clang-cl: no complete clang_rt.asan_dynamic "
+                "+ runtime_thunk pair under ${SW_RT_PERTARGET} or "
+                "${SW_RT_LEGACY} -- cannot link the ASan runtime.")
+        endif()
+        add_link_options(/INCREMENTAL:NO ${SW_ASAN_RT_LIBS})
+    elseif(MSVC)
         add_compile_options(/fsanitize=address /Zi)
         add_link_options(/INCREMENTAL:NO)
     else()
@@ -69,10 +127,12 @@ endif()
 #     -fsanitize=fuzzer is not a gcc flag. Self-enables ASan+UBSan, so a fuzz
 #     build needs only -DSW_BUILD_FUZZ=ON (not also -DSW_ENABLE_ASAN). ---
 if(SW_BUILD_FUZZ)
-    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang" OR SW_CLANG_CL)
         message(FATAL_ERROR
-            "SW_BUILD_FUZZ requires clang (libFuzzer). Re-configure with "
-            "-DCMAKE_C_COMPILER=clang. Current C compiler: '${CMAKE_C_COMPILER_ID}'.")
+            "SW_BUILD_FUZZ requires clang with libFuzzer; gcc and clang-cl on the "
+            "windows-msvc target are not supported. Re-configure with "
+            "-DCMAKE_C_COMPILER=clang (Linux). Current C compiler: "
+            "'${CMAKE_C_COMPILER_ID}'.")
     endif()
     # fuzzer-no-link instruments every TU for coverage without pulling libFuzzer's
     # main() into the libraries; the harness target adds -fsanitize=fuzzer to link it.
@@ -84,7 +144,15 @@ endif()
 # --- Per-target warning / security flags. Applied only to our own targets so a
 #     third-party dependency (cmocka) is not held to our -Werror. ---
 function(sw_set_target_flags target)
-    if(MSVC)
+    if(SW_CLANG_CL)
+        # /W4 (maps to clang -Wall -Wextra), /WX, /guard:cf are supported by
+        # clang-cl; /sdl and /analyze are cl.exe-only and would trip
+        # -Wunknown-argument under /WX. The extra -W flags are the clang-cl set
+        # docs/C_CODING_STANDARDS.md section 8 asks for (held below the gcc
+        # branch's -Wpedantic until the Win32 TUs have burned in under clang).
+        target_compile_options(${target} PRIVATE
+            /W4 /WX /guard:cf -Wconversion -Wshadow -Wformat=2)
+    elseif(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX /sdl /guard:cf)
         if(SW_ENABLE_ANALYZE)
             # /analyze:WX- keeps analysis findings non-fatal so analyzer-version

@@ -20,6 +20,18 @@ release picks it up._
 
 ### Added
 
+- **clang-cl CI job + Windows sanitizer legs + blocking static analysis**
+  (LEO-327) — native CI now builds and tests the C core with clang-cl (the
+  coding standard's secondary Windows compiler) including a sanitizer pass,
+  runs the MSVC leg's tests — including the Windows-only Win32 session-layer
+  suite — under AddressSanitizer, compiles the cffi extension with ASan and
+  runs the native-binding pytest suite under the preloaded runtime, and gates
+  `src/*.c` with a blocking, version-pinned clang-tidy pass
+  ([`.clang-tidy`](.clang-tidy)). One real finding fixed along the way:
+  `sw_decode_field()` now sizes its output for the UTF-8 worst case provable
+  locally, instead of leaning on the cp1252 decoder table's value range
+  (output bytes unchanged).
+
 - **`sw_snapshot_from_buffer()`** — new public C ABI entry point (ABI
   `0.1.0` → `0.2.0`) that parses a caller-supplied HWiNFO shared-memory image
   into a snapshot through the same validating parser as `sw_snapshot_take()`,

@@ -1,0 +1,20 @@
+# Blocking C static-analysis gate (LEO-327). CI runs this over src/*.c in the
+# native-linux job via the pinned PyPI clang-tidy wheel:
+#   uvx --from clang-tidy==<pin> clang-tidy -p <build-dir> src/*.c
+# WarningsAsErrors '*' turns every enabled finding into a nonzero exit.
+#
+# Disabled checks:
+# - clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling:
+#   Annex-K (_s function) advocacy; memcpy/snprintf calls here are
+#   bounds-checked by construction and Annex K is not portable (glibc omits it).
+# - bugprone-multi-level-implicit-pointer-conversion: flags free() of a
+#   char ** table as char** -> void*; idiomatic C, a cast would add no safety.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  performance-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -bugprone-multi-level-implicit-pointer-conversion
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(src|include)/'

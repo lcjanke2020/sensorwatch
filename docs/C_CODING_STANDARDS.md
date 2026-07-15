@@ -63,9 +63,11 @@ Use this as the compact PR-review version of the longer guidance below.
 - Add SAL annotations on public APIs so MSVC `/analyze` can reason about buffers
   and nullability.
 - Build with warnings as errors, `/sdl`, `/analyze`, and AddressSanitizer/UBSan in
-  CI — the native core's CI does this today (gcc ASan+UBSan on Linux, MSVC
-  `/analyze` on Windows); keep it green. A dedicated clang-cl sanitizer /
-  static-analysis job is still aspirational.
+  CI — the native core's CI does this today (Linux: gcc ASan+UBSan plus a
+  blocking clang-tidy gate; Windows: MSVC `/W4 /WX /sdl /guard:cf` with
+  `/analyze` non-fatal plus an ASan pass, and a clang-cl job with its own
+  ASan + UBSan-trap pass; a dedicated Linux job additionally runs the cffi
+  extension under ASan); keep it green.
 - Fuzz the parser with mutated shared-memory blobs and run it under sanitizers.
 - Maintain an exported-symbol snapshot or equivalent ABI-compatibility check once
   a native library is released.
@@ -900,7 +902,8 @@ library and the Windows SDK:
 | C17 stdlib | Compiler | Yes (always) |
 | Windows SDK (kernel32, etc.) | System | Yes (always) |
 | cmocka | FetchContent | Test-only |
-| clang-tidy, Cppcheck | System install | CI/dev-only |
+| clang-tidy | Pinned PyPI wheel in CI (`uvx --from clang-tidy==<pin>`); any install locally | CI/dev-only |
+| Cppcheck | System install | Optional, dev-only (not run in CI) |
 
 This is a deliberate design constraint. The DLL that ships to users links only
 against system libraries. No vcpkg, no Conan, no vendored third-party code in
@@ -937,26 +940,33 @@ nothing else to configure, nothing else to download.
 
 #### clang-cl
 
+What the CI job passes (the `SW_CLANG_CL` branch in `CMakeLists.txt`):
+
 ```
 /std:c17
-/W4
+/W4                # Maps to clang's -Wall -Wextra
 /WX
--Wextra
--Wpedantic
+/guard:cf
 -Wconversion       # Catches implicit narrowing (very valuable)
 -Wshadow           # Catches variable shadowing
 -Wformat=2         # Format string validation
 ```
 
+`/sdl` and `/analyze` are cl.exe-only — clang-cl rejects them as unknown
+arguments under `/WX`, which is why the flag logic branches on `SW_CLANG_CL`
+rather than plain `MSVC` (clang-cl reports `MSVC=TRUE` to CMake). `-Wpedantic`
+is deliberately not yet enabled: the Win32 TUs are still burning in under
+clang; consider adding it once they have history there.
+
 ### Static Analysis
 
-Run **all three** in CI. They catch different classes of bugs:
+They catch different classes of bugs; what CI runs today:
 
-| Tool | What It Catches | Integration |
+| Tool | What It Catches | CI status |
 |---|---|---|
-| **MSVC /analyze** | Windows API misuse, buffer overruns, null dereference, annotation violations (SAL) | Built into cl.exe, add `/analyze` flag |
-| **clang-tidy** | Modernization, cert-* checks, readability, bugprone-* patterns | Run separately via `clang-tidy --checks='...'` |
-| **Cppcheck** | Memory leaks, uninitialized vars, MISRA violations, dead code | Run separately via `cppcheck --enable=all` |
+| **clang-tidy** | Analyzer path bugs, cert-* checks, bugprone-* patterns, performance | **Blocking** — `native (ubuntu, gcc)` job runs the exact-pinned PyPI wheel over `src/*.c`; check set + `WarningsAsErrors: '*'` in [`.clang-tidy`](../.clang-tidy) |
+| **MSVC /analyze** | Windows API misuse, buffer overruns, null dereference, annotation violations (SAL) | In CI, **non-fatal** (`/analyze:WX-`): analyzer-version skew between local VS and the CI image would otherwise redden the gate |
+| **Cppcheck** | Memory leaks, uninitialized vars, MISRA violations, dead code | Not run in CI; optional local sweep via `cppcheck --enable=all` |
 
 ### SAL Annotations (Microsoft Source Annotation Language)
 
@@ -996,12 +1006,17 @@ Important MSVC ASan constraints:
 - The ASan runtime DLL (`clang_rt.asan_dynamic-x86_64.dll`) must be in PATH at
   runtime.
 
-UBSan (Undefined Behavior Sanitizer) has limited MSVC support. Use clang-cl
-for UBSan runs:
+UBSan (Undefined Behavior Sanitizer) has limited MSVC support, so the Windows
+UBSan leg runs via clang-cl. CI uses **trap mode** — no UBSan runtime to link;
+undefined behavior becomes an illegal-instruction abort that fails ctest
+(wired by `SW_ENABLE_ASAN` under `SW_CLANG_CL` in `CMakeLists.txt`):
 
 ```
-clang-cl /fsanitize=undefined /std:c17 /Zi /MD ...
+clang-cl -fsanitize=undefined -fsanitize-trap=undefined /Zi /MD ...
 ```
+
+The full-runtime, diagnostic-printing UBSan (`-fno-sanitize-recover=all`) runs
+on the Linux gcc/clang legs, where the runtime links cleanly.
 
 ---
 

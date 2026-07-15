@@ -77,10 +77,13 @@ char *sw_decode_field(const uint8_t *field, size_t field_len)
         eff++;
     }
 
-    /* Worst case is 3 UTF-8 bytes per input byte (cp1252 never yields > U+FFFD),
-       plus the terminator. Use overflow-checked arithmetic on principle. */
+    /* Size for the UTF-8 worst case of 4 bytes per code point, plus the
+       terminator. cp1252 in fact never yields above U+FFFD (3 bytes), but
+       sizing for 4 keeps the bound provable from this function alone instead
+       of depending on the decoder table's contents. Overflow-checked on
+       principle. */
     size_t cap = 0;
-    if (!sw_size_mul(eff, 3u, &cap) || !sw_size_add(cap, 1u, &cap)) {
+    if (!sw_size_mul(eff, 4u, &cap) || !sw_size_add(cap, 1u, &cap)) {
         return NULL;
     }
 
