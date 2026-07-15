@@ -445,13 +445,19 @@ fn ctrl_break_exits_130() {
     // is a valid group id because the child was spawned as a new group leader.
     let delivered = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
     if delivered == 0 {
-        // No shared console to deliver through (possible under some CI shells):
-        // that is an environment limitation, not a product failure. Clean up and
-        // skip rather than fail — the unix leg still pins the exit-130 contract.
+        // Fail loudly — no silent skip. A skip here would be invisible in CI
+        // (libtest captures stderr on passing tests), so a delivery regression
+        // (e.g. losing CREATE_NEW_PROCESS_GROUP, or a runner without a shared
+        // console) would quietly erase the Windows half of the exit-130
+        // coverage while staying green — the same failure shape as the fixed
+        // pre-signal sleep this file replaced. A green run of this test is
+        // therefore proof the event was delivered and mapped to exit 130; if
+        // an environment genuinely cannot deliver console events, descope this
+        // leg deliberately (with a rationale) rather than skipping silently.
+        let err = std::io::Error::last_os_error();
         let _ = child.kill();
         let _ = child.wait();
-        eprintln!("[test] SKIP ctrl_break_exits_130 (GenerateConsoleCtrlEvent failed)");
-        return;
+        panic!("GenerateConsoleCtrlEvent(CTRL_BREAK) failed: {err}");
     }
 
     wait_for_exit_130(child, "CTRL_BREAK");
