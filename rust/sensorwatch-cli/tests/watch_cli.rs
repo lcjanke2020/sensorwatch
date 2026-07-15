@@ -337,13 +337,57 @@ fn min_severity_filters_rules() {
     assert!(out.contains(r#""severity":"critical""#), "{out}");
 }
 
+// Readiness gate for the signal tests: `watch` installs its shutdown handler
+// (watch.rs step 6) strictly BEFORE `SeqStore::open` creates the logs/ state
+// dir (step 7), so the dir appearing proves the signal-to-130 mapping is armed.
+// The config is written with create_logs_dir=false, so the gate cannot pass
+// early. This replaces a fixed pre-signal sleep, which raced on loaded runners
+// (a signal delivered before the handler is installed kills the process with
+// the default disposition, not exit 130).
+#[cfg(any(unix, windows))]
+fn wait_until_armed(child: &mut std::process::Child, dir: &std::path::Path) {
+    use std::time::{Duration, Instant};
+
+    let logs_dir = dir.join("logs");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !logs_dir.exists() {
+        if let Some(status) = child.try_wait().expect("could not poll the child") {
+            panic!("watcher exited before arming its handler: {status}");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("logs/ state dir never appeared within 10s; watcher not armed");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+// Poll the child for the exit-130 contract, with a bounded kill-on-timeout.
+#[cfg(any(unix, windows))]
+fn wait_for_exit_130(mut child: std::process::Child, what: &str) {
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().expect("could not poll the child") {
+            assert_eq!(status.code(), Some(130), "{what} should map to exit 130");
+            return;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("`watch --follow` did not exit within 10s of {what}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 // A follow-mode watcher must translate SIGINT into exit 130 (unlike `log`,
 // which exits 0). Unix-only: it sends a real signal via `kill -INT`.
 #[cfg(unix)]
 #[test]
 fn sigint_exits_130() {
-    use std::time::{Duration, Instant};
-
     let dir = TempDir::new();
     let config = write_config(dir.path(), PSU_RULE, 1, false);
     let mut child = Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
@@ -353,24 +397,68 @@ fn sigint_exits_130() {
         .spawn()
         .expect("failed to spawn the sensorwatch binary");
 
-    std::thread::sleep(Duration::from_secs(1));
+    wait_until_armed(&mut child, dir.path());
+
     let killed = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
         .status()
         .expect("failed to run kill");
     assert!(killed.success(), "kill -INT failed");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(status) = child.try_wait().expect("could not poll the child") {
-            assert_eq!(status.code(), Some(130), "SIGINT should map to exit 130");
-            return;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("`watch --follow` did not exit within 10s of SIGINT");
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    wait_for_exit_130(child, "SIGINT");
+}
+
+// The Windows counterpart: a real console control event must map to exit 130
+// through the ctrlc `termination` handler. CTRL_BREAK is used because — unlike
+// CTRL_C — it can be delivered to a single process group, so the event reaches
+// only the spawned watcher (in its own group via CREATE_NEW_PROCESS_GROUP),
+// never this test runner.
+#[cfg(windows)]
+#[test]
+fn ctrl_break_exits_130() {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CTRL_BREAK_EVENT: u32 = 1;
+    // Minimal hand-declared kernel32 surface — no new dependency for one call.
+    // GenerateConsoleCtrlEvent requires sender and target to share a console,
+    // which a child spawned without DETACHED_PROCESS/CREATE_NO_WINDOW does.
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
     }
+
+    let dir = TempDir::new();
+    let config = write_config(dir.path(), PSU_RULE, 1, false);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sensorwatch"))
+        .args(["watch", "--follow", "--config", arg(&config)])
+        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn the sensorwatch binary");
+
+    wait_until_armed(&mut child, dir.path());
+
+    // SAFETY: plain Win32 call; the process-group id is the child's pid, which
+    // is a valid group id because the child was spawned as a new group leader.
+    let delivered = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+    if delivered == 0 {
+        // Fail loudly — no silent skip. A skip here would be invisible in CI
+        // (libtest captures stderr on passing tests), so a delivery regression
+        // (e.g. losing CREATE_NEW_PROCESS_GROUP, or a runner without a shared
+        // console) would quietly erase the Windows half of the exit-130
+        // coverage while staying green — the same failure shape as the fixed
+        // pre-signal sleep this file replaced. A green run of this test is
+        // therefore proof the event was delivered and mapped to exit 130; if
+        // an environment genuinely cannot deliver console events, descope this
+        // leg deliberately (with a rationale) rather than skipping silently.
+        let err = std::io::Error::last_os_error();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("GenerateConsoleCtrlEvent(CTRL_BREAK) failed: {err}");
+    }
+
+    wait_for_exit_130(child, "CTRL_BREAK");
 }

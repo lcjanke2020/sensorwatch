@@ -97,6 +97,34 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
         }
     };
 
+    run_loop(
+        &config,
+        &mut writer,
+        collect_live,
+        Zoned::now,
+        |interval| wait_for_shutdown(&shutdown, interval),
+        || {
+            *shutdown
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        },
+    )
+}
+
+/// The sampling loop behind [`run`], with its environment injected: the live
+/// source, the wall clock, the interval wait, and the shutdown flag stay in
+/// `run`, so a bounded, clock-injected test can prove what previously only a
+/// live Windows run exercised — interval pacing, daily rotation, rollover
+/// retention, and the sensor filter wired together.
+fn run_loop(
+    config: &Config,
+    writer: &mut LogWriter,
+    mut sample: impl FnMut() -> sensorwatch::Result<Vec<Reading>>,
+    mut clock: impl FnMut() -> Zoned,
+    mut wait: impl FnMut(Duration) -> bool,
+    mut stop_requested: impl FnMut() -> bool,
+) -> ExitCode {
     // Warns on the first unavailable poll only, then retries silently every
     // interval; it never re-warns, even if the source comes back and drops
     // out again — the Python latch is also process-lifetime.
@@ -106,14 +134,10 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
     let interval = Duration::from_secs(config.interval_seconds.max(1) as u64);
     // Lowercase the filter patterns once, outside the sampling loop.
     let filter = config.sensor_filter();
-    while !*shutdown
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-    {
-        match collect_live() {
+    while !stop_requested() {
+        match sample() {
             Ok(readings) => {
-                let now = Zoned::now();
+                let now = clock();
                 let entries: Vec<LogEntry<'_>> = readings
                     .iter()
                     .filter(|r| filter.matches(&r.sensor))
@@ -127,7 +151,7 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
                 }
             }
             Err(Error::UnsupportedPlatform) => {
-                // Unreachable behind the cfg!(windows) gate above, but keeps
+                // Unreachable behind `run`'s cfg!(windows) gate, but keeps
                 // the fatal/retry split airtight if that ever changes.
                 eprintln!("sensorwatch log requires Windows (HWiNFO64 shared memory).");
                 return ExitCode::from(1);
@@ -142,7 +166,7 @@ pub(crate) fn run(args: &LogArgs) -> ExitCode {
                 }
             }
         }
-        if wait_for_shutdown(&shutdown, interval) {
+        if wait(interval) {
             break;
         }
     }
@@ -696,5 +720,154 @@ mod tests {
         // must swallow the error, not panic.
         std::fs::remove_dir_all(dir.path().join("logs")).unwrap();
         writer.write_raw(r#"{"seq":1}"#, &now);
+    }
+
+    // --- run_loop: the bounded, clock-injected loop-level test (LEO-415) ---
+
+    /// A fixed -05:00 timestamp with explicit seconds (the `at` helper pins
+    /// seconds at 48.5 for the golden tests; the loop test needs a series).
+    fn at_hms(y: i16, m: i8, d: i8, hour: i8, minute: i8, second: i8) -> Zoned {
+        let tz = TimeZone::fixed(Offset::from_seconds(-5 * 3600).unwrap());
+        date(y, m, d)
+            .at(hour, minute, second, 0)
+            .to_zoned(tz)
+            .unwrap()
+    }
+
+    fn voltage_reading(sensor: &str, name: &str, value: f64) -> sensorwatch::Reading {
+        sensorwatch::Reading {
+            source: "HWiNFO".to_string(),
+            sensor: sensor.to_string(),
+            reading: name.to_string(),
+            unit: "V".to_string(),
+            kind: sensorwatch::ReadingType::Voltage,
+            value,
+            minimum: value,
+            maximum: value,
+            average: value,
+        }
+    }
+
+    /// The loop-level coverage the module previously left to manual Windows
+    /// verification: interval pacing, daily rotation, rollover retention, and
+    /// the sensor filter, all operating together in one bounded run.
+    #[test]
+    fn run_loop_wires_pacing_rotation_retention_and_filter_together() {
+        let dir = TempDir::new();
+
+        // A stale file exactly at the day-1 cutoff (2026-02-18 minus 30 days =
+        // 2026-01-19). Startup retention keeps it (strictly-older-than); only
+        // the retention re-run at the in-loop midnight rollover (new cutoff
+        // 2026-01-20) may prune it — so its fate isolates rollover retention.
+        let stale = dir.path().join("sensors_2026-01-19.jsonl");
+        std::fs::write(&stale, b"{}\n").unwrap();
+
+        // The clock steps 23:59:50 -> 00:00:00 -> 00:00:10: the second tick
+        // crosses local midnight and must rotate the file.
+        let ticks = [
+            at_hms(2026, 2, 18, 23, 59, 50),
+            at_hms(2026, 2, 19, 0, 0, 0),
+            at_hms(2026, 2, 19, 0, 0, 10),
+        ];
+        let values = [12.03_f64, 11.5, 11.4];
+
+        let config = Config {
+            interval_seconds: 7,
+            retention_days: 30,
+            sensor_include: vec!["MEG Ai1600T".to_string()],
+            ..Config::default()
+        };
+        let mut writer = LogWriter::new(
+            dir.path(),
+            LOG_PREFIX,
+            config.retention_days,
+            &ticks[0],
+            "\n",
+        )
+        .unwrap();
+        assert!(
+            stale.exists(),
+            "startup retention must keep a file exactly at the cutoff"
+        );
+
+        let mut sample_calls = 0usize;
+        let mut clock_calls = 0usize;
+        let mut waits: Vec<Duration> = Vec::new();
+        let exit = run_loop(
+            &config,
+            &mut writer,
+            || {
+                let value = values[sample_calls];
+                sample_calls += 1;
+                Ok(vec![
+                    voltage_reading("MEG Ai1600T", "+12V", value),
+                    // Excluded by the include filter; must never reach a file.
+                    voltage_reading("Chassis Noise", "Hum", 42.0),
+                ])
+            },
+            || {
+                let now = ticks[clock_calls].clone();
+                clock_calls += 1;
+                now
+            },
+            |interval| {
+                waits.push(interval);
+                waits.len() == values.len() // bound the loop at three samples
+            },
+            || false,
+        );
+
+        assert_eq!(format!("{exit:?}"), format!("{:?}", ExitCode::SUCCESS));
+        assert_eq!(sample_calls, 3);
+        assert_eq!(clock_calls, 3);
+        // Pacing: every wait received the configured interval, from config.
+        assert_eq!(waits, vec![Duration::from_secs(7); 3]);
+
+        // Rotation: the midnight crossing split the records across two daily
+        // files, with the filter applied and record bytes exact.
+        let day1 = std::fs::read_to_string(dir.path().join("sensors_2026-02-18.jsonl")).unwrap();
+        let day2 = std::fs::read_to_string(dir.path().join("sensors_2026-02-19.jsonl")).unwrap();
+        assert_eq!(
+            day1,
+            concat!(
+                r#"{"timestamp": "2026-02-18T23:59:50.000000-05:00", "sensors": [{"sensor": "MEG Ai1600T", "reading": "+12V", "type": "Voltage", "value": 12.03, "min": 12.03, "max": 12.03, "avg": 12.03, "unit": "V"}]}"#,
+                "\n"
+            )
+        );
+        assert_eq!(
+            day2,
+            concat!(
+                r#"{"timestamp": "2026-02-19T00:00:00.000000-05:00", "sensors": [{"sensor": "MEG Ai1600T", "reading": "+12V", "type": "Voltage", "value": 11.5, "min": 11.5, "max": 11.5, "avg": 11.5, "unit": "V"}]}"#,
+                "\n",
+                r#"{"timestamp": "2026-02-19T00:00:10.000000-05:00", "sensors": [{"sensor": "MEG Ai1600T", "reading": "+12V", "type": "Voltage", "value": 11.4, "min": 11.4, "max": 11.4, "avg": 11.4, "unit": "V"}]}"#,
+                "\n"
+            )
+        );
+
+        // Rollover retention: the stale file survived startup but not the
+        // rollover's re-run.
+        assert!(
+            !stale.exists(),
+            "the midnight rollover must prune the now-out-of-window file"
+        );
+    }
+
+    #[test]
+    fn run_loop_stops_immediately_on_a_pre_armed_shutdown() {
+        let dir = TempDir::new();
+        let config = Config::default();
+        let mut writer =
+            LogWriter::new(dir.path(), LOG_PREFIX, 0, &at(2026, 2, 18, 8, 0), "\n").unwrap();
+        // With the flag already set, the loop must exit cleanly before its
+        // first sample — none of the injected closures may run.
+        let exit = run_loop(
+            &config,
+            &mut writer,
+            || panic!("must not sample"),
+            || panic!("must not read the clock"),
+            |_| panic!("must not wait"),
+            || true,
+        );
+        assert_eq!(format!("{exit:?}"), format!("{:?}", ExitCode::SUCCESS));
     }
 }

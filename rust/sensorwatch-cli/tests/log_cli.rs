@@ -1,10 +1,14 @@
 //! Binary-level tests for the `log` subcommand's CLI contract.
 //!
-//! There is deliberately no live-loop test: driving a long-running sampler
-//! would need spawn/sleep/kill nondeterminism in CI. The loop's pieces
-//! (config, record bytes, rotation, retention) are unit tested inside the
-//! crate — including a golden byte-comparison against a Python-logger
-//! fixture — and live behavior is verified manually on Windows.
+//! There is deliberately no *binary-level* loop test: driving a long-running
+//! sampler through the executable would need spawn/sleep/kill nondeterminism
+//! in CI. The loop itself is covered in-crate instead: `logger::run_loop` is
+//! the sampling loop with its source/clock/wait/shutdown injected, and its
+//! bounded test proves interval pacing, daily rotation, rollover retention,
+//! and the sensor filter wired together (src/logger.rs). The remaining
+//! pieces (config, record bytes) stay unit tested — including a golden
+//! byte-comparison against a Python-logger fixture — and only the live
+//! HWiNFO source path is verified manually on Windows.
 
 mod common;
 use common::*;
