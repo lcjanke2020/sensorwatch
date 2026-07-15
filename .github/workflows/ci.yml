@@ -177,7 +177,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
           ctest --test-dir build-clang --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
-          cmake -B build-clang-asan -G Ninja -DSW_BUILD_TESTS=ON -DSW_ENABLE_ASAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cc"
+          # SW_BUILD_SHARED=OFF: clang-cl's ASan runtime /DEFAULTLIB directives
+          # cover executables but not a DLL linked directly by lld-link
+          # (undefined __asan_* symbols). The tests all link sensorwatch_static,
+          # so the same TUs run under ASan regardless; the shipped DLL is
+          # sanitizer-built in the MSVC job's ASan pass instead.
+          cmake -B build-clang-asan -G Ninja -DSW_BUILD_TESTS=ON -DSW_BUILD_SHARED=OFF -DSW_ENABLE_ASAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cc"
           if ($LASTEXITCODE -ne 0) { throw "asan configure failed" }
           cmake --build build-clang-asan
           if ($LASTEXITCODE -ne 0) { throw "asan build failed" }
