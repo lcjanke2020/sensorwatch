@@ -46,17 +46,54 @@ jobs:
         # on non-Windows the source is simply unavailable at session-open time.
         run: uv run python -c "import sensorwatch, sensorwatch.native; print(sensorwatch.__version__)"
 
+  # cffi extension under ASan (LEO-327): catches marshalling/lifetime bugs across
+  # the FFI boundary that the pure-C cmocka runs cannot see. Scoped to
+  # tests/test_native.py -- the monitor-script suite spawns subprocesses that would
+  # inherit LD_PRELOAD, and the rest of the suite carries no native code. No uv
+  # cache on purpose: never share a wheel cache with ASan-built artifacts.
+  python-native-asan:
+    name: cffi extension under ASan (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          python-version: '3.13'
+      - name: Build extension with ASan
+        run: >
+          CFLAGS="-fsanitize=address -fno-omit-frame-pointer -g"
+          LDFLAGS="-fsanitize=address"
+          uv sync
+      - name: Run native-binding tests under ASan
+        # LD_PRELOAD: the python binary itself is not ASan-linked, so the runtime
+        # must come first. detect_leaks=0: CPython's interned/arena allocations
+        # drown the leak report. PYTHONMALLOC=malloc: bypass pymalloc so ASan sees
+        # every allocation at real malloc granularity.
+        run: >
+          LD_PRELOAD=$(gcc -print-file-name=libasan.so)
+          ASAN_OPTIONS=detect_leaks=0 PYTHONMALLOC=malloc
+          uv run pytest tests/test_native.py
+
   native-linux:
     name: native (ubuntu, gcc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
       - name: Configure
-        run: cmake -B build -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON
+        # Compile commands exported for the clang-tidy step below.
+        run: cmake -B build -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
       - name: Build
         run: cmake --build build -j
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      - name: clang-tidy (blocking)
+        # Blocking C static analysis (LEO-327). The exact-pinned PyPI wheel keeps a
+        # new clang-tidy release from reddening CI; the check set and
+        # WarningsAsErrors '*' live in .clang-tidy at the repo root. This covers
+        # the cross-platform TUs; the Win32 half of sw_session.c only compiles on
+        # Windows, where MSVC /analyze (non-fatal) and clang-cl /WX apply.
+        run: uvx --from clang-tidy==22.1.8 clang-tidy -p build src/*.c
       # Sanitizer pass (SECURITY.md: run the parser under sanitizers). RelWithDebInfo
       # avoids debug-only checks and keeps ASan/UBSan happy.
       - name: Configure (ASan + UBSan)
@@ -74,7 +111,11 @@ jobs:
       # Discover whatever Visual Studio the runner ships (version-independent) via
       # vswhere, enter its Dev Shell to put cl + the bundled CMake/Ninja on PATH,
       # then build + test. /W4 /WX gates warnings; /analyze runs non-fatally
-      # (/analyze:WX-). All in one step since shell env does not persist.
+      # (/analyze:WX-). A second pass rebuilds and re-runs the tests -- including
+      # the Windows-only test_session.c Win32-mapping tests -- under MSVC
+      # AddressSanitizer (LEO-327); the Dev Shell PATH already carries
+      # clang_rt.asan_dynamic-x86_64.dll for /MD builds. All in one step since
+      # shell env does not persist.
       - name: Build and test (MSVC + Ninja)
         shell: pwsh
         run: |
@@ -92,6 +133,54 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
           ctest --test-dir build --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
+          cmake -B build-asan -G Ninja -DSW_BUILD_TESTS=ON -DSW_ENABLE_ASAN=ON
+          if ($LASTEXITCODE -ne 0) { throw "asan configure failed" }
+          cmake --build build-asan
+          if ($LASTEXITCODE -ne 0) { throw "asan build failed" }
+          ctest --test-dir build-asan --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "asan ctest failed" }
+
+  native-windows-clang-cl:
+    name: native (windows, clang-cl)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      # The secondary Windows compiler from docs/C_CODING_STANDARDS.md section 8
+      # (LEO-327): build + test with the VS-bundled clang-cl (version-matched to
+      # the Dev Shell's MSVC CRT/STL, unlike the runner's standalone LLVM), then a
+      # sanitizer pass -- ASan plus UBSan in trap mode; see the SW_CLANG_CL branch
+      # in CMakeLists.txt. The LLVM bin dir is prepended to PATH so the ASan
+      # runtime DLL resolves at ctest time. Forward slashes in the compiler path
+      # keep CMake from eating backslashes.
+      - name: Build and test (clang-cl + Ninja)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          if (-not $vs) { throw "No Visual Studio installation found" }
+          Write-Host "Using Visual Studio at: $vs"
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -DevCmdArguments '-arch=x64 -host_arch=x64' -SkipAutomaticLocation | Out-Null
+          $env:PATH = "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;" + $env:PATH
+          $llvmBin = Join-Path $vs 'VC\Tools\Llvm\x64\bin'
+          $clangcl = Join-Path $llvmBin 'clang-cl.exe'
+          if (-not (Test-Path $clangcl)) { throw "VS ClangCL toolset not found at $clangcl (VC.Llvm.Clang component missing?)" }
+          & $clangcl --version
+          $env:PATH = "$llvmBin;" + $env:PATH
+          $cc = $clangcl.Replace('\', '/')
+          cmake -B build-clang -G Ninja -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cc"
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build build-clang
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          ctest --test-dir build-clang --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
+          cmake -B build-clang-asan -G Ninja -DSW_BUILD_TESTS=ON -DSW_ENABLE_ASAN=ON "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cc"
+          if ($LASTEXITCODE -ne 0) { throw "asan configure failed" }
+          cmake --build build-clang-asan
+          if ($LASTEXITCODE -ne 0) { throw "asan build failed" }
+          ctest --test-dir build-clang-asan --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "asan ctest failed" }
 
   # Consumer smoke: install the package to a prefix and build a standalone project
   # that consumes it via find_package(sensorwatch CONFIG) -- proves cmake --install
