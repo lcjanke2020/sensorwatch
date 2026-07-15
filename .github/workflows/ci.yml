@@ -5,10 +5,12 @@ name: CI
 # compiles the cffi extension over the C core via setuptools — MSVC on Windows,
 # gcc on Linux, both auto-discovered) and exercises the parsing, config, logging,
 # and native-binding logic; the native jobs build the C core and run its cmocka
-# tests. None exercises a live HWiNFO64 sensor read — the live paths still skip
-# off-Windows — but every binding's populated-Snapshot accessor surface runs on
-# every leg via synthetic buffers parsed through sw_snapshot_from_buffer, and a
-# cross-language end-to-end test (buffer → snapshot → logger JSONL → watch
+# tests under gcc, MSVC, and clang-cl, each with a sanitizer pass, plus a
+# blocking clang-tidy gate on Linux and a cffi-extension-under-ASan job
+# (LEO-327). None exercises a live HWiNFO64 sensor read — the live paths still
+# skip off-Windows — but every binding's populated-Snapshot accessor surface runs
+# on every leg via synthetic buffers parsed through sw_snapshot_from_buffer, and
+# a cross-language end-to-end test (buffer → snapshot → logger JSONL → watch
 # engine → event JSON) runs in the Rust job (LEO-415).
 on:
   push:
@@ -133,7 +135,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
           ctest --test-dir build --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
-          cmake -B build-asan -G Ninja -DSW_BUILD_TESTS=ON -DSW_ENABLE_ASAN=ON
+          cmake -B build-asan -G Ninja -DSW_BUILD_TESTS=ON -DSW_ENABLE_ASAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
           if ($LASTEXITCODE -ne 0) { throw "asan configure failed" }
           cmake --build build-asan
           if ($LASTEXITCODE -ne 0) { throw "asan build failed" }
@@ -169,13 +171,13 @@ jobs:
           & $clangcl --version
           $env:PATH = "$llvmBin;" + $env:PATH
           $cc = $clangcl.Replace('\', '/')
-          cmake -B build-clang -G Ninja -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cc"
+          cmake -B build-clang -G Ninja -DSW_BUILD_TESTS=ON -DSW_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cc"
           if ($LASTEXITCODE -ne 0) { throw "configure failed" }
           cmake --build build-clang
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
           ctest --test-dir build-clang --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
-          cmake -B build-clang-asan -G Ninja -DSW_BUILD_TESTS=ON -DSW_ENABLE_ASAN=ON "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cc"
+          cmake -B build-clang-asan -G Ninja -DSW_BUILD_TESTS=ON -DSW_ENABLE_ASAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cc"
           if ($LASTEXITCODE -ne 0) { throw "asan configure failed" }
           cmake --build build-clang-asan
           if ($LASTEXITCODE -ne 0) { throw "asan build failed" }
