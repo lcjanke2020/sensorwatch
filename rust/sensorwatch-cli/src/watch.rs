@@ -102,6 +102,11 @@ pub(crate) fn run(args: &WatchArgs) -> ExitCode {
     }
 
     // Step 6: shutdown handler (both modes map the signal to exit 130).
+    // Ordering invariant: this MUST stay ahead of SeqStore::open (step 7) — the
+    // signal integration tests (tests/watch_cli.rs sigint_exits_130 /
+    // ctrl_break_exits_130) use the state dir that SeqStore creates as their
+    // "handler is armed" readiness gate. Reordering would silently reintroduce
+    // the race those tests exist to prevent.
     let shutdown = match logger::install_shutdown_handler() {
         Ok(shutdown) => shutdown,
         Err(err) => {
