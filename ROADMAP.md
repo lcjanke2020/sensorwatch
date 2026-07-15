@@ -25,7 +25,7 @@ nothing below depends on a later phase to be useful.
 | CMake `install()` / `find_package(sensorwatch CONFIG)` export | Shipped |
 | Agent skill (portable Agent Skills bundle) | Shipped — [`skills/sensorwatch/`](skills/sensorwatch/) |
 | Agent monitor skill (wake-up protocol + durable state dir) | Shipped — [`skills/sensorwatch-monitor/`](skills/sensorwatch-monitor/) |
-| CI: Ubuntu + Windows, sanitizers, ABI/vendor drift gates, MSRV check | Shipped — [`ci.yml`](.github/workflows/ci.yml) |
+| CI: Ubuntu + Windows; sanitizer passes on every native leg (gcc, MSVC, clang-cl, cffi extension); blocking clang-tidy; ABI/vendor drift gates; MSRV check | Shipped — [`ci.yml`](.github/workflows/ci.yml) |
 
 The data source today is HWiNFO64's shared-memory feed on Windows. Everything
 *builds and unit-tests* cross-platform (the parser is exercised against

@@ -5,8 +5,9 @@ name: Fuzz
 #   * the Rust JSONL replay parser (parse_line / fixup_python_tokens) via cargo-fuzz.
 # The C target runs under AddressSanitizer + UBSan; cargo-fuzz runs the Rust targets
 # under AddressSanitizer (its default; UBSan is a C/C++ sanitizer), with Rust's own
-# debug assertions + integer-overflow checks on. This is the repo's first scheduled lane;
-# LEO-327's sanitizer / static-analysis expansion can ride it later.
+# debug assertions + integer-overflow checks on. This is the repo's first scheduled
+# lane. (LEO-327's sanitizer / static-analysis expansion landed per-PR in ci.yml
+# instead -- the legs are minutes-cheap and findings belong at PR time.)
 #
 # A crash, sanitizer finding, timeout, or OOM makes the fuzzer exit nonzero and
 # fail the job, with the reproducing input printed to the log (libFuzzer emits the

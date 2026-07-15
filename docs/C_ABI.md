@@ -39,7 +39,6 @@ in [`SECURITY.md`](../SECURITY.md).
 - No prebuilt standalone DLL distribution or code signing yet (the Python binding
   ships as binary wheels that statically link the core into the extension; the Rust
   `-sys` crate likewise compiles the core straight in).
-- No fuzzing harness yet (planned; the parser is already under ASan/UBSan).
 - No public exposure of HWiNFO shared-memory layout structs.
 - No filesystem logging API in the core ABI.
 - No network or REST API in the core ABI.
