@@ -103,11 +103,16 @@ Two standing notes:
   `0.2.0`); that API is unreleased until the next crate release, which should
   bump the workspace to `0.2.0` via the flow below.
 - The CLI crate (`sensorwatch-cli`) is repo-only (`publish = false`) and
-  versions with the workspace. Before it could ever be published, its two
-  outside-crate-root references — the path-attribute test module shared with
-  the wrapper crate, and the repo-relative fuzz-corpus seed path in the e2e
-  test — need in-crate copies; `cargo package` rejects paths outside the crate
-  root.
+  versions with the workspace. If it is ever published, the actual
+  `cargo package` blocker is the path-only dependency on the wrapper
+  (`sensorwatch = { path = "../sensorwatch" }`, deliberately unversioned while
+  repo-only — publishing requires adding a `version` requirement), plus
+  flipping `publish = false` itself. Its two outside-crate-root test
+  references — the path-attribute test module shared with the wrapper crate,
+  and the repo-relative fuzz-corpus seed in the `#[cfg(test)]`-gated e2e test
+  ([`src/e2e.rs`](rust/sensorwatch-cli/src/e2e.rs)) — do **not** block
+  packaging (the package verify build compiles no test code), but the packaged
+  crate's own tests cannot run without in-crate copies of both.
 
 ### Python package (PyPI)
 
@@ -199,10 +204,11 @@ lets you gate releases behind a GitHub `release` environment protection rule).
 *was* the `0.1.0` release (2026-07-01), so it predates the `rust-vX.Y.Z` release
 flow and no tag was created at publish time. The annotated tag `rust-v0.1.0` was
 applied retroactively (2026-07-15) to the commit master pointed at when the
-crates were published; its message records the details. It is a bare git tag,
-not a GitHub Release — `publish-crates.yml` fires only on published Releases, so
-retro-tagging cannot re-trigger a publish. Every release from `0.2.0` onward
-gets its tag from the Release flow at release time.
+crates were published; its message records the details. It is an annotated git
+tag with **no accompanying GitHub Release** — `publish-crates.yml` fires only on
+published Releases, never on tag pushes, so retro-tagging cannot re-trigger a
+publish. Every release from `0.2.0` onward gets its tag from the Release flow
+at release time.
 
 **Keeping the vendored C core in sync.** `sensorwatch-sys` ships a copy of the C core
 under `rust/sensorwatch-sys/vendor/` so the published crate builds from source without

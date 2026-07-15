@@ -27,9 +27,12 @@ release picks it up._
   Rust-releasing section, and a new CONTRIBUTING **"Version streams"** section
   documenting the three deliberately independent version streams (Python
   package `0.2.0` / C ABI draft `0.2.0` / Rust workspace `0.1.0` with
-  unreleased API awaiting the next crate release) and the CLI crate's
-  publish-blocking out-of-crate references. Registry badges landed earlier with
-  the docs-truth pass (LEO-412).
+  unreleased API awaiting the next crate release) and what publishing the
+  repo-only CLI crate would take (a `version` on its path-only dependency —
+  the actual `cargo package` blocker — plus in-crate copies of the two test
+  resources `rust/sensorwatch-cli/src/e2e.rs` reaches outside the crate root
+  for, so the packaged tests stay runnable). Registry badges landed earlier
+  with the docs-truth pass (LEO-412).
 
 - **clang-cl CI job + Windows sanitizer legs + blocking static analysis**
   (LEO-327) — native CI now builds and tests the C core with clang-cl (the
