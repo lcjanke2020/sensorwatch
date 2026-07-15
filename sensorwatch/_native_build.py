@@ -81,6 +81,7 @@ ffibuilder.cdef(
     void sw_session_close(sw_session_t *session);
 
     sw_error_t sw_snapshot_take(sw_session_t *session, sw_snapshot_t **out_snapshot);
+    sw_error_t sw_snapshot_from_buffer(const uint8_t *buf, size_t len, sw_snapshot_t **out_snapshot);
     void sw_snapshot_free(sw_snapshot_t *snapshot);
 
     sw_error_t sw_snapshot_entry_count(const sw_snapshot_t *snapshot, uint32_t *out_count);

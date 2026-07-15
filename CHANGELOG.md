@@ -20,6 +20,14 @@ release picks it up._
 
 ### Added
 
+- **`sw_snapshot_from_buffer()`** — new public C ABI entry point (ABI
+  `0.1.0` → `0.2.0`) that parses a caller-supplied HWiNFO shared-memory image
+  into a snapshot through the same validating parser as `sw_snapshot_take()`,
+  with no session or live source. Exposed as `Snapshot::from_buffer` in the
+  Rust binding and via the cffi layer in Python. Enables the populated-Snapshot
+  accessor tests of every binding, plus a cross-language end-to-end test
+  (synthetic buffer → snapshot → logger JSONL → watch engine → event JSON), to
+  run on the Linux CI legs (LEO-415).
 - **Rust CLI** (`rust/sensorwatch-cli`, binary `sensorwatch`) built on the safe
   Rust binding: `snapshot` (one-shot live readings as JSON), `log` (JSONL logger
   loop, byte-compatible with the Python logger), `watch` (declarative
@@ -54,6 +62,14 @@ release picks it up._
   `count × size` wrap, an oversized element, unterminated name/unit fields) with a
   committed seed corpus. The `sensorwatch-cli` crate gains a thin library target so
   the fuzz harness can reach the replay parser (`main` is now a shim over it).
+
+### Fixed
+
+- `sw_snapshot_take()` (and the parser behind `sw_snapshot_from_buffer()`) now
+  validates the out-pointer first and sets `*out_snapshot` to `NULL` before any
+  other argument check, so a NULL session/buffer alongside a valid out-pointer
+  can no longer leave a stale handle behind — matching the documented
+  "NULL on failure when possible" contract.
 
 ## [0.2.0] - 2026-06-29
 

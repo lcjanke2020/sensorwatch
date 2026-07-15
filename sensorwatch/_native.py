@@ -30,7 +30,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the buil
 # wrappers). Pre-1.0 the MINOR is the breaking-change axis, so the guard pins
 # major.minor (a patch bump stays compatible); from 1.0 on, only the major gates.
 EXPECTED_ABI_MAJOR = 0
-EXPECTED_ABI_MINOR = 1
+EXPECTED_ABI_MINOR = 2
 
 # Defensive upper bound for a single ABI string (see _query_string). The ABI's
 # name fields are bounded, sanitized UTF-8 (a few hundred bytes at most); 64 KiB

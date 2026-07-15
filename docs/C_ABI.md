@@ -1,6 +1,6 @@
 # sensorwatch C ABI
 
-**Status**: Implemented (ABI draft `0.1.0`). A native core now implements this
+**Status**: Implemented (ABI draft `0.2.0`). A native core now implements this
 header: a Windows DLL plus a static library built with CMake, with cmocka unit
 tests and an AddressSanitizer/UBSan gate (see "Building the native core" in the
 [README](../README.md)). The ABI itself is still a **pre-1.0 draft** and may change
@@ -54,11 +54,11 @@ but the roadmap includes UPS, AIDA64, IPMI, and other adapters. Public symbol na
 should describe sensorwatch's source-neutral contract rather than the initial
 backend.
 
-The draft header uses ABI version `0.1.0`:
+The draft header uses ABI version `0.2.0`:
 
 ```c
 #define SW_API_VERSION_MAJOR 0u
-#define SW_API_VERSION_MINOR 1u
+#define SW_API_VERSION_MINOR 2u
 #define SW_API_VERSION_PATCH 0u
 #define SW_API_VERSION \
     ((SW_API_VERSION_MAJOR * 10000u) + \
@@ -166,16 +166,28 @@ void sw_session_close(sw_session_t *session);
 
 sw_error_t sw_snapshot_take(sw_session_t *session,
                             sw_snapshot_t **out_snapshot);
+sw_error_t sw_snapshot_from_buffer(const uint8_t *buf, size_t len,
+                                   sw_snapshot_t **out_snapshot);
 void sw_snapshot_free(sw_snapshot_t *snapshot);
 ```
+
+`sw_snapshot_from_buffer()` (ABI `0.2.0`) parses a caller-supplied buffer
+holding an HWiNFO shared-memory image through the same validating parser that
+`sw_snapshot_take()` runs on its copied view — no session or live source is
+involved, so it works on every platform. It exists for replaying captured
+buffers and for exercising snapshot consumers (bindings, tests) without live
+hardware.
 
 Ownership rules:
 
 - On success, `sw_session_open()` stores a non-null session in `*out_session`.
 - On failure, `sw_session_open()` stores `NULL` in `*out_session` when possible.
 - `sw_session_close(NULL)` is a no-op.
-- On success, `sw_snapshot_take()` stores a non-null snapshot in `*out_snapshot`.
-- On failure, `sw_snapshot_take()` stores `NULL` in `*out_snapshot` when possible.
+- On success, `sw_snapshot_take()` and `sw_snapshot_from_buffer()` store a
+  non-null snapshot in `*out_snapshot`.
+- On failure, they store `NULL` in `*out_snapshot` when possible.
+- `sw_snapshot_from_buffer()` deep-copies: the caller keeps ownership of `buf`
+  and may free it as soon as the call returns.
 - `sw_snapshot_free(NULL)` is a no-op.
 - Handles must not be stack-allocated or freed by callers.
 
@@ -196,6 +208,11 @@ shape:
    overlap before parsing entries.
 5. Parse entries into snapshot-owned data.
 6. Expose only read-only query functions.
+
+`sw_snapshot_from_buffer()` enters this pipeline at step 4: the caller-supplied
+buffer takes the place of the owned copy from step 3, and everything from
+validation onward is identical. The copy-then-parse invariant holds — the
+parser never reads a live view.
 
 No raw shared-memory pointer, Win32 `HANDLE`, HWiNFO struct pointer, or internal
 array pointer crosses the ABI.

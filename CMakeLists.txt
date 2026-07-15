@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.21)  # PROJECT_IS_TOP_LEVEL (used by SW_INSTALL) needs >= 3.21
 
-# VERSION tracks the C ABI draft (matches SW_API_VERSION 0.1.0 in the public
+# VERSION tracks the C ABI draft (matches SW_API_VERSION 0.2.0 in the public
 # header), deliberately independent of the Python package version in pyproject.toml.
 project(sensorwatch
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "sensorwatch native C core (HWiNFO shared-memory reader)"
     LANGUAGES C)
 
@@ -224,13 +224,15 @@ if(SW_BUILD_TESTS)
 
         # C++17 RAII wrapper test. Builds and runs the header-only binding against
         # the static core: links sensorwatch_static (PUBLIC SW_STATIC, so SW_API is
-        # undecorated) plus the header-only INTERFACE target. The live-snapshot path
-        # is Windows-only and self-skips without a sensor source; the non-Windows
-        # build asserts Session construction throws SW_ERR_UNSUPPORTED_PLATFORM. Held
-        # to the same /W4 /WX (MSVC) and -Wall -Wextra -Wconversion -Werror (gcc)
-        # gate as the C targets via sw_set_target_flags.
+        # undecorated) plus the header-only INTERFACE target, plus sw_testutil for
+        # the synthetic buffers behind the cross-platform populated-snapshot checks
+        # (sw_snapshot_from_buffer). The live-snapshot path is Windows-only and
+        # self-skips without a sensor source; the non-Windows build asserts Session
+        # construction throws SW_ERR_UNSUPPORTED_PLATFORM. Held to the same /W4 /WX
+        # (MSVC) and -Wall -Wextra -Wconversion -Werror (gcc) gate as the C targets
+        # via sw_set_target_flags.
         add_executable(test_cpp_wrapper tests/cpp/test_wrapper.cpp)
-        target_link_libraries(test_cpp_wrapper PRIVATE sensorwatch_static sensorwatch_hpp)
+        target_link_libraries(test_cpp_wrapper PRIVATE sensorwatch_static sensorwatch_hpp sw_testutil)
         set_target_properties(test_cpp_wrapper PROPERTIES
             CXX_STANDARD 17
             CXX_STANDARD_REQUIRED ON)

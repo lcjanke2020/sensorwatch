@@ -44,6 +44,14 @@ SW_API void SW_CALL sw_snapshot_free(sw_snapshot_t *snapshot)
     sw_snapshot_destroy(snapshot);
 }
 
+SW_API sw_error_t SW_CALL sw_snapshot_from_buffer(const uint8_t *buf,
+                                                  size_t len,
+                                                  sw_snapshot_t **out_snapshot)
+{
+    /* NULL buf/out_snapshot validation happens in the parser. */
+    return sw_parse_buffer(buf, len, out_snapshot);
+}
+
 SW_API sw_error_t SW_CALL sw_snapshot_entry_count(const sw_snapshot_t *snapshot,
                                                   uint32_t *out_count)
 {
