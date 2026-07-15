@@ -83,22 +83,31 @@ if(SW_ENABLE_ASAN)
         # lld-link, not the compiler driver), so every image fails with
         # undefined __asan_* symbols unless the runtime is named explicitly.
         # Resolve the /MD dynamic-runtime pair from the compiler's resource
-        # dir; the glob covers both the legacy lib/windows/*-x86_64.lib and
-        # the per-target lib/<triple>/*.lib layouts.
+        # dir. Exactly one layout is selected -- per-target lib/<triple> first,
+        # then legacy lib/windows/*-x86_64 -- and the pair must be complete:
+        # a half-present pair or a both-layouts mix would configure fine and
+        # then fail (or double-link) at link time.
         execute_process(COMMAND ${CMAKE_C_COMPILER} /clang:-print-resource-dir
                         OUTPUT_VARIABLE SW_CLANG_RESOURCE_DIR
                         OUTPUT_STRIP_TRAILING_WHITESPACE
                         COMMAND_ERROR_IS_FATAL ANY)
-        file(GLOB SW_ASAN_RT_LIBS
-            "${SW_CLANG_RESOURCE_DIR}/lib/windows/clang_rt.asan_dynamic-x86_64.lib"
-            "${SW_CLANG_RESOURCE_DIR}/lib/windows/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib"
-            "${SW_CLANG_RESOURCE_DIR}/lib/x86_64-pc-windows-msvc/clang_rt.asan_dynamic.lib"
-            "${SW_CLANG_RESOURCE_DIR}/lib/x86_64-pc-windows-msvc/clang_rt.asan_dynamic_runtime_thunk.lib")
-        if(NOT SW_ASAN_RT_LIBS)
+        set(SW_RT_PERTARGET "${SW_CLANG_RESOURCE_DIR}/lib/x86_64-pc-windows-msvc")
+        set(SW_RT_LEGACY    "${SW_CLANG_RESOURCE_DIR}/lib/windows")
+        if(EXISTS "${SW_RT_PERTARGET}/clang_rt.asan_dynamic.lib" AND
+           EXISTS "${SW_RT_PERTARGET}/clang_rt.asan_dynamic_runtime_thunk.lib")
+            set(SW_ASAN_RT_LIBS
+                "${SW_RT_PERTARGET}/clang_rt.asan_dynamic.lib"
+                "${SW_RT_PERTARGET}/clang_rt.asan_dynamic_runtime_thunk.lib")
+        elseif(EXISTS "${SW_RT_LEGACY}/clang_rt.asan_dynamic-x86_64.lib" AND
+               EXISTS "${SW_RT_LEGACY}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+            set(SW_ASAN_RT_LIBS
+                "${SW_RT_LEGACY}/clang_rt.asan_dynamic-x86_64.lib"
+                "${SW_RT_LEGACY}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+        else()
             message(FATAL_ERROR
-                "SW_ENABLE_ASAN with clang-cl: no clang_rt.asan_dynamic libs "
-                "found under ${SW_CLANG_RESOURCE_DIR}/lib -- cannot link the "
-                "ASan runtime.")
+                "SW_ENABLE_ASAN with clang-cl: no complete clang_rt.asan_dynamic "
+                "+ runtime_thunk pair under ${SW_RT_PERTARGET} or "
+                "${SW_RT_LEGACY} -- cannot link the ASan runtime.")
         endif()
         add_link_options(/INCREMENTAL:NO ${SW_ASAN_RT_LIBS})
     elseif(MSVC)

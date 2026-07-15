@@ -953,7 +953,7 @@ What the CI job passes (the `SW_CLANG_CL` branch in `CMakeLists.txt`):
 ```
 
 `/sdl` and `/analyze` are cl.exe-only — clang-cl rejects them as unknown
-arguments under `/WX`, which is why the flag blocks branch on `SW_CLANG_CL`
+arguments under `/WX`, which is why the flag logic branches on `SW_CLANG_CL`
 rather than plain `MSVC` (clang-cl reports `MSVC=TRUE` to CMake). `-Wpedantic`
 is deliberately not yet enabled: the Win32 TUs are still burning in under
 clang; consider adding it once they have history there.
