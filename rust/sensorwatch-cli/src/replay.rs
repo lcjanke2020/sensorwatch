@@ -338,7 +338,7 @@ fn leading_timestamp(line: &[u8]) -> Option<Timestamp> {
     std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
 }
 
-fn parse_line(bytes: &[u8]) -> Result<Sample, String> {
+pub(crate) fn parse_line(bytes: &[u8]) -> Result<Sample, String> {
     let record: RawRecord = match serde_json::from_slice(bytes) {
         Ok(record) => record,
         Err(strict_err) => match fixup_python_tokens(bytes) {
@@ -380,7 +380,7 @@ fn parse_line(bytes: &[u8]) -> Result<Sample, String> {
 /// `"NaN sensor"`. In-string state is tracked byte-wise: a quote toggles it
 /// unless escaped by a backslash. Returns `None` when nothing was replaced,
 /// so the caller does not re-parse pointlessly.
-fn fixup_python_tokens(bytes: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn fixup_python_tokens(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut changed = false;
     let mut in_string = false;

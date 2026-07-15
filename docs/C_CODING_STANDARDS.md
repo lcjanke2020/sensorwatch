@@ -911,9 +911,9 @@ Optional extras (future REST service, data export, etc.) live in separate
 targets with their own dependencies, gated behind CMake options:
 
 ```cmake
-option(HWI_BUILD_REST    "Build REST service (requires cJSON)" OFF)
-option(HWI_BUILD_TESTS   "Build tests (fetches cmocka)"        ON)
-option(HWI_BUILD_FUZZ    "Build fuzz targets"                   OFF)
+option(SW_BUILD_REST     "Build REST service (requires cJSON)" OFF)
+option(SW_BUILD_TESTS    "Build tests (fetches cmocka)"        ON)
+option(SW_BUILD_FUZZ     "Build libFuzzer targets (clang)"     OFF)
 ```
 
 This way `cmake -B build` with defaults builds just the core DLL and tests --
@@ -1256,7 +1256,7 @@ corpus with the synthetic fixtures mirrored from `tests/test_hwinfo_shm.py` and
 any captured HWiNFO blobs that are safe to store in the repository.
 
 Keep fuzz targets separate from the shipped library target and gate them behind a
-CMake option such as `HWI_BUILD_FUZZ`. Run short fuzz/sanitizer jobs in CI for
+CMake option such as `SW_BUILD_FUZZ`. Run short fuzz/sanitizer jobs in CI for
 parser changes and longer jobs on a schedule.
 
 ### ABI Compatibility Tests

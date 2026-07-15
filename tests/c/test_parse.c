@@ -270,6 +270,68 @@ static void test_overlapping_sections(void **state)
     free(buf);
 }
 
+/* --- Adversarial arithmetic / bounds cases (seed the fuzz corpus too) --- */
+
+static void test_count_times_size_wraps_u32(void **state)
+{
+    (void)state;
+    /* entry_count * entry_size overflows a 32-bit product to zero (0x10000 *
+       0x10000 == 0x1_0000_0000), but the parser computes the span in size_t via
+       sw_size_mul, so the true 4 GiB span exceeds the buffer and the region-bounds
+       check rejects it. A 32-bit multiply here would wrap to a zero-length span,
+       pass the bounds check, then read entries past the end. */
+    size_t len;
+    uint8_t *buf = valid_buffer(&len);
+    sw_test_patch_u32(buf, SW_OFF_ENTRY_COUNT, 0x10000u);  /* == SW_MAX_ENTRY_COUNT */
+    sw_test_patch_u32(buf, SW_OFF_ENTRY_SIZE,  0x10000u);
+    expect_err(buf, len, SW_ERR_CORRUPT_DATA);
+    free(buf);
+}
+
+static void test_entry_size_exceeds_buffer_with_count_one(void **state)
+{
+    (void)state;
+    /* A single element whose size field alone dwarfs the buffer: count is 1, so
+       there is no multiply to overflow -- only the size_t region-end check stands
+       between the header and a 1 GiB read. */
+    size_t len;
+    uint8_t *buf = valid_buffer(&len);  /* entry_count already 1 */
+    sw_test_patch_u32(buf, SW_OFF_ENTRY_SIZE, 0x40000000u);  /* 1 GiB, >> len */
+    expect_err(buf, len, SW_ERR_CORRUPT_DATA);
+    free(buf);
+}
+
+static void test_unterminated_strings_bounded_to_field(void **state)
+{
+    (void)state;
+    /* Name and unit fields entirely filled with non-NUL bytes -- no terminator
+       within the field width. sw_decode_field must stop at field_len (the
+       min-element-size guards keep those bytes in-bounds), decoding exactly
+       field_len bytes and never reading into the next element or past the buffer.
+       Under the ASan fuzz build an over-read here is a crash; here we assert the
+       decoded lengths land exactly on the field boundaries. */
+    size_t len;
+    uint8_t *buf = valid_buffer(&len);
+
+    size_t sbase = SW_HEADER_SIZE;  /* the sole sensor element */
+    memset(buf + sbase + SW_SENSOR_OFF_NAME_USER, 'A', SW_NAME_FIELD_LEN);
+
+    uint32_t entry_off = 0;
+    memcpy(&entry_off, buf + SW_OFF_ENTRY_OFFSET, sizeof(entry_off));
+    size_t ebase = (size_t)entry_off;  /* the sole entry element */
+    memset(buf + ebase + SW_ENTRY_OFF_NAME_USER, 'B', SW_NAME_FIELD_LEN);
+    memset(buf + ebase + SW_ENTRY_OFF_UNIT,      'V', SW_UNIT_FIELD_LEN);
+
+    sw_snapshot_t *snap = parse_ok(buf, len);
+    const sw_entry_t *e = &snap->entries[0];
+    assert_int_equal(strlen(e->sensor_name),  SW_NAME_FIELD_LEN);
+    assert_int_equal(strlen(e->reading_name), SW_NAME_FIELD_LEN);
+    assert_int_equal(strlen(e->unit),         SW_UNIT_FIELD_LEN);
+
+    sw_snapshot_free(snap);
+    free(buf);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -291,6 +353,9 @@ int main(void)
         cmocka_unit_test(test_section_offset_overlaps_header),
         cmocka_unit_test(test_sections_exceed_region),
         cmocka_unit_test(test_overlapping_sections),
+        cmocka_unit_test(test_count_times_size_wraps_u32),
+        cmocka_unit_test(test_entry_size_exceeds_buffer_with_count_one),
+        cmocka_unit_test(test_unterminated_strings_bounded_to_field),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

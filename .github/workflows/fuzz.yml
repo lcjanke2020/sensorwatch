@@ -1,0 +1,82 @@
+name: Fuzz
+
+# Nightly fuzzing of sensorwatch's two untrusted-input parsers (LEO-414):
+#   * the C HWiNFO shared-memory parser (sw_parse_buffer) via libFuzzer, and
+#   * the Rust JSONL replay parser (parse_line / fixup_python_tokens) via cargo-fuzz.
+# The C target runs under AddressSanitizer + UBSan; cargo-fuzz runs the Rust targets
+# under AddressSanitizer (its default; UBSan is a C/C++ sanitizer), with Rust's own
+# debug assertions + integer-overflow checks on. This is the repo's first scheduled lane;
+# LEO-327's sanitizer / static-analysis expansion can ride it later.
+#
+# A crash, sanitizer finding, timeout, or OOM makes the fuzzer exit nonzero and
+# fail the job, with the reproducing input printed to the log (libFuzzer emits the
+# crashing unit as hex + Base64). workflow_dispatch runs the same jobs on demand
+# and takes an optional per-target time budget.
+on:
+  schedule:
+    - cron: '17 7 * * *'  # 07:17 UTC daily
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: 'Seconds to fuzz each target'
+        required: false
+        default: '300'
+
+permissions:
+  contents: read
+
+env:
+  # workflow_dispatch input when present, else the nightly default.
+  FUZZ_SECONDS: ${{ github.event.inputs.max_total_time || '300' }}
+
+jobs:
+  fuzz-c:
+    name: fuzz (C parser, libFuzzer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Install clang + llvm (libFuzzer runtime + symbolizer)
+        run: sudo apt-get update && sudo apt-get install -y clang llvm
+      - name: Configure (fuzz; clang, ASan+UBSan)
+        run: >-
+          cmake -B build-fuzz
+          -DSW_BUILD_FUZZ=ON -DSW_BUILD_TESTS=OFF -DSW_BUILD_SHARED=OFF
+          -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build fuzz_parse
+        run: cmake --build build-fuzz --target fuzz_parse -j
+      - name: Fuzz sw_parse_buffer
+        # Discovered inputs go to a scratch dir; tests/fuzz/corpus/parse is
+        # read-only seed input (libFuzzer writes only to the first corpus dir).
+        run: |
+          mkdir -p fuzz-corpus-c
+          ./build-fuzz/fuzz_parse -max_total_time="$FUZZ_SECONDS" -print_final_stats=1 \
+            fuzz-corpus-c tests/fuzz/corpus/parse
+
+  fuzz-rust:
+    name: fuzz (Rust replay parser, cargo-fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust/sensorwatch-cli
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Install nightly toolchain + cargo-fuzz
+        # cargo-fuzz is version-pinned (like bindgen-cli in ci.yml) so the nightly
+        # lane is reproducible and a cargo-fuzz release can't break it unbidden.
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --version 0.13.2 --locked
+      # Fuzz into a scratch corpus dir with the committed seeds as read-only input,
+      # so the committed fuzz/corpus/<target> stays curated (mirrors the C job).
+      - name: Fuzz parse_line
+        run: |
+          mkdir -p fuzz-corpus/parse_line
+          cargo +nightly fuzz run parse_line fuzz-corpus/parse_line fuzz/corpus/parse_line \
+            -- -max_total_time="$FUZZ_SECONDS"
+      - name: Fuzz fixup_python_tokens
+        run: |
+          mkdir -p fuzz-corpus/fixup_python_tokens
+          cargo +nightly fuzz run fixup_python_tokens fuzz-corpus/fixup_python_tokens fuzz/corpus/fixup_python_tokens \
+            -- -max_total_time="$FUZZ_SECONDS"

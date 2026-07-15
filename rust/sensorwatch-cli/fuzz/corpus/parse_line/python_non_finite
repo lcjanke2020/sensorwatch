@@ -1,0 +1,1 @@
+{"timestamp": "2026-02-18T08:17:48.1-05:00", "sensors": [{"sensor": "S", "reading": "r", "type": "Voltage", "value": NaN, "min": -Infinity, "max": Infinity, "avg": 0.0, "unit": "V"}]}
