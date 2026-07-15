@@ -323,7 +323,13 @@ logic** — in particular, the HWiNFO shared-memory parser is exercised against
 bounds checks are validated without a live sensor source. The Python job also
 builds the native cffi extension and runs the binding's non-live tests (the live
 HWiNFO path is skipped, and `SW_ERR_UNSUPPORTED_PLATFORM` is asserted on Linux);
-the C core is built and unit-tested separately with cmocka on both OSes.
+the C core is built and unit-tested separately with cmocka on both OSes — under
+gcc on Ubuntu (with an ASan+UBSan pass and a blocking [clang-tidy](.clang-tidy)
+gate) and under both MSVC (`/analyze` non-fatal, plus an AddressSanitizer pass
+that covers the Windows-only session-layer tests) and clang-cl (with its own
+sanitizer pass) on Windows. A separate Ubuntu job compiles the cffi extension
+with AddressSanitizer and runs the native-binding tests under the preloaded
+runtime, catching FFI marshalling and lifetime bugs.
 
 CI does **not** — and cannot — exercise a real sensor read. That path requires
 [HWiNFO64](https://www.hwinfo.com/) running on Windows with **Shared Memory
@@ -363,8 +369,9 @@ MSVC is the primary toolchain; the parser core also builds with GCC/Clang
   default **ON**).
 - `-DSW_BUILD_STATIC=ON|OFF` — the static library (target `sensorwatch_static`;
   default **ON**).
-- `-DSW_ENABLE_ASAN=ON` — AddressSanitizer (plus UBSan on GCC/Clang).
-- `-DSW_ENABLE_ANALYZE=ON` — MSVC `/analyze` static analysis (non-fatal).
+- `-DSW_ENABLE_ASAN=ON` — AddressSanitizer (plus UBSan on GCC/Clang; UBSan in
+  trap mode on clang-cl).
+- `-DSW_ENABLE_ANALYZE=ON` — MSVC `/analyze` static analysis (non-fatal; cl.exe only).
 - `-DSW_BUILD_EXAMPLES=ON` — build `sw_dump`, which prints a live snapshot (run it
   with HWiNFO64 running and Shared Memory Support enabled).
 

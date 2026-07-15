@@ -68,14 +68,37 @@ endif()
 
 if(SW_ENABLE_ASAN)
     if(SW_CLANG_CL)
-        # ASan/UBSan via clang-cl: the objects carry /DEFAULTLIB directives for
-        # the sanitizer runtimes, so no sanitizer link flag (link.exe/lld-link
-        # would reject the gcc spelling). -fno-omit-frame-pointer is not in
-        # clang-cl's accepted -f set and needs the /clang: passthrough.
+        # UBSan runs in trap mode: UB becomes an illegal-instruction abort (no
+        # runtime to link, inherently non-recoverable), which fails ctest just
+        # like -fno-sanitize-recover. The full ubsan_standalone runtime is not
+        # wired for direct lld-link linking here. -fno-omit-frame-pointer is
+        # not in clang-cl's accepted -f set and needs the /clang: passthrough.
         add_compile_options(-fsanitize=address
-                            -fsanitize=undefined -fno-sanitize-recover=all
+                            -fsanitize=undefined -fsanitize-trap=undefined
                             /clang:-fno-omit-frame-pointer /Zi)
-        add_link_options(/INCREMENTAL:NO)
+        # clang-cl's objects do not carry usable ASan-runtime /DEFAULTLIB
+        # directives when the linker is invoked directly (CMake+Ninja calls
+        # lld-link, not the compiler driver), so every image fails with
+        # undefined __asan_* symbols unless the runtime is named explicitly.
+        # Resolve the /MD dynamic-runtime pair from the compiler's resource
+        # dir; the glob covers both the legacy lib/windows/*-x86_64.lib and
+        # the per-target lib/<triple>/*.lib layouts.
+        execute_process(COMMAND ${CMAKE_C_COMPILER} /clang:-print-resource-dir
+                        OUTPUT_VARIABLE SW_CLANG_RESOURCE_DIR
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        COMMAND_ERROR_IS_FATAL ANY)
+        file(GLOB SW_ASAN_RT_LIBS
+            "${SW_CLANG_RESOURCE_DIR}/lib/windows/clang_rt.asan_dynamic-x86_64.lib"
+            "${SW_CLANG_RESOURCE_DIR}/lib/windows/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib"
+            "${SW_CLANG_RESOURCE_DIR}/lib/x86_64-pc-windows-msvc/clang_rt.asan_dynamic.lib"
+            "${SW_CLANG_RESOURCE_DIR}/lib/x86_64-pc-windows-msvc/clang_rt.asan_dynamic_runtime_thunk.lib")
+        if(NOT SW_ASAN_RT_LIBS)
+            message(FATAL_ERROR
+                "SW_ENABLE_ASAN with clang-cl: no clang_rt.asan_dynamic libs "
+                "found under ${SW_CLANG_RESOURCE_DIR}/lib -- cannot link the "
+                "ASan runtime.")
+        endif()
+        add_link_options(/INCREMENTAL:NO ${SW_ASAN_RT_LIBS})
     elseif(MSVC)
         add_compile_options(/fsanitize=address /Zi)
         add_link_options(/INCREMENTAL:NO)
