@@ -5,8 +5,11 @@ name: CI
 # compiles the cffi extension over the C core via setuptools — MSVC on Windows,
 # gcc on Linux, both auto-discovered) and exercises the parsing, config, logging,
 # and native-binding logic; the native jobs build the C core and run its cmocka
-# tests. None exercises a live HWiNFO64 sensor read — the native-binding tests
-# skip the live path and assert SW_ERR_UNSUPPORTED_PLATFORM on non-Windows.
+# tests. None exercises a live HWiNFO64 sensor read — the live paths still skip
+# off-Windows — but every binding's populated-Snapshot accessor surface runs on
+# every leg via synthetic buffers parsed through sw_snapshot_from_buffer, and a
+# cross-language end-to-end test (buffer → snapshot → logger JSONL → watch
+# engine → event JSON) runs in the Rust job (LEO-415).
 on:
   push:
     branches: [master]

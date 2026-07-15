@@ -15,6 +15,8 @@
 mod cli;
 mod config;
 mod digest;
+#[cfg(test)]
+mod e2e;
 mod engine;
 mod event;
 mod exit;

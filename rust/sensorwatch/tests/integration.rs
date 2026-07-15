@@ -1,14 +1,17 @@
 //! Integration tests for the safe `sensorwatch` binding.
 //!
-//! The error-translation, ReadingType-folding, and ABI-version checks run on every
-//! platform (they touch only the pure translation layer and the always-available
-//! `sw_api_version` / `sw_error_string`). The live-snapshot path is Windows-only
-//! and self-skips when no sensor source is running; on non-Windows the platform
-//! test asserts `Session::new()` reports `UnsupportedPlatform`.
+//! The error-translation, ReadingType-folding, ABI-version, and synthetic-snapshot
+//! checks run on every platform (`Snapshot::from_buffer` needs no session, so the
+//! populated accessor surface is proven cross-platform). The live-snapshot path is
+//! Windows-only and self-skips when no sensor source is running; on non-Windows
+//! the platform test asserts `Session::new()` reports `UnsupportedPlatform`.
 
 use sensorwatch::{
     abi_version, check_abi_compatibility, sys, Error, Reading, ReadingType, Session, Snapshot,
 };
+
+mod common;
+use common::{build_buffer, Entry, Sensor};
 
 // Thread-safety markers, asserted at compile time. The owned value types are
 // Send + Sync; an immutable Snapshot is Send + Sync (the ABI documents its queries
@@ -124,6 +127,116 @@ fn abi_version_matches_header() {
     assert_eq!((runtime / 100) % 100, sys::SW_API_VERSION_MINOR);
     // The compatibility guard therefore passes against the linked core.
     assert!(check_abi_compatibility().is_ok());
+}
+
+// --- Synthetic-snapshot coverage (cross-platform; the port of the live-test body,
+// with deterministic expected values a live source can never promise) ---
+
+#[test]
+fn synthetic_snapshot_accessor_surface() {
+    let buf = build_buffer(
+        &[Sensor::named("MEG Ai1600T")],
+        &[
+            Entry::flat(2, 0, "+12V", "V", 12.03),
+            Entry {
+                type_code: 1,
+                sensor_idx: 0,
+                reading_user: Some("CPU Package"),
+                reading_orig: None,
+                unit: Some("C"),
+                value: 41.5,
+                minimum: 39.0,
+                maximum: 88.0,
+                average: 52.25,
+            },
+        ],
+    );
+    let snapshot = Snapshot::from_buffer(&buf).expect("parse synthetic buffer");
+    // The snapshot deep-copies: the input bytes can go away immediately.
+    drop(buf);
+
+    assert_eq!(snapshot.len(), 2);
+    assert!(!snapshot.is_empty());
+    assert_eq!(snapshot.source(), "HWiNFO");
+
+    let first = snapshot.get(0).expect("first reading");
+    assert_eq!(first.source, "HWiNFO");
+    assert_eq!(first.sensor, "MEG Ai1600T");
+    assert_eq!(first.reading, "+12V");
+    assert_eq!(first.unit, "V");
+    assert_eq!(first.kind, ReadingType::Voltage);
+    assert_eq!(first.value, 12.03);
+    assert_eq!(first.minimum, 12.03);
+    assert_eq!(first.maximum, 12.03);
+    assert_eq!(first.average, 12.03);
+    // get is deterministic for the same immutable snapshot.
+    assert_eq!(first, snapshot.get(0).expect("first reading again"));
+
+    // The four statistics are read from their own fields, not copies of value.
+    let second = snapshot.get(1).expect("second reading");
+    assert_eq!(second.sensor, "MEG Ai1600T");
+    assert_eq!(second.reading, "CPU Package");
+    assert_eq!(second.kind, ReadingType::Temperature);
+    assert_eq!(second.value, 41.5);
+    assert_eq!(second.minimum, 39.0);
+    assert_eq!(second.maximum, 88.0);
+    assert_eq!(second.average, 52.25);
+
+    // Iteration visits exactly len() readings, all sharing the snapshot source.
+    let mut iterated = 0usize;
+    for reading in &snapshot {
+        let reading = reading.expect("reading during iteration");
+        assert_eq!(reading.source, snapshot.source());
+        iterated += 1;
+    }
+    assert_eq!(iterated, snapshot.len());
+
+    // to_vec() materializes the same set.
+    let all = snapshot.to_vec().expect("materialize all readings");
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0], first);
+    assert_eq!(all[1], second);
+
+    // Past-the-end index is a clean IndexOutOfRange, not a panic or UB.
+    assert_eq!(snapshot.get(snapshot.len()), Err(Error::IndexOutOfRange));
+
+    // Readings own their strings, so they remain valid after the snapshot is dropped.
+    drop(snapshot);
+    assert_eq!(all[0].sensor, "MEG Ai1600T");
+}
+
+#[test]
+fn synthetic_snapshot_empty_buffer_shape() {
+    // A valid image with zero sensors and zero entries parses to an empty
+    // snapshot with the documented zero-entry properties.
+    let buf = build_buffer(&[], &[]);
+    let snapshot = Snapshot::from_buffer(&buf).expect("parse empty synthetic buffer");
+    assert_eq!(snapshot.len(), 0);
+    assert!(snapshot.is_empty());
+    assert_eq!(snapshot.source(), ""); // source is index-gated; empty when no entries
+    assert_eq!(snapshot.get(0), Err(Error::IndexOutOfRange));
+    assert_eq!(snapshot.to_vec().expect("empty to_vec"), Vec::new());
+}
+
+#[test]
+fn from_buffer_rejects_invalid_input() {
+    // Empty slice: length-checked before any read.
+    let err = Snapshot::from_buffer(&[]).expect_err("empty must fail");
+    assert_eq!(err, Error::CorruptData);
+
+    // Shorter than a header.
+    let err = Snapshot::from_buffer(&[0u8; 47]).expect_err("truncated must fail");
+    assert_eq!(err, Error::CorruptData);
+
+    // Header-sized but the magic is wrong.
+    let err = Snapshot::from_buffer(&[0u8; 48]).expect_err("bad magic must fail");
+    assert_eq!(err, Error::BadMagic);
+
+    // A valid buffer with its magic corrupted after the fact.
+    let mut buf = build_buffer(&[Sensor::named("S")], &[Entry::flat(2, 0, "R", "V", 1.0)]);
+    buf[0] ^= 0xFF;
+    let err = Snapshot::from_buffer(&buf).expect_err("corrupted magic must fail");
+    assert_eq!(err, Error::BadMagic);
 }
 
 #[cfg(not(windows))]

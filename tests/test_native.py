@@ -4,19 +4,24 @@ These exercise the compiled extension ``sensorwatch._sw_cffi`` and its Pythonic
 wrappers. The module-level import requires the extension to be built; CI builds
 it before running pytest. Tests that need a live sensor source are skipped when
 HWiNFO is unavailable, and the Windows-only / non-Windows-only paths guard on
-``sys.platform`` so the same suite runs on both CI legs.
+``sys.platform`` so the same suite runs on both CI legs. The populated-Snapshot
+accessor surface is additionally covered cross-platform via synthetic buffers
+parsed through ``sw_snapshot_from_buffer`` (ABI 0.2.0).
 """
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
 from sensorwatch import native
-from sensorwatch._native import ffi, lib
-from sensorwatch.hwinfo_shm import SENSOR_TYPES, read_sensors
+from sensorwatch._native import _check, ffi, lib
+from sensorwatch.hwinfo_shm import SENSOR_TYPES, _parse_shared_memory, read_sensors
 from sensorwatch.native import ReadingType, SensorwatchError, Session, Snapshot
+
+from test_hwinfo_shm import _build_buffer  # same-directory synthetic-buffer builder
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -41,7 +46,7 @@ def test_abi_version_matches_expected():
     from sensorwatch._native import EXPECTED_ABI_MAJOR, EXPECTED_ABI_MINOR
     version = lib.sw_api_version()
     assert version // 10000 == EXPECTED_ABI_MAJOR
-    assert (version // 100) % 100 == EXPECTED_ABI_MINOR  # pinned pre-1.0 (0.1.x)
+    assert (version // 100) % 100 == EXPECTED_ABI_MINOR  # pinned pre-1.0 (0.2.x)
 
 
 def test_reading_type_enum_matches_abi():
@@ -206,3 +211,165 @@ def test_snapshot_outlives_session():
     if len(snapshot) > 0:
         _ = snapshot[0]
     snapshot.close()
+
+
+# --- Cross-platform synthetic-snapshot coverage ----------------------------------
+#
+# sw_snapshot_from_buffer parses a caller-supplied buffer with the same validating
+# parser the live path uses, so the populated accessor surface (the bodies of the
+# live tests above) runs on every CI leg. The buffers come from the same builder
+# the pure-Python parser tests use, which also makes these a native-vs-pure
+# differential oracle over identical bytes.
+
+_SYNTH_SENSORS = ["MEG Ai1600T"]
+_SYNTH_ENTRIES = [
+    (2, 0, "+12V", "V", 12.03),        # Voltage
+    (1, 0, "CPU Package", "C", 41.5),  # Temperature
+    (3, 0, "Pump", "RPM", 1450.0),     # Fan
+]
+
+
+def _snapshot_from_buffer(data: bytes) -> Snapshot:
+    out = ffi.new("sw_snapshot_t **")
+    cbuf = ffi.from_buffer(data)  # zero-copy view; the parser copies out what it keeps
+    _check(lib.sw_snapshot_from_buffer(ffi.cast("const uint8_t *", cbuf), len(data), out))
+    return Snapshot(out[0])
+
+
+def _synthetic_buffer() -> bytes:
+    return _build_buffer(sensors=_SYNTH_SENSORS, entries=_SYNTH_ENTRIES)
+
+
+def test_synthetic_snapshot_accessor_surface():
+    snapshot = _snapshot_from_buffer(_synthetic_buffer())
+    try:
+        assert len(snapshot) == 3
+        assert snapshot.source == "HWiNFO"
+
+        first = snapshot[0]
+        assert first.sensor == "MEG Ai1600T"
+        assert first.reading == "+12V"
+        assert first.unit == "V"
+        assert first.type is ReadingType.VOLTAGE
+        assert first.value == 12.03
+        assert first.minimum == first.maximum == first.average == 12.03
+
+        readings = list(snapshot)
+        assert len(readings) == 3
+        assert [r.type for r in readings] == [
+            ReadingType.VOLTAGE,
+            ReadingType.TEMPERATURE,
+            ReadingType.FAN,
+        ]
+    finally:
+        snapshot.close()
+
+
+def test_synthetic_snapshot_reading_fields_are_typed():
+    snapshot = _snapshot_from_buffer(_synthetic_buffer())
+    try:
+        reading = snapshot[0]
+        assert isinstance(reading.type, ReadingType)
+        assert isinstance(reading.value, float)
+        assert isinstance(reading.minimum, float)
+        assert isinstance(reading.maximum, float)
+        assert isinstance(reading.average, float)
+        assert isinstance(reading.sensor, str)
+        assert isinstance(reading.unit, str)
+    finally:
+        snapshot.close()
+
+
+def test_synthetic_snapshot_indexing_and_bounds():
+    snapshot = _snapshot_from_buffer(_synthetic_buffer())
+    try:
+        n = len(snapshot)
+        assert snapshot[-1] == snapshot[n - 1]  # negative indexing
+        with pytest.raises(IndexError):
+            _ = snapshot[n]
+        with pytest.raises(TypeError):
+            _ = snapshot["nope"]
+    finally:
+        snapshot.close()
+
+
+def test_closed_synthetic_snapshot_is_guarded():
+    snapshot = _snapshot_from_buffer(_synthetic_buffer())
+    # Touch the snapshot first so the source cache is populated; the closed-state
+    # guard must still fire on the cached path.
+    _ = snapshot.source
+    _ = snapshot[0]
+    snapshot.close()
+    snapshot.close()  # idempotent
+    with pytest.raises(SensorwatchError):
+        _ = snapshot.source
+    with pytest.raises(SensorwatchError):
+        _ = len(snapshot)
+    with pytest.raises(SensorwatchError):
+        _ = snapshot[0]
+    with pytest.raises(SensorwatchError):
+        list(snapshot)
+
+
+def test_synthetic_snapshot_matches_pure_python_parser():
+    """Differential oracle: the same bytes through the C parser (via the cffi
+    binding) and the pure-Python reference parser yield identical readings."""
+    buf = _synthetic_buffer()
+    reference = _parse_shared_memory(buf)
+    assert reference is not None
+    snapshot = _snapshot_from_buffer(buf)
+    try:
+        native_rows = [
+            (r.sensor, r.reading, r.unit, _norm_type(_type_str(r.type)),
+             r.value, r.minimum, r.maximum, r.average)
+            for r in snapshot
+        ]
+        reference_rows = [
+            (p.sensor_name, p.reading_name, p.unit, _norm_type(p.sensor_type),
+             p.value, p.value_min, p.value_max, p.value_avg)
+            for p in reference
+        ]
+        # Same buffer, same order: exact equality, not just shape.
+        assert native_rows == reference_rows
+    finally:
+        snapshot.close()
+
+
+def test_corpus_seed_parses_identically_in_both_parsers():
+    """Anchor both parsers on a committed fixture: the fuzz seed corpus is built by
+    the C test-util builder, so these bytes are shared across the language suites
+    (the C cmocka tests and the Rust CLI e2e consume the same files)."""
+    seed = Path(__file__).parent / "fuzz" / "corpus" / "parse" / "valid_multi.bin"
+    data = seed.read_bytes()
+    reference = _parse_shared_memory(data)
+    assert reference  # a valid seed parses to at least one reading
+    snapshot = _snapshot_from_buffer(data)
+    try:
+        assert len(snapshot) == len(reference)
+        for r, p in zip(snapshot, reference):
+            assert (r.sensor, r.reading, r.unit) == (p.sensor_name, p.reading_name, p.unit)
+            assert (r.value, r.minimum, r.maximum, r.average) == (
+                p.value, p.value_min, p.value_max, p.value_avg,
+            )
+    finally:
+        snapshot.close()
+
+
+def test_from_buffer_rejects_malformed():
+    out = ffi.new("sw_snapshot_t **")
+
+    short = b"\x00" * 47  # shorter than a header
+    cbuf = ffi.from_buffer(short)
+    assert lib.sw_snapshot_from_buffer(
+        ffi.cast("const uint8_t *", cbuf), len(short), out
+    ) == lib.SW_ERR_CORRUPT_DATA
+    assert out[0] == ffi.NULL
+
+    bad = b"\x00" * 48  # header-sized, wrong magic
+    cbuf = ffi.from_buffer(bad)
+    assert lib.sw_snapshot_from_buffer(
+        ffi.cast("const uint8_t *", cbuf), len(bad), out
+    ) == lib.SW_ERR_BAD_MAGIC
+    assert out[0] == ffi.NULL
+
+    assert lib.sw_snapshot_from_buffer(ffi.NULL, 1, out) == lib.SW_ERR_NULL_POINTER

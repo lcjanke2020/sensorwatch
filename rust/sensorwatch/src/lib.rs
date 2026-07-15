@@ -377,11 +377,12 @@ unsafe impl Send for Snapshot {}
 unsafe impl Sync for Snapshot {}
 
 impl Snapshot {
-    /// Adopt a snapshot returned by `sw_snapshot_take`.
+    /// Adopt a snapshot returned by `sw_snapshot_take` or `sw_snapshot_from_buffer`.
     ///
     /// # Safety
-    /// `ptr` must be a non-null snapshot from `sw_snapshot_take` whose ownership is
-    /// transferred to the returned `Snapshot` (freed once on drop).
+    /// `ptr` must be a non-null snapshot from `sw_snapshot_take` or
+    /// `sw_snapshot_from_buffer` whose ownership is transferred to the returned
+    /// `Snapshot` (freed once on drop).
     unsafe fn from_raw(ptr: *mut sys::sw_snapshot_t) -> Result<Snapshot> {
         let mut count: u32 = 0;
         if let Some(err) = Error::from_code(sys::sw_snapshot_entry_count(ptr, &mut count)) {
@@ -407,6 +408,28 @@ impl Snapshot {
             len: count,
             source,
         })
+    }
+
+    /// Parse a snapshot from a caller-supplied buffer holding an HWiNFO
+    /// shared-memory image, with no session or live source involved.
+    ///
+    /// This runs the same validating parser a live [`Session::snapshot`] runs on
+    /// its copied view — the bytes are treated as untrusted input and fully
+    /// bounds-checked — so it works on every platform. The snapshot deep-copies
+    /// everything it needs; `buf` can be dropped as soon as this returns. Useful
+    /// for replaying captured buffers and for exercising snapshot consumers
+    /// without live hardware.
+    ///
+    /// Errors with [`Error::BadMagic`] or [`Error::CorruptData`] when the bytes
+    /// are not a valid image, or [`Error::OutOfMemory`].
+    pub fn from_buffer(buf: &[u8]) -> Result<Snapshot> {
+        let mut ptr: *mut sys::sw_snapshot_t = std::ptr::null_mut();
+        // SAFETY: buf/len describe a readable range for the duration of the call;
+        // the parser validates every untrusted field before use and copies out
+        // what it keeps. (An empty slice is fine: len is checked before any read.)
+        check(unsafe { sys::sw_snapshot_from_buffer(buf.as_ptr(), buf.len(), &mut ptr) })?;
+        // SAFETY: on SW_OK, ptr is a non-null snapshot whose ownership we now hold.
+        unsafe { Snapshot::from_raw(ptr) }
     }
 
     /// The number of reading entries.

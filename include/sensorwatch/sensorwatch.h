@@ -2,7 +2,7 @@
 #define SENSORWATCH_SENSORWATCH_H
 
 /*
- * sensorwatch C ABI (draft 0.1.0).
+ * sensorwatch C ABI (draft 0.2.0).
  *
  * This header is the public C ABI for the native sensorwatch core, implemented in
  * src/ (a Windows DLL plus a static library; see docs/C_ABI.md and the README).
@@ -70,7 +70,7 @@ extern "C" {
 #endif
 
 #define SW_API_VERSION_MAJOR 0u
-#define SW_API_VERSION_MINOR 1u
+#define SW_API_VERSION_MINOR 2u
 #define SW_API_VERSION_PATCH 0u
 #define SW_API_VERSION \
     ((SW_API_VERSION_MAJOR * 10000u) + \
@@ -172,7 +172,28 @@ SW_API sw_error_t SW_CALL sw_snapshot_take(sw_session_t *session,
                                            sw_snapshot_t **out_snapshot);
 
 /*
- * Free a snapshot returned by sw_snapshot_take(). Passing NULL is a no-op.
+ * Parse a snapshot directly from a caller-supplied buffer holding an HWiNFO
+ * shared-memory image, with no session or live source involved. The buffer is
+ * treated as untrusted input and fully bounds-validated -- this is the same
+ * parser sw_snapshot_take() runs on its copied view. The snapshot deep-copies
+ * everything it needs, so the caller may free or reuse buf as soon as the call
+ * returns. Intended for replaying captured buffers and for exercising snapshot
+ * consumers on platforms without a live source.
+ *
+ * On success, writes a non-NULL snapshot to out_snapshot; release it with
+ * sw_snapshot_free(). On failure, writes NULL to out_snapshot when possible.
+ * Errors: SW_ERR_NULL_POINTER, SW_ERR_BAD_MAGIC, SW_ERR_CORRUPT_DATA,
+ * SW_ERR_OUT_OF_MEMORY.
+ *
+ * Thread safety: thread-safe (a pure function of the input bytes).
+ */
+SW_API sw_error_t SW_CALL sw_snapshot_from_buffer(const uint8_t *buf,
+                                                  size_t len,
+                                                  sw_snapshot_t **out_snapshot);
+
+/*
+ * Free a snapshot returned by sw_snapshot_take() or sw_snapshot_from_buffer().
+ * Passing NULL is a no-op.
  *
  * Thread safety: must not race with any other use of the same snapshot.
  */

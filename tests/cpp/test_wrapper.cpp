@@ -11,17 +11,25 @@
  *   - Error translation (code() + what() == sw_error_string) and check().
  *   - ReadingType folding of unrecognized codes to Unknown.
  *   - Move-only semantics, asserted structurally at compile time and exercised at
- *     runtime (under ASan locally) on the live path.
+ *     runtime (under ASan on the Linux CI leg) on the synthetic-snapshot path.
+ *   - Every platform: the populated accessor surface (size/source/at/operator[]/
+ *     iteration/readings/out-of-range/move) over a synthetic buffer parsed via
+ *     sw_snapshot_from_buffer, with deterministic expected values.
  *   - Non-Windows: Session construction throws Error(SW_ERR_UNSUPPORTED_PLATFORM).
- *   - Windows: a live snapshot (skipped cleanly when no sensor source is running)
- *     exercises size/source/at/operator[]/iteration/readings and out-of-range.
+ *   - Windows: the same checks against a live snapshot (skipped cleanly when no
+ *     sensor source is running).
  */
 
 #include "sensorwatch/sensorwatch.hpp"
 
+extern "C" {
+#include "sw_test_util.h"
+}
+
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -117,6 +125,130 @@ static void test_reading_equality() {
     sw::Reading c = a;
     c.value = 1.0;  // a finite value differs from the NaN one
     CHECK(a != c);
+}
+
+// Parse one synthetic snapshot, or return nullptr after recording a failure.
+static sw_snapshot_t* make_synthetic_snapshot() {
+    const sw_test_sensor_t sensors[] = { { "MEG Ai1600T", nullptr } };
+    const sw_test_entry_t entries[] = {
+        { 2u, 0u, "+12V", nullptr, "V", 12.03 },
+        { 1u, 0u, "CPU Package", nullptr, "C", 41.5 },
+    };
+    size_t len = 0;
+    uint8_t* buf = sw_test_build_buffer(sensors, 1u, entries, 2u, &len);
+    if (buf == nullptr) {
+        FAILURE("sw_test_build_buffer returned NULL");
+        return nullptr;
+    }
+    sw_snapshot_t* raw = nullptr;
+    const sw_error_t err = sw_snapshot_from_buffer(buf, len, &raw);
+    // The snapshot deep-copies, so the input buffer can go away immediately.
+    std::free(buf);
+    if (err != SW_OK || raw == nullptr) {
+        FAILURE("sw_snapshot_from_buffer failed on a well-formed buffer");
+        return nullptr;
+    }
+    return raw;
+}
+
+// Cross-platform port of the live-path body: the populated accessor surface over
+// a synthetic buffer, with deterministic expected values a live source can never
+// promise. Runs on every CI leg (including the ASan/UBSan Linux re-run).
+static void test_synthetic_snapshot() {
+    sw_snapshot_t* raw = make_synthetic_snapshot();
+    sw_snapshot_t* raw_other = make_synthetic_snapshot();
+    if (raw == nullptr || raw_other == nullptr) {
+        sw_snapshot_free(raw);
+        sw_snapshot_free(raw_other);
+        return;  // failure already recorded
+    }
+
+    try {
+        sw::Snapshot snapshot(raw);      // adopts ownership
+        sw::Snapshot other(raw_other);   // assignee for the move-assignment check
+
+        CHECK(snapshot.size() == 2u);
+        CHECK(snapshot.source() == "HWiNFO");
+
+        const sw::Reading first = snapshot.at(0u);
+        CHECK(first.source == "HWiNFO");
+        CHECK(first.sensor == "MEG Ai1600T");
+        CHECK(first.reading == "+12V");
+        CHECK(first.unit == "V");
+        CHECK(first.type == sw::ReadingType::Voltage);
+        CHECK(first.value == 12.03);
+        CHECK(first.minimum == 12.03);
+        CHECK(first.maximum == 12.03);
+        CHECK(first.average == 12.03);
+        CHECK(first == snapshot[0u]);  // operator[] agrees with at()
+
+        const sw::Reading second = snapshot.at(1u);
+        CHECK(second.sensor == "MEG Ai1600T");
+        CHECK(second.reading == "CPU Package");
+        CHECK(second.unit == "C");
+        CHECK(second.type == sw::ReadingType::Temperature);
+        CHECK(second.value == 41.5);
+
+        // Range/iteration visits exactly size() readings; exercise operator-> too.
+        std::uint32_t iterated = 0;
+        for (sw::Snapshot::const_iterator it = snapshot.begin();
+             it != snapshot.end(); ++it) {
+            CHECK(it->source == snapshot.source());  // operator->
+            ++iterated;
+        }
+        CHECK(iterated == 2u);
+
+        // readings() materializes the same set.
+        const std::vector<sw::Reading> all = snapshot.readings();
+        CHECK(all.size() == 2u);
+        CHECK(all.front() == first);
+        CHECK(all.back() == second);
+
+        // Out-of-bounds at() throws std::out_of_range; operator[] stays unchecked.
+        bool out_of_range_threw = false;
+        try {
+            (void)snapshot.at(2u);
+        } catch (const std::out_of_range&) {
+            out_of_range_threw = true;
+        }
+        CHECK(out_of_range_threw);
+
+        // Move-construction on a populated snapshot (previously only proven live):
+        // the moved-from handle must be inert and observably empty.
+        sw::Snapshot moved(std::move(snapshot));
+        CHECK(moved.size() == 2u);
+        CHECK(snapshot.size() == 0u);
+        CHECK(snapshot.source().empty());
+        CHECK(snapshot.begin() == snapshot.end());
+
+        // Move-assignment frees the left-hand handle and adopts the right-hand one
+        // (double-free or leak would surface under the ASan ctest re-run).
+        other = std::move(moved);
+        CHECK(other.size() == 2u);
+        CHECK(other.at(0u) == first);
+    } catch (const sw::Error& err) {
+        FAILURE("synthetic snapshot path threw an unexpected sw::Error");
+        std::fprintf(stderr, "  unexpected code %d: %s\n",
+                     static_cast<int>(err.code()), err.what());
+    }
+}
+
+static void test_from_buffer_rejects_malformed() {
+    sw_snapshot_t* raw = reinterpret_cast<sw_snapshot_t*>(&raw);  // poison
+    const uint8_t zeros[48] = {0};
+
+    // Shorter than a header.
+    CHECK(sw_snapshot_from_buffer(zeros, 47u, &raw) == SW_ERR_CORRUPT_DATA);
+    CHECK(raw == nullptr);
+
+    // Header-sized but the magic is wrong.
+    raw = reinterpret_cast<sw_snapshot_t*>(&raw);
+    CHECK(sw_snapshot_from_buffer(zeros, sizeof(zeros), &raw) == SW_ERR_BAD_MAGIC);
+    CHECK(raw == nullptr);
+
+    // NULL arguments.
+    CHECK(sw_snapshot_from_buffer(nullptr, 1u, &raw) == SW_ERR_NULL_POINTER);
+    CHECK(sw_snapshot_from_buffer(zeros, sizeof(zeros), nullptr) == SW_ERR_NULL_POINTER);
 }
 
 #if defined(_WIN32)
@@ -228,6 +360,8 @@ int main() {
     test_error_translation();
     test_reading_type_folding();
     test_reading_equality();
+    test_synthetic_snapshot();
+    test_from_buffer_rejects_malformed();
 #if defined(_WIN32)
     test_windows_live();
 #else

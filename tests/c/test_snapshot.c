@@ -188,6 +188,66 @@ static void test_session_funcs_reject_null(void **state)
     assert_int_equal(sw_snapshot_take(NULL, &snap), SW_ERR_NULL_POINTER);
 }
 
+/* --- Public buffer entry point (sw_snapshot_from_buffer) --- */
+
+static void test_from_buffer_parses_and_serves_accessors(void **state)
+{
+    (void)state;
+    sw_test_sensor_t sensors[] = { { "MEG Ai1600T", NULL } };
+    sw_test_entry_t  entries[] = { { 2u, 0u, "+12V", NULL, "V", 12.5 } };
+    size_t len;
+    uint8_t *buf = sw_test_build_buffer(sensors, 1u, entries, 1u, &len);
+    assert_non_null(buf);
+
+    sw_snapshot_t *snap = NULL;
+    assert_int_equal(sw_snapshot_from_buffer(buf, len, &snap), SW_OK);
+    assert_non_null(snap);
+    /* Caller keeps ownership of buf; freeing it must not disturb the snapshot. */
+    free(buf);
+
+    uint32_t count = 0;
+    assert_int_equal(sw_snapshot_entry_count(snap, &count), SW_OK);
+    assert_int_equal(count, 1u);
+
+    double v = 0.0;
+    assert_int_equal(sw_snapshot_get_value(snap, 0u, &v), SW_OK);
+    assert_true(v == 12.5);
+
+    char buffer[16] = {0};
+    assert_int_equal(sw_snapshot_get_sensor_name(snap, 0u, buffer, sizeof(buffer), NULL), SW_OK);
+    assert_string_equal(buffer, "MEG Ai1600T");
+
+    sw_snapshot_free(snap);
+}
+
+static void test_from_buffer_rejects_null(void **state)
+{
+    (void)state;
+    uint8_t byte = 0;
+    sw_snapshot_t *snap = NULL;
+    assert_int_equal(sw_snapshot_from_buffer(NULL, 1u, &snap), SW_ERR_NULL_POINTER);
+    assert_int_equal(sw_snapshot_from_buffer(&byte, 1u, NULL), SW_ERR_NULL_POINTER);
+}
+
+static void test_from_buffer_rejects_malformed(void **state)
+{
+    (void)state;
+    sw_snapshot_t *snap = (sw_snapshot_t *)&snap;  /* poison; must be NULLed */
+
+    /* Too short for a header. */
+    uint8_t tiny[SW_HEADER_SIZE - 1] = {0};
+    assert_int_equal(sw_snapshot_from_buffer(tiny, sizeof(tiny), &snap),
+                     SW_ERR_CORRUPT_DATA);
+    assert_null(snap);
+
+    /* Valid length, wrong magic. */
+    snap = (sw_snapshot_t *)&snap;
+    uint8_t bad_magic[SW_HEADER_SIZE] = {0};
+    assert_int_equal(sw_snapshot_from_buffer(bad_magic, sizeof(bad_magic), &snap),
+                     SW_ERR_BAD_MAGIC);
+    assert_null(snap);
+}
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -203,6 +263,9 @@ int main(void)
         cmocka_unit_test(test_string_null_and_range),
         cmocka_unit_test(test_source_name),
         cmocka_unit_test(test_session_funcs_reject_null),
+        cmocka_unit_test(test_from_buffer_parses_and_serves_accessors),
+        cmocka_unit_test(test_from_buffer_rejects_null),
+        cmocka_unit_test(test_from_buffer_rejects_malformed),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

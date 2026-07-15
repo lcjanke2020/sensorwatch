@@ -16,7 +16,7 @@ static void test_api_version(void **state)
     (void)state;
     /* 0.1.0 -> 0*10000 + 1*100 + 0 == 100. */
     assert_int_equal(sw_api_version(), SW_API_VERSION);
-    assert_int_equal(sw_api_version(), 100u);
+    assert_int_equal(sw_api_version(), 200u);
 }
 
 static void test_error_string_never_null(void **state)
