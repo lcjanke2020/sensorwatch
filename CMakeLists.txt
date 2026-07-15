@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.21)  # PROJECT_IS_TOP_LEVEL (used by SW_INSTALL) needs >= 3.21
 
-# VERSION tracks the C ABI draft (matches SW_API_VERSION 0.1.0 in the public
+# VERSION tracks the C ABI draft (matches SW_API_VERSION 0.2.0 in the public
 # header), deliberately independent of the Python package version in pyproject.toml.
 project(sensorwatch
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "sensorwatch native C core (HWiNFO shared-memory reader)"
     LANGUAGES C)
 

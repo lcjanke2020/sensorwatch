@@ -224,9 +224,18 @@ static void test_from_buffer_rejects_null(void **state)
 {
     (void)state;
     uint8_t byte = 0;
-    sw_snapshot_t *snap = NULL;
+    sw_snapshot_t *snap = (sw_snapshot_t *)&snap;  /* poison; must be NULLed */
     assert_int_equal(sw_snapshot_from_buffer(NULL, 1u, &snap), SW_ERR_NULL_POINTER);
+    assert_null(snap);  /* NULL buf must still poison a valid out-pointer */
     assert_int_equal(sw_snapshot_from_buffer(&byte, 1u, NULL), SW_ERR_NULL_POINTER);
+}
+
+static void test_take_rejects_null_session(void **state)
+{
+    (void)state;
+    sw_snapshot_t *snap = (sw_snapshot_t *)&snap;  /* poison; must be NULLed */
+    assert_int_equal(sw_snapshot_take(NULL, &snap), SW_ERR_NULL_POINTER);
+    assert_null(snap);  /* same NULL-on-failure contract as from_buffer */
 }
 
 static void test_from_buffer_rejects_malformed(void **state)
@@ -265,6 +274,7 @@ int main(void)
         cmocka_unit_test(test_session_funcs_reject_null),
         cmocka_unit_test(test_from_buffer_parses_and_serves_accessors),
         cmocka_unit_test(test_from_buffer_rejects_null),
+        cmocka_unit_test(test_take_rejects_null_session),
         cmocka_unit_test(test_from_buffer_rejects_malformed),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

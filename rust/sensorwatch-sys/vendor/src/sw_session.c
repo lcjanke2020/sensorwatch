@@ -149,10 +149,16 @@ SW_API void SW_CALL sw_session_close(sw_session_t *session)
 SW_API sw_error_t SW_CALL sw_snapshot_take(sw_session_t *session,
                                            sw_snapshot_t **out_snapshot)
 {
-    if (session == NULL || out_snapshot == NULL) {
+    /* Out-pointer first, then poison, then the session check: every failure
+       path must leave *out_snapshot NULL (the "NULL on failure when possible"
+       contract), including a NULL session. */
+    if (out_snapshot == NULL) {
         return SW_ERR_NULL_POINTER;
     }
     *out_snapshot = NULL;
+    if (session == NULL) {
+        return SW_ERR_NULL_POINTER;
+    }
 
     size_t copy_size = session->mapped_size;
     if (copy_size > SW_MAX_TOTAL_SIZE) {
@@ -195,10 +201,14 @@ SW_API void SW_CALL sw_session_close(sw_session_t *session)
 SW_API sw_error_t SW_CALL sw_snapshot_take(sw_session_t *session,
                                            sw_snapshot_t **out_snapshot)
 {
-    if (session == NULL || out_snapshot == NULL) {
+    /* Same check order as the Windows path: out-pointer, poison, session. */
+    if (out_snapshot == NULL) {
         return SW_ERR_NULL_POINTER;
     }
     *out_snapshot = NULL;
+    if (session == NULL) {
+        return SW_ERR_NULL_POINTER;
+    }
     return SW_ERR_UNSUPPORTED_PLATFORM;
 }
 

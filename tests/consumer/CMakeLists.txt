@@ -15,8 +15,9 @@
 cmake_minimum_required(VERSION 3.21)
 project(sensorwatch_consumer LANGUAGES C)
 
-# The `0.1` also exercises sensorwatchConfigVersion.cmake (SameMinorVersion).
-find_package(sensorwatch 0.1 CONFIG REQUIRED)
+# The `0.2` also exercises sensorwatchConfigVersion.cmake (SameMinorVersion): it
+# must match the ABI draft in project() or find_package rejects the install.
+find_package(sensorwatch 0.2 CONFIG REQUIRED)
 
 # Each consumer is gated on the target it links, so the smoke test adapts to
 # whatever the package was installed with (SW_BUILD_SHARED / SW_BUILD_STATIC).

@@ -69,10 +69,18 @@ sw_error_t sw_parse_buffer(const uint8_t *buf, size_t len,
     char **sensor_names = NULL;
     uint32_t sensor_count = 0;
 
-    if (buf == NULL || out_snapshot == NULL) {
+    /* Validate the out-pointer first and poison it before any other check, so
+       every failure path leaves *out_snapshot NULL (the public contract is
+       "NULL on failure when possible" -- possible whenever out_snapshot is
+       valid, including a NULL buf). */
+    if (out_snapshot == NULL) {
         return SW_ERR_NULL_POINTER;
     }
     *out_snapshot = NULL;
+
+    if (buf == NULL) {
+        return SW_ERR_NULL_POINTER;
+    }
 
     if (len < SW_HEADER_SIZE) {
         return SW_ERR_CORRUPT_DATA;

@@ -246,8 +246,10 @@ static void test_from_buffer_rejects_malformed() {
     CHECK(sw_snapshot_from_buffer(zeros, sizeof(zeros), &raw) == SW_ERR_BAD_MAGIC);
     CHECK(raw == nullptr);
 
-    // NULL arguments.
+    // NULL arguments. A NULL buf must still poison a valid out-pointer.
+    raw = reinterpret_cast<sw_snapshot_t*>(&raw);
     CHECK(sw_snapshot_from_buffer(nullptr, 1u, &raw) == SW_ERR_NULL_POINTER);
+    CHECK(raw == nullptr);
     CHECK(sw_snapshot_from_buffer(zeros, sizeof(zeros), nullptr) == SW_ERR_NULL_POINTER);
 }
 

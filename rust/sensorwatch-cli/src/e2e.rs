@@ -9,7 +9,10 @@
 //! In-crate (not `tests/`) because it threads `pub(crate)` seams — the same
 //! placement as the engine's replay end-to-end test.
 
-// Shared with rust/sensorwatch/tests; not every helper is used here.
+// Shared with rust/sensorwatch/tests; not every helper is used here. This path
+// escapes the crate root, which `cargo package` rejects — fine while this crate
+// is repo-only (publish = false), but it must become a local copy if the CLI
+// crate is ever published (same constraint as the corpus-seed path below).
 #[allow(dead_code)]
 #[path = "../../sensorwatch/tests/common/mod.rs"]
 mod synth;

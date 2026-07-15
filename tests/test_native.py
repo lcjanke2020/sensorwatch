@@ -372,4 +372,6 @@ def test_from_buffer_rejects_malformed():
     ) == lib.SW_ERR_BAD_MAGIC
     assert out[0] == ffi.NULL
 
+    out[0] = ffi.cast("sw_snapshot_t *", 1)  # poison; a NULL buf must NULL it
     assert lib.sw_snapshot_from_buffer(ffi.NULL, 1, out) == lib.SW_ERR_NULL_POINTER
+    assert out[0] == ffi.NULL

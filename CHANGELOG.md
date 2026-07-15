@@ -63,6 +63,14 @@ release picks it up._
   committed seed corpus. The `sensorwatch-cli` crate gains a thin library target so
   the fuzz harness can reach the replay parser (`main` is now a shim over it).
 
+### Fixed
+
+- `sw_snapshot_take()` (and the parser behind `sw_snapshot_from_buffer()`) now
+  validates the out-pointer first and sets `*out_snapshot` to `NULL` before any
+  other argument check, so a NULL session/buffer alongside a valid out-pointer
+  can no longer leave a stale handle behind — matching the documented
+  "NULL on failure when possible" contract.
+
 ## [0.2.0] - 2026-06-29
 
 ### Added
