@@ -103,16 +103,17 @@ Two standing notes:
   `0.2.0`); that API is unreleased until the next crate release, which should
   bump the workspace to `0.2.0` via the flow below.
 - The CLI crate (`sensorwatch-cli`) is repo-only (`publish = false`) and
-  versions with the workspace. If it is ever published, the actual
+  versions with the workspace. If it is ever published: the one
   `cargo package` blocker is the path-only dependency on the wrapper
   (`sensorwatch = { path = "../sensorwatch" }`, deliberately unversioned while
-  repo-only — publishing requires adding a `version` requirement), plus
-  flipping `publish = false` itself. Its two outside-crate-root test
-  references — the path-attribute test module shared with the wrapper crate,
-  and the repo-relative fuzz-corpus seed in the `#[cfg(test)]`-gated e2e test
-  ([`src/e2e.rs`](rust/sensorwatch-cli/src/e2e.rs)) — do **not** block
-  packaging (the package verify build compiles no test code), but the packaged
-  crate's own tests cannot run without in-crate copies of both.
+  repo-only — packaging requires adding a `version` requirement); publishing
+  additionally requires flipping `publish = false`. Its two outside-crate-root
+  test references — the path-attribute test module shared with the wrapper
+  crate, and the repo-relative fuzz-corpus seed in the `#[cfg(test)]`-gated
+  e2e test ([`src/e2e.rs`](rust/sensorwatch-cli/src/e2e.rs)) — do **not**
+  block packaging (verified empirically: the package verify step is a plain
+  build and compiles no test code), but the packaged crate's own tests cannot
+  run without in-crate copies of both.
 
 ### Python package (PyPI)
 
