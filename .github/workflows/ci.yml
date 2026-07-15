@@ -51,8 +51,11 @@ jobs:
   # cffi extension under ASan (LEO-327): catches marshalling/lifetime bugs across
   # the FFI boundary that the pure-C cmocka runs cannot see. Scoped to
   # tests/test_native.py -- the monitor-script suite spawns subprocesses that would
-  # inherit LD_PRELOAD, and the rest of the suite carries no native code. No uv
-  # cache on purpose: never share a wheel cache with ASan-built artifacts.
+  # inherit LD_PRELOAD, and the rest of the suite carries no native code.
+  # enable-cache is explicitly false: setup-uv's default is auto (= on for hosted
+  # runners) with the same cache key as the plain py3.13 test job, and uv's cache
+  # does not key on CFLAGS/LDFLAGS -- a shared cache can hand this job an
+  # uninstrumented build, or hand the plain jobs an ASan one.
   python-native-asan:
     name: cffi extension under ASan (ubuntu)
     runs-on: ubuntu-latest
@@ -61,11 +64,28 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: '3.13'
+          enable-cache: false
       - name: Build extension with ASan
         run: >
           CFLAGS="-fsanitize=address -fno-omit-frame-pointer -g"
           LDFLAGS="-fsanitize=address"
           uv sync
+      - name: Assert the extension is ASan-instrumented
+        # An ASan-linked extension refuses to import without the runtime
+        # preloaded ("ASan runtime does not come first..."). If this import
+        # succeeds, the build silently lost its instrumentation and the pytest
+        # step below would test an ordinary build -- fail loudly instead.
+        # --no-sync so uv run cannot rebuild the project without the ASan flags.
+        run: |
+          if uv run --no-sync python -c "import sensorwatch._sw_cffi" 2>/tmp/import-err.txt; then
+            echo "::error::extension imported without the ASan runtime preloaded -- build is not instrumented"
+            exit 1
+          fi
+          grep -q "ASan runtime does not come first" /tmp/import-err.txt || {
+            echo "::error::import failed for a reason other than missing ASan runtime:"
+            cat /tmp/import-err.txt
+            exit 1
+          }
       - name: Run native-binding tests under ASan
         # LD_PRELOAD: the python binary itself is not ASan-linked, so the runtime
         # must come first. detect_leaks=0: CPython's interned/arena allocations
@@ -74,7 +94,7 @@ jobs:
         run: >
           LD_PRELOAD=$(gcc -print-file-name=libasan.so)
           ASAN_OPTIONS=detect_leaks=0 PYTHONMALLOC=malloc
-          uv run pytest tests/test_native.py
+          uv run --no-sync pytest tests/test_native.py
 
   native-linux:
     name: native (ubuntu, gcc)
@@ -182,9 +202,12 @@ jobs:
           cmake --build build-clang-asan
           if ($LASTEXITCODE -ne 0) { throw "asan build failed" }
           # /MD + ASan needs clang_rt.asan_dynamic-x86_64.dll resolvable at test
-          # time; its directory varies across LLVM layouts, so locate it.
+          # time; its directory varies across LLVM layouts, so locate it. Throw
+          # on a miss -- otherwise ctest dies with a bare 0xc0000135 and no hint.
           $asanDll = Get-ChildItem -Path (Join-Path $vs 'VC\Tools\Llvm\x64') -Recurse -Filter 'clang_rt.asan_dynamic-x86_64.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($asanDll) { $env:PATH = "$($asanDll.DirectoryName);" + $env:PATH; Write-Host "ASan runtime DLL: $($asanDll.FullName)" }
+          if (-not $asanDll) { throw "clang_rt.asan_dynamic-x86_64.dll not found under $vs\VC\Tools\Llvm\x64 -- ASan test binaries cannot load" }
+          $env:PATH = "$($asanDll.DirectoryName);" + $env:PATH
+          Write-Host "ASan runtime DLL: $($asanDll.FullName)"
           ctest --test-dir build-clang-asan --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw "asan ctest failed" }
 

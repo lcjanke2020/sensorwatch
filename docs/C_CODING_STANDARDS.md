@@ -66,8 +66,8 @@ Use this as the compact PR-review version of the longer guidance below.
   CI — the native core's CI does this today (Linux: gcc ASan+UBSan plus a
   blocking clang-tidy gate; Windows: MSVC `/W4 /WX /sdl /guard:cf` with
   `/analyze` non-fatal plus an ASan pass, and a clang-cl job with its own
-  ASan + UBSan-trap pass; the Python job additionally runs the cffi extension
-  under ASan); keep it green.
+  ASan + UBSan-trap pass; a dedicated Linux job additionally runs the cffi
+  extension under ASan); keep it green.
 - Fuzz the parser with mutated shared-memory blobs and run it under sanitizers.
 - Maintain an exported-symbol snapshot or equivalent ABI-compatibility check once
   a native library is released.

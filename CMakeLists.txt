@@ -16,9 +16,11 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 # clang-cl reports MSVC=TRUE (it drives the MSVC ABI/CRT) but has its own flag
 # surface: no /sdl, no /analyze, gcc-style -f/-W flags accepted, and sanitizer
-# runtimes resolved via /DEFAULTLIB directives embedded in the objects rather
-# than driver link flags. Detect it once so the flag blocks below can branch.
-# CI configures both C and CXX as clang-cl, so the C-side check governs.
+# runtimes that must be named at link time explicitly -- the objects' embedded
+# /DEFAULTLIB directives are not usable when CMake+Ninja invokes lld-link
+# directly (see the SW_ENABLE_ASAN branch below). Detect it once so the flag
+# blocks below can branch. CI configures both C and CXX as clang-cl, so the
+# C-side check governs.
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND CMAKE_C_SIMULATE_ID STREQUAL "MSVC")
     set(SW_CLANG_CL TRUE)
 else()
