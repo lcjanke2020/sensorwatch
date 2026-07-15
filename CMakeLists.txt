@@ -68,14 +68,13 @@ endif()
 
 if(SW_ENABLE_ASAN)
     if(SW_CLANG_CL)
-        # ASan via clang-cl: the objects carry /DEFAULTLIB directives for the
-        # clang_rt.asan runtime, so no sanitizer link flag (link.exe/lld-link
-        # would reject the gcc spelling). UBSan runs in trap mode: UB becomes an
-        # illegal-instruction abort (no runtime to link, inherently
-        # non-recoverable), which fails ctest just like -fno-sanitize-recover.
+        # ASan/UBSan via clang-cl: the objects carry /DEFAULTLIB directives for
+        # the sanitizer runtimes, so no sanitizer link flag (link.exe/lld-link
+        # would reject the gcc spelling). -fno-omit-frame-pointer is not in
+        # clang-cl's accepted -f set and needs the /clang: passthrough.
         add_compile_options(-fsanitize=address
-                            -fsanitize=undefined -fsanitize-trap=undefined
-                            -fno-omit-frame-pointer /Zi)
+                            -fsanitize=undefined -fno-sanitize-recover=all
+                            /clang:-fno-omit-frame-pointer /Zi)
         add_link_options(/INCREMENTAL:NO)
     elseif(MSVC)
         add_compile_options(/fsanitize=address /Zi)
