@@ -1,6 +1,6 @@
 [project]
 name = "sensorwatch"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lightweight hardware sensor monitor for Windows — reads HWiNFO64 shared memory and logs JSON Lines"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
@@ -30,9 +30,6 @@ dependencies = [
 Homepage = "https://github.com/lcjanke2020/sensorwatch"
 Repository = "https://github.com/lcjanke2020/sensorwatch"
 Issues = "https://github.com/lcjanke2020/sensorwatch/issues"
-
-[project.scripts]
-sensorwatch = "sensorwatch.__main__:main"
 
 [build-system]
 # setuptools + cffi: the binding is a compiled cffi extension (API mode), so the

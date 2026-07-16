@@ -9,6 +9,12 @@ are welcome.
 ```sh
 git clone https://github.com/lcjanke2020/sensorwatch
 cd sensorwatch
+
+# The canonical CLI (Rust):
+cargo build --release --manifest-path rust/Cargo.toml -p sensorwatch-cli
+rust/target/release/sensorwatch log --verbose    # or: snapshot / watch / report
+
+# The frozen Python reference implementation (also the Python API + test env):
 uv sync          # or: pip install -e .
 python -m sensorwatch --verbose
 ```
@@ -92,7 +98,7 @@ any stream will be a stability commitment for that stream alone.
 
 | Stream | Where it lives | Released as |
 |---|---|---|
-| Python package | `pyproject.toml` + `sensorwatch/__init__.py` (`0.2.0`) | PyPI, on `vX.Y.Z` tags |
+| Python package | `pyproject.toml` + `sensorwatch/__init__.py` (`0.3.0`) | PyPI, on `vX.Y.Z` tags |
 | C ABI draft | `SW_API_VERSION_*` in [the public header](include/sensorwatch/sensorwatch.h) + the CMake project version (`0.2.0`) | Not registry-published; consumed in-tree and vendored into `sensorwatch-sys` |
 | Rust workspace | `rust/Cargo.toml` `[workspace.package]` (`0.1.0`) | crates.io (`sensorwatch-sys` + `sensorwatch`), on `rust-vX.Y.Z` tags |
 
@@ -226,7 +232,8 @@ cp include/sensorwatch/sensorwatch.h rust/sensorwatch-sys/vendor/include/sensorw
 
 ## Reporting bugs
 
-Open an issue with your OS/Python/HWiNFO versions, your `config.toml`, and a
+Open an issue with your OS and HWiNFO versions (plus the Python or Rust
+toolchain version, whichever surface you were using), your `config.toml`, and a
 sample of the log output or the error you saw.
 
 ## Security

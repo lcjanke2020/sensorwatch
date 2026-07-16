@@ -61,11 +61,8 @@ working directory.
 # Adjust the path to your Windows checkout
 cd /mnt/c/Users/<you>/path/to/sensorwatch
 
-# Module form
+# The frozen Python logger (module form)
 .venv/Scripts/python.exe -m sensorwatch --config config.toml --verbose
-
-# ...or the installed console script
-.venv/Scripts/sensorwatch.exe --config config.toml --verbose
 ```
 
 Readings are written under `log_dir` on the Windows filesystem. Stop the capture

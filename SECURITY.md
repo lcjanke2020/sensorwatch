@@ -70,8 +70,8 @@ release notes unless they prefer to remain anonymous.
   the C core statically linked in; Python imports it from the package directory,
   not via a name-based DLL search. A standalone `sensorwatch.dll` is built by
   CMake for C/C++ consumers but is not loaded by the Python package.
-- Two read-only agent skills. `skills/sensorwatch/` is documentation plus a
-  `snapshot.py` helper that calls the existing read-only API.
+- Two read-only agent skills. `skills/sensorwatch/` is documentation over the
+  existing read-only CLI/API.
   `skills/sensorwatch-monitor/` adds the monitoring protocol plus stdlib-only
   helper scripts that read the watcher's own JSON event/spool files (validated
   against the frozen 14-key contract) and write durable state **only inside a
@@ -332,8 +332,8 @@ honest that it is designed primarily as a single-user desktop utility.
 ## 4. Agent Integration Security
 
 sensorwatch's agent interface is the shipped read-only agent skills:
-`skills/sensorwatch/` (guidance plus a `snapshot.py` helper over the existing
-read-only CLI/API) and `skills/sensorwatch-monitor/` (the monitoring protocol
+`skills/sensorwatch/` (guidance over the existing read-only CLI/API) and
+`skills/sensorwatch-monitor/` (the monitoring protocol
 plus stdlib helper scripts that write durable state only inside a machine-local
 state directory). Neither adds a network surface, and neither controls hardware —
 escalation to a human *is* the action. There is deliberately no separate MCP

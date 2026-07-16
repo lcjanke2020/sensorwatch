@@ -37,10 +37,11 @@ This directory holds three files:
 > the [test plan](PILOT_TEST_PLAN.md)) runs **from this directory**
 > (`examples/monitor-setup/`), so `config.toml` and fixture paths resolve as
 > written, and repo files are reached with `../../`. And `sensorwatch` always
-> means the **Rust CLI** — if a bare `sensorwatch` resolves to the Python
-> package's console script (which has no `watch`/`report`), use the built binary
+> means the **Rust CLI** — the repo-built binary is not on `PATH`, so invoke it
 > by path: `../../rust/target/release/sensorwatch` (`sensorwatch.exe` on
-> Windows).
+> Windows). (Only a stale Python install — 0.2.0 or earlier — still puts a
+> `sensorwatch` console script, with no `watch`/`report`, on `PATH`; 0.3.0
+> dropped it.)
 
 ## 1. Rules — `config.toml`
 

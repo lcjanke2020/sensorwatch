@@ -61,8 +61,8 @@ guards): [`examples/demo/`](examples/demo/).
 - **Optional native binding** (`sensorwatch.native`) — a cffi wrapper over the
   bundled C core that reads the same data through the native parser (see
   [Native binding](#native-binding-cffi)).
-- **Rust CLI** (`rust/sensorwatch-cli`, binary `sensorwatch`) — the Rust port
-  of the tooling: a one-shot `snapshot` subcommand printing live readings as
+- **Rust CLI** (`rust/sensorwatch-cli`, binary `sensorwatch`) — the **canonical
+  CLI**: a one-shot `snapshot` subcommand printing live readings as
   JSON with type and substring filters, a `log` subcommand (alias `run`) that
   replaces the Python logger loop with a single static binary (byte-compatible
   output included), a `watch` subcommand that evaluates declarative `[[rules]]`
@@ -109,9 +109,12 @@ From PyPI — Windows wheels are prebuilt, so no compiler is needed:
 pip install sensorwatch
 ```
 
-> Note: the package's `sensorwatch` console script is the **Python logger** — it
-> is not the Rust CLI, which has the `snapshot` / `watch` / `report`
-> subcommands. If both are on your PATH, invoke the Rust binary by path (e.g.
+> Note: as of 0.3.0 the package installs **no** `sensorwatch` command — that
+> name belongs to the Rust CLI; the Python logger is invoked as
+> `python -m sensorwatch`. Installs of 0.2.0 or earlier still ship a
+> `sensorwatch` console script (the Python logger — no `snapshot` / `watch` /
+> `report` subcommands); if a stale one shadows the Rust binary, upgrade the
+> package or invoke the Rust binary by path (e.g.
 > `rust/target/release/sensorwatch[.exe]`).
 
 From source — this builds the native cffi extension, so a C compiler is required
@@ -126,7 +129,7 @@ pip install -e .          # or: uv sync
 ## Usage
 
 The logger loop is available in two equivalent forms. The Rust CLI (repo-built;
-see [Rust binding](#rust-binding)) is the primary one:
+see [Rust binding](#rust-binding)) is the canonical interface:
 
 ```sh
 cd rust && cargo build --release -p sensorwatch-cli
@@ -136,15 +139,30 @@ cd rust && cargo build --release -p sensorwatch-cli
 ./target/release/sensorwatch log --config my.toml --verbose  # or: sensorwatch run (alias)
 ```
 
-The frozen Python logger does the same job without a Rust toolchain:
+On Windows PowerShell, invoke the built binary with backslashes —
+`.\target\release\sensorwatch.exe log --config my.toml --verbose` — and make
+the same substitution in every `./target/release/sensorwatch` command below
+(these live-read commands only return data on Windows, where HWiNFO runs).
+
+The frozen Python logger does the same job without a Rust toolchain — module
+form only:
 
 ```sh
 # Run with the bundled default config
 python -m sensorwatch
 
-# Or use the installed console script
-sensorwatch --config config.toml --verbose
+# Or point it at a config explicitly
+python -m sensorwatch --config config.toml --verbose
 ```
+
+If you previously ran the bare `sensorwatch` command from a 0.2.0-or-earlier
+install, that invocation is now the Rust CLI's `log` subcommand; the
+`python -m sensorwatch` module form is unchanged.
+
+The Python package stays in-tree as a **frozen reference implementation**: it
+gathered the original PSU dataset, and its pure-Python shared-memory reader
+([`sensorwatch/hwinfo_shm.py`](sensorwatch/hwinfo_shm.py)) documents the HWiNFO
+wire format end to end. New CLI capability lands only in the Rust CLI.
 
 If HWiNFO64 is not running (or shared memory is disabled), either logger warns
 once and keeps trying — start HWiNFO and readings begin flowing.
@@ -554,9 +572,8 @@ category to `Unknown`, like the other bindings. Build and test the workspace wit
 For AI coding agents, [`skills/sensorwatch/`](skills/sensorwatch/) is a portable
 **Agent Skills** bundle (`SKILL.md`) that teaches an agent to read the current
 hardware state, run the logger, and analyze the JSON Lines output. Its
-read-the-current-state recipe uses the Rust CLI's `snapshot` subcommand, with the
-bundled [`scripts/snapshot.py`](skills/sensorwatch/scripts/snapshot.py) as a
-no-Rust-toolchain fallback, and `agents/openai.yaml` provides Codex discovery. The
+read-the-current-state recipe uses the Rust CLI's `snapshot` subcommand, and
+`agents/openai.yaml` provides Codex discovery. The
 skill uses only read-only APIs — see [`SECURITY.md`](SECURITY.md) §4.
 
 A second bundle, [`skills/sensorwatch-monitor/`](skills/sensorwatch-monitor/),

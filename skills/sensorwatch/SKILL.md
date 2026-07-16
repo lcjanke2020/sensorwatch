@@ -36,6 +36,9 @@ sensorwatch is **Windows-only** and needs HWiNFO64 supplying the data:
    this, there is no data to read.
 3. Install the package: `pip install sensorwatch` (prebuilt Windows wheels — no
    compiler needed), or from a source checkout `pip install -e .` / `uv sync`.
+   The package installs no `sensorwatch` command (0.3.0 dropped the console
+   script) — the Rust CLI recipes below use the repo-built binary, built once
+   as in Recipe 1 (repo checkout + Rust toolchain).
 
 If a prerequisite is missing you'll see one of these — they are expected, not
 crashes (see [Troubleshooting](#troubleshooting)). A `SensorwatchError` prints as
@@ -87,16 +90,6 @@ when sensorwatch/HWiNFO is unavailable, and `2` on a usage error (an unknown
 `--type` or an `--indent` outside 0–16). Non-finite values are emitted as
 `null` (valid JSON).
 
-**Python fallback.** Without a Rust toolchain,
-[`scripts/snapshot.py`](scripts/snapshot.py) prints the same JSON shape with
-the same flags and exit codes (differences: it emits bare `NaN` for non-finite
-values, which most JSON parsers reject, and it accepts any non-negative
-`--indent`):
-
-```sh
-python skills/sensorwatch/scripts/snapshot.py --type TEMPERATURE
-```
-
 **Pure-Python fallback.** If the compiled native extension isn't available, the
 `sensorwatch.hwinfo_shm` reader gets the same data with no compiled dependency
 (it returns `None` instead of raising when HWiNFO is down):
@@ -143,7 +136,7 @@ package):
 
 ```sh
 python -m sensorwatch
-sensorwatch --config config.toml --verbose
+python -m sensorwatch --config config.toml --verbose
 ```
 
 **Mixing old and new files.** The Rust logger's records are byte-compatible
@@ -262,8 +255,10 @@ CLI once as in Recipe 1, then:
 ./target/release/sensorwatch report --since 2026-02-18 --until 2026-02-19       # an explicit date window
 ```
 
-(Use the built Rust binary path, as in Recipes 1–3 — a bare `sensorwatch` on
-PATH may resolve to the Python console script, which has no `report` subcommand.)
+(Use the built Rust binary path, as in Recipes 1–3 — the repo-built binary is
+not on PATH, and on a machine with a stale Python sensorwatch install (0.2.0 or
+earlier) a bare `sensorwatch` may still resolve to the old Python console
+script, which has no `report` subcommand.)
 
 Flags: `--since`/`--until` (RFC 3339, local `YYYY-MM-DDTHH:MM:SS`, or a bare
 `YYYY-MM-DD` — since = start of day, until = end; until defaults to now) or a
@@ -367,4 +362,4 @@ installed tree via `cmake --install` + `find_package(sensorwatch CONFIG REQUIRED
 | `[-4] Sensor source is not running or not enabled` (`SW_ERR_SOURCE_UNAVAILABLE`), or `read_sensors()` → `None` | HWiNFO not running, shared memory disabled, or sensors window closed | Start HWiNFO64, enable Settings → Shared Memory Support, open the sensors window |
 | `[-3] Backend is unavailable on this platform` (`SW_ERR_UNSUPPORTED_PLATFORM`) | Not Windows | sensorwatch reads a Windows-only shared-memory source |
 | `ImportError: sensorwatch._sw_cffi ... not built` | Native extension missing | `pip install sensorwatch` (prebuilt Windows wheel), or use the pure-Python `read_sensors()` (Recipe 1) |
-| A reading's `value` is `NaN`, or its category is the catch-all | HWiNFO exposes some entries without a current value / known category | Skip `NaN` values; treat the catch-all category as uncategorized. **The spelling differs by surface:** the native API's `reading.type.name` is upper-case (`OTHER` / `UNKNOWN`), while the *Python* logger JSONL and `read_sensors()` use title-case `"Other"` and `"unknown(<N>)"` for unrecognized codes (there is no literal `"Unknown"`); the Rust CLI (both `snapshot` and `log`) and the Python snapshot helper use the same title-case labels with a bare `"unknown"`. |
+| A reading's `value` is `NaN`, or its category is the catch-all | HWiNFO exposes some entries without a current value / known category | Skip `NaN` values; treat the catch-all category as uncategorized. **The spelling differs by surface:** the native API's `reading.type.name` is upper-case (`OTHER` / `UNKNOWN`), while the *Python* logger JSONL and `read_sensors()` use title-case `"Other"` and `"unknown(<N>)"` for unrecognized codes (there is no literal `"Unknown"`); the Rust CLI (both `snapshot` and `log`) uses the same title-case labels with a bare `"unknown"`. |
