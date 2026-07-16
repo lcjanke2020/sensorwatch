@@ -8,9 +8,10 @@ Version numbers below track the **`sensorwatch` Python package** (published to
 [PyPI](https://pypi.org/project/sensorwatch/)). The C core, the C++/Rust
 bindings, the Rust CLI, and the agent skills live in the same repository and are
 versioned independently — the Rust crates are published to
-[crates.io](https://crates.io/crates/sensorwatch) at `0.1.0`. Repository work
-that has not yet been folded into a tagged Python release is listed under
-[Unreleased](#unreleased).
+[crates.io](https://crates.io/crates/sensorwatch) at `0.1.0`. The full picture
+is CONTRIBUTING's ["Version streams"](CONTRIBUTING.md#version-streams-what-version-is-sensorwatch)
+section. Repository work that has not yet been folded into a tagged Python
+release is listed under [Unreleased](#unreleased).
 
 ## [Unreleased]
 
@@ -19,6 +20,19 @@ C++/Rust bindings, and the agent skills — is recorded here until the next Pyth
 release picks it up._
 
 ### Added
+
+- **Release provenance** (LEO-416) — retroactive annotated tag `rust-v0.1.0` on
+  the commit the crates.io `0.1.0` name-claim publish was made from
+  (2026-07-01, predating the tag flow), a provenance note in CONTRIBUTING's
+  Rust-releasing section, and a new CONTRIBUTING **"Version streams"** section
+  documenting the three deliberately independent version streams (Python
+  package `0.2.0` / C ABI draft `0.2.0` / Rust workspace `0.1.0` with
+  unreleased API awaiting the next crate release) and what publishing the
+  repo-only CLI crate would take (a `version` on its path-only dependency —
+  the one `cargo package` blocker — plus flipping `publish = false`, plus
+  in-crate copies of the two test resources `rust/sensorwatch-cli/src/e2e.rs`
+  reaches outside the crate root for, so the packaged tests stay runnable).
+  Registry badges landed earlier with the docs-truth pass (LEO-412).
 
 - **clang-cl CI job + Windows sanitizer legs + blocking static analysis**
   (LEO-327) — native CI now builds and tests the C core with clang-cl (the

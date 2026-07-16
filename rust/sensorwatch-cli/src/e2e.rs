@@ -10,9 +10,10 @@
 //! placement as the engine's replay end-to-end test.
 
 // Shared with rust/sensorwatch/tests; not every helper is used here. This path
-// escapes the crate root, which `cargo package` rejects — fine while this crate
-// is repo-only (publish = false), but it must become a local copy if the CLI
-// crate is ever published (same constraint as the corpus-seed path below).
+// escapes the crate root. `cargo package` tolerates that (this module is
+// test-gated, so the package verify build never compiles it), but the packaged
+// crate's tests could not run — make it a local copy if the CLI crate is ever
+// published (same constraint as the corpus-seed path below).
 #[allow(dead_code)]
 #[path = "../../sensorwatch/tests/common/mod.rs"]
 mod synth;

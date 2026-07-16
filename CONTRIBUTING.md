@@ -83,6 +83,38 @@ read-only (see [`SECURITY.md`](SECURITY.md)).
 The Python package and the Rust crates release independently, on distinct tags:
 `vX.Y.Z` → PyPI, `rust-vX.Y.Z` → crates.io. Each workflow ignores the other's tag.
 
+### Version streams ("what version is sensorwatch?")
+
+There is deliberately no single answer: the repo carries **three independent
+version streams**, each bumped on its own cadence. Parity between streams is
+coincidence, not contract, and no convergence is planned before 1.0 — a 1.0 on
+any stream will be a stability commitment for that stream alone.
+
+| Stream | Where it lives | Released as |
+|---|---|---|
+| Python package | `pyproject.toml` + `sensorwatch/__init__.py` (`0.2.0`) | PyPI, on `vX.Y.Z` tags |
+| C ABI draft | `SW_API_VERSION_*` in [the public header](include/sensorwatch/sensorwatch.h) + the CMake project version (`0.2.0`) | Not registry-published; consumed in-tree and vendored into `sensorwatch-sys` |
+| Rust workspace | `rust/Cargo.toml` `[workspace.package]` (`0.1.0`) | crates.io (`sensorwatch-sys` + `sensorwatch`), on `rust-vX.Y.Z` tags |
+
+Two standing notes:
+
+- The published Rust crates (`0.1.0`, 2026-07-01) have since gained public API
+  in-tree (`Snapshot::from_buffer` and the regenerated `-sys` bindings for C ABI
+  `0.2.0`); that API is unreleased until the next crate release, which should
+  bump the workspace to `0.2.0` via the flow below.
+- The CLI crate (`sensorwatch-cli`) is repo-only (`publish = false`) and
+  versions with the workspace. If it is ever published: the one
+  `cargo package` blocker is the path-only dependency on the wrapper
+  (`sensorwatch = { path = "../sensorwatch" }`, deliberately unversioned while
+  repo-only — packaging requires adding a `version` requirement); publishing
+  additionally requires flipping `publish = false`. Its two outside-crate-root
+  test references — the path-attribute test module shared with the wrapper
+  crate, and the repo-relative fuzz-corpus seed in the `#[cfg(test)]`-gated
+  e2e test ([`src/e2e.rs`](rust/sensorwatch-cli/src/e2e.rs)) — do **not**
+  block packaging (verified empirically: the package verify step is a plain
+  build and compiles no test code), but the packaged crate's own tests cannot
+  run without in-crate copies of both.
+
 ### Python package (PyPI)
 
 _(Maintainers.)_ Releases publish to [PyPI](https://pypi.org/project/sensorwatch/)
@@ -168,6 +200,16 @@ Then add a **Trusted Publisher** to **each** crate on crates.io (crate → Setti
 Trusted Publishing): owner `lcjanke2020`, repo `sensorwatch`, workflow
 `publish-crates.yml`, environment `release` (blank also works; setting it to `release`
 lets you gate releases behind a GitHub `release` environment protection rule).
+
+**Provenance note for the 0.1.0 publish.** The one-time name-claim publish above
+*was* the `0.1.0` release (2026-07-01), so it predates the `rust-vX.Y.Z` release
+flow and no tag was created at publish time. The annotated tag `rust-v0.1.0` was
+applied retroactively (2026-07-15) to the commit master pointed at when the
+crates were published; its message records the details. It is an annotated git
+tag with **no accompanying GitHub Release** — `publish-crates.yml` fires only on
+published Releases, never on tag pushes, so retro-tagging cannot re-trigger a
+publish. Every release from `0.2.0` onward gets its tag from the Release flow
+at release time.
 
 **Keeping the vendored C core in sync.** `sensorwatch-sys` ships a copy of the C core
 under `rust/sensorwatch-sys/vendor/` so the published crate builds from source without
