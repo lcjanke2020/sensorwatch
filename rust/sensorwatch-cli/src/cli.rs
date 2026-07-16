@@ -81,20 +81,23 @@ pub enum Command {
     /// The deep-analysis complement to `report`: the digest stays the
     /// first-line, bounded surface; `export` materializes the samples
     /// themselves when a per-sample question genuinely needs them. Six fixed
-    /// columns: timestamp (TIMESTAMP, microseconds, UTC), sensor, reading,
-    /// type, unit (strings), value (nullable DOUBLE — absent, null, and
-    /// non-finite readings become SQL NULL). HWiNFO's source-lifetime
-    /// min/max/avg are deliberately not exported. Streams through the same
-    /// bounded lenient parser as `report` (malformed and oversized lines are
-    /// skipped and counted); memory stays bounded via fixed-size row groups.
-    /// `--out` is created or truncated. Read-only over the logs; never
-    /// touches `watch.seq`. Pure file reading — works on any platform.
+    /// columns, in file order: timestamp (TIMESTAMP, microseconds, UTC),
+    /// sensor, reading, type (strings), value (nullable DOUBLE — absent,
+    /// null, and non-finite readings become SQL NULL), unit (string).
+    /// HWiNFO's source-lifetime min/max/avg are deliberately not exported.
+    /// Streams through the same bounded lenient parser as `report` (malformed
+    /// and oversized lines are skipped and counted); memory stays bounded via
+    /// fixed-size row groups. `--out` is created or truncated — but an --out
+    /// that aliases a selected input log is refused, so the export can never
+    /// destroy the history it reads. Read-only over the logs; never touches
+    /// `watch.seq`. Pure file reading — works on any platform.
     ///
     /// Exit codes: 0 an export was written — including a zero-row window (a
     /// valid schema-only file, the "logger is dead" signal); 1 fatal (an
     /// existing config that cannot be read, or the output file cannot be
     /// created or written); 2 usage (bad window/duration arguments, a
-    /// malformed config, missing --out).
+    /// malformed config, missing --out, or an --out naming a selected input
+    /// log).
     Export(ExportArgs),
 }
 
@@ -279,8 +282,8 @@ pub struct ExportArgs {
     pub since: Option<String>,
 
     /// Window end (same forms as `--since`; a bare `YYYY-MM-DD` means the END
-    /// of that local day). Defaults to now — the hook that makes tests
-    /// time-independent.
+    /// of that local day). Defaults to now; pass it explicitly for a
+    /// reproducible window, as tests and scripts should.
     #[arg(long, value_name = "WHEN")]
     pub until: Option<String>,
 
@@ -291,7 +294,8 @@ pub struct ExportArgs {
     pub last: String,
 
     /// Write the Parquet file to this path (created, or truncated if it
-    /// already exists). Required.
+    /// already exists — except a path that names one of the selected input
+    /// logs, which is refused). Required.
     #[arg(long, short = 'o', value_name = "PATH")]
     pub out: PathBuf,
 

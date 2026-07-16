@@ -10,13 +10,14 @@
 //! file is a product for tools, not for context windows — agents query it and
 //! read bounded results; they never read the file (or the raw logs) directly.
 //!
-//! **Schema.** Six fixed columns: `timestamp` (TIMESTAMP, microseconds,
-//! adjusted-to-UTC), `sensor`, `reading`, `type`, `unit` (UTF8 strings —
-//! `type` is the canonical Title-case label used everywhere in the CLI), and
-//! `value` (nullable DOUBLE). A reading whose value is absent, JSON `null`, or
-//! non-finite (including the Python logger's bare `NaN`/`Infinity` tokens,
-//! which the replay parser folds to NaN) becomes SQL `NULL` — NULL is what
-//! SQL aggregates and comparisons handle sanely; NaN is not.
+//! **Schema.** Six fixed columns, in file order: `timestamp` (TIMESTAMP,
+//! microseconds, adjusted-to-UTC), `sensor`, `reading`, `type`, `value`
+//! (nullable DOUBLE), `unit` — the non-timestamp, non-value columns are UTF8
+//! strings, and `type` is the canonical Title-case label used everywhere in
+//! the CLI. A reading whose value is absent, JSON `null`, or non-finite
+//! (including the Python logger's bare `NaN`/`Infinity` tokens, which the
+//! replay parser folds to NaN) becomes SQL `NULL` — NULL is what SQL
+//! aggregates and comparisons handle sanely; NaN is not.
 //!
 //! **Why lifetime aggregates are excluded.** Each logged reading carries
 //! HWiNFO's own `min`/`max`/`avg`, but those are extremes over HWiNFO's
@@ -30,8 +31,9 @@
 //!
 //! **Read-only guarantee.** `export` never writes state — in particular it
 //! never touches `watch.seq`. Its only write is the `--out` file, which is
-//! created or truncated; a mid-write failure exits 1 and may leave a partial
-//! file behind.
+//! created or truncated; an `--out` that aliases one of the selected input
+//! logs is refused (usage error) so the export can never destroy the history
+//! it reads. A mid-write failure exits 1 and may leave a partial file behind.
 //!
 //! **Timestamps are UTC instants.** The log line's original local offset
 //! (`raw_timestamp`) is not preserved as a column; convert in SQL
@@ -125,7 +127,8 @@ pub(crate) fn run(args: &ExportArgs) -> ExitCode {
     }
 
     // Window resolution — identical to `report` (the same flags, forms, and
-    // defaults; `until` defaulting to now is the test-determinism hook).
+    // defaults). `--until` defaults to now, which is time-dependent by nature;
+    // reproducible windows come from passing it explicitly, as every test does.
     let tz = jiff::tz::TimeZone::system();
     let until = match &args.until {
         Some(when) => match parse_when(when, &tz, DayEdge::End) {
@@ -160,6 +163,27 @@ pub(crate) fn run(args: &ExportArgs) -> ExitCode {
         ));
     }
 
+    // Select the input files BEFORE the output is opened: `--out` accepts any
+    // path, and create/truncate would otherwise destroy the very history being
+    // exported if it named (or aliased, via symlinks / `.`-segments / Windows
+    // case folding — canonicalize handles all three) a selected input log.
+    // Candidates exist on disk (candidate_files stats them), so both sides
+    // canonicalize; a candidate that fails to is unreadable and moot.
+    let files = digest::candidate_files(&log_dir, since, until, &tz);
+    if args.out.exists() {
+        if let Ok(out_canonical) = std::fs::canonicalize(&args.out) {
+            let aliases_input = files
+                .iter()
+                .any(|file| std::fs::canonicalize(file).is_ok_and(|c| c == out_canonical));
+            if aliases_input {
+                return usage(format!(
+                    "--out {} is one of the selected input logs; refusing to overwrite history",
+                    args.out.display()
+                ));
+            }
+        }
+    }
+
     // The output file is created (or truncated) before the scan so even a
     // zero-sample window leaves a valid schema-only file behind.
     let file = match File::create(&args.out) {
@@ -184,7 +208,6 @@ pub(crate) fn run(args: &ExportArgs) -> ExitCode {
     // the engine and aggregator. The window precheck lets replay drop
     // out-of-window lines cheaply; the post-parse filter below still covers
     // the lines that reach the full parse.
-    let files = digest::candidate_files(&log_dir, since, until, &tz);
     let mut source = ReplaySource::from_files(files).with_window(since, until);
     let mut samples: u64 = 0;
     while let Some(tick) = source.next_tick() {
@@ -278,13 +301,13 @@ impl<W: std::io::Write + Send> ParquetSink<W> {
         Ok(ParquetSink {
             writer: SerializedFileWriter::new(sink, schema, properties)?,
             rows_per_group,
-            timestamps: Vec::new(),
-            sensors: Vec::new(),
-            readings: Vec::new(),
-            types: Vec::new(),
-            values: Vec::new(),
-            value_defs: Vec::new(),
-            units: Vec::new(),
+            timestamps: Vec::with_capacity(rows_per_group),
+            sensors: Vec::with_capacity(rows_per_group),
+            readings: Vec::with_capacity(rows_per_group),
+            types: Vec::with_capacity(rows_per_group),
+            values: Vec::with_capacity(rows_per_group),
+            value_defs: Vec::with_capacity(rows_per_group),
+            units: Vec::with_capacity(rows_per_group),
             rows_written: 0,
         })
     }

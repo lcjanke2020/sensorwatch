@@ -564,3 +564,102 @@ fn config_is_ignored_when_log_dir_given() {
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     assert_eq!(rows(&out).len(), 10);
 }
+
+#[test]
+fn out_aliasing_an_input_log_is_refused_and_history_survives() {
+    let (dir, config) = full_fixture();
+    let target = dir.path().join("logs").join("sensors_2026-02-18.jsonl");
+
+    // Direct hit, and an alias through a `.` segment — canonicalization must
+    // catch both. Before the guard existed, this truncated the log to a
+    // 0-row parquet file and exited 0.
+    let direct = target.clone();
+    let dotted = dir
+        .path()
+        .join("logs")
+        .join(".")
+        .join("sensors_2026-02-18.jsonl");
+    for out in [&direct, &dotted] {
+        let output = sensorwatch(&[
+            "export",
+            "--config",
+            arg(&config),
+            FULL_WINDOW[0],
+            FULL_WINDOW[1],
+            FULL_WINDOW[2],
+            FULL_WINDOW[3],
+            "--out",
+            arg(out),
+        ]);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "aliased --out must be a usage error; stderr: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("refusing to overwrite history"),
+            "stderr: {}",
+            stderr(&output)
+        );
+    }
+    // The history is byte-identical — nothing was truncated.
+    assert_eq!(std::fs::read(&target).unwrap(), DAY1.as_bytes());
+
+    // An out-of-window log in the same directory is NOT a selected input, so
+    // writing over it is allowed (it is just a file the user owns).
+    let unselected = dir.path().join("logs").join("sensors_2020-01-01.jsonl");
+    std::fs::write(&unselected, b"old\n").unwrap();
+    let output = sensorwatch(&[
+        "export",
+        "--config",
+        arg(&config),
+        FULL_WINDOW[0],
+        FULL_WINDOW[1],
+        FULL_WINDOW[2],
+        FULL_WINDOW[3],
+        "--out",
+        arg(&unselected),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(rows(&unselected).len(), 16);
+}
+
+#[test]
+fn compound_and_bare_integer_last_forms_select_the_window() {
+    let (dir, config) = full_fixture();
+
+    // 90 minutes back from 09:00 covers all five day-1 samples (08:00:00 –
+    // 08:02:30), pinning the compound/minute duration form end to end.
+    let out = dir.path().join("ninety.parquet");
+    let output = sensorwatch(&[
+        "export",
+        "--config",
+        arg(&config),
+        "--until",
+        "2026-02-18T09:00:00-05:00",
+        "--last",
+        "90m",
+        "--out",
+        arg(&out),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(rows(&out).len(), 10);
+
+    // A bare integer is seconds: 3600 back from 09:00 is 08:00:00 exactly,
+    // and the since edge is inclusive — the same five samples.
+    let out = dir.path().join("bare.parquet");
+    let output = sensorwatch(&[
+        "export",
+        "--config",
+        arg(&config),
+        "--until",
+        "2026-02-18T09:00:00-05:00",
+        "--last",
+        "3600",
+        "--out",
+        arg(&out),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(rows(&out).len(), 10);
+}
