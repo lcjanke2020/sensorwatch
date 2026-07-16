@@ -10,18 +10,18 @@ One constraint shapes the sequencing: **the project must be usable at every
 intermediate stage.** Each milestone ships something you can run on its own —
 nothing below depends on a later phase to be useful.
 
-*Last updated: 2026-07-13.*
+*Last updated: 2026-07-16.*
 
 ## Where the project is today
 
 | Component | Status |
 |-----------|--------|
-| Python monitor + JSONL logger (`python -m sensorwatch`) | Shipped — [PyPI](https://pypi.org/project/sensorwatch/), prebuilt Windows wheels |
+| Python monitor + JSONL logger (`python -m sensorwatch`) — frozen reference implementation | Shipped — [PyPI](https://pypi.org/project/sensorwatch/), prebuilt Windows wheels (console script removed in 0.3.0) |
 | Native C core (bounds-checked parser, opaque-handle ABI) | Shipped — [`include/sensorwatch/sensorwatch.h`](include/sensorwatch/sensorwatch.h), spec in [`docs/C_ABI.md`](docs/C_ABI.md) |
 | Python binding (cffi, API mode) | Shipped — `sensorwatch.native` |
 | C++ binding (header-only, C++17 RAII) | Shipped — [`include/sensorwatch/sensorwatch.hpp`](include/sensorwatch/sensorwatch.hpp) |
 | Rust bindings (`-sys` crate + safe wrapper) | Shipped — [crates.io](https://crates.io/crates/sensorwatch), OIDC trusted publishing |
-| Rust CLI — `snapshot` + `log` + `watch` + `report` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), repo-only binary `sensorwatch` |
+| Rust CLI — `snapshot` + `log` + `watch` + `report` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), the canonical CLI (repo-built binary `sensorwatch`) |
 | CMake `install()` / `find_package(sensorwatch CONFIG)` export | Shipped |
 | Agent skill (portable Agent Skills bundle) | Shipped — [`skills/sensorwatch/`](skills/sensorwatch/) |
 | Agent monitor skill (wake-up protocol + durable state dir) | Shipped — [`skills/sensorwatch-monitor/`](skills/sensorwatch-monitor/) |
@@ -62,7 +62,7 @@ Each step ships independently:
 1. **`snapshot`** — *shipped* ([`rust/sensorwatch-cli`](rust/sensorwatch-cli/))
    — one-shot live readings as JSON, with type and substring filters. *Usable
    outcome:* instant health checks and shell scripting, replacing the skill's
-   bundled Python helper (kept as a no-toolchain fallback for now).
+   bundled Python helper (retired in the 0.3.0 docs handoff, LEO-342).
 2. **`log`** — *shipped* ([`rust/sensorwatch-cli`](rust/sensorwatch-cli/))
    — the logger loop, byte-compatible with the Python logger's JSONL output
    (a Python-generated golden fixture is byte-compared in the tests) so
@@ -98,8 +98,10 @@ Each step ships independently:
    platform. *Usable outcome:* one command answers "what happened in the last
    24 h" for humans and LLMs alike, on a fixed context budget.
 
-Phase 1 closes with a documentation pass making the Rust CLI canonical and the
-Python CLI explicitly legacy/reference.
+Phase 1 closed with the documentation handoff (LEO-342): the Rust CLI is
+canonical, the Python package is frozen as the reference implementation, and
+Python 0.3.0 dropped the `sensorwatch` console-script entry point (the module
+stays runnable via `python -m sensorwatch`).
 
 ## Phase 2 — the monitoring agent
 
@@ -203,12 +205,10 @@ earliest design discussions:
 Design decisions we have deliberately left open, in case you'd like to weigh in
 (issues and PRs welcome):
 
-- **Binary naming.** The Rust binary wants the `sensorwatch` name, which the
-  Python console script currently owns. The collision now exists in-tree — the
-  repo-built Rust binary already takes the name, though nothing installs it
-  onto `PATH` yet. Likely resolution: drop the Python entry point (the module
-  stays runnable via `python -m sensorwatch`); the alternative is a distinct
-  binary name. Decided with the Phase 1 docs handoff (LEO-342).
+- **Binary naming.** *Decided (shipped in LEO-342).* The Rust binary owns the
+  `sensorwatch` name: Python 0.3.0 dropped the console-script entry point, and
+  the module stays runnable via `python -m sensorwatch`. Installs of 0.2.0 or
+  earlier keep the old console script until upgraded.
 - **Notification transports.** *Decided (shipped in LEO-339).* The notify adapter
   routes channels per severity from a machine-local `notify.toml`. Built-in:
   **ntfy** (the zero-account default via hosted `ntfy.sh`; a long random topic is

@@ -1,11 +1,12 @@
 //! The `snapshot` subcommand: one-shot live readings as a JSON array.
 //!
-//! The output contract matches the agent skill's Python helper
-//! (`skills/sensorwatch/scripts/snapshot.py`): a JSON array of objects with
-//! keys `source, sensor, reading, type, value, min, max, avg, unit` in that
-//! order, Title-case `type` labels with `"unknown"` for unrecognized
-//! categories, and exit codes 0/1/2. One deliberate divergence: non-finite
-//! values serialize as `null` (valid JSON), where Python emits a bare `NaN`.
+//! The output contract: a JSON array of objects with keys `source, sensor,
+//! reading, type, value, min, max, avg, unit` in that order, Title-case `type`
+//! labels with `"unknown"` for unrecognized categories, and exit codes 0/1/2.
+//! (Inherited from the agent skill's retired Python snapshot helper, which
+//! this subcommand replaced — with one deliberate divergence: non-finite
+//! values serialize as `null`, valid JSON, where the helper emitted a bare
+//! `NaN`.)
 //!
 //! Filtering and rendering are pure functions over [`Reading`] values so they
 //! stay unit-testable off Windows; only [`collect_live`] touches a `Session`.

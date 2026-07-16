@@ -22,8 +22,9 @@ sensorwatch snapshot --indent 0             # compact single line (default 2, ma
 
 Each element has the keys `source, sensor, reading, type, value, min, max,
 avg, unit` — the same shape (and Title-case `type` labels) as the agent
-skill's Python helper, which this subcommand replaces. Non-finite values
-serialize as `null` (valid JSON; the Python helper printed bare `NaN`).
+skill's original Python helper, which this subcommand replaced (the helper
+was retired in the 0.3.0 docs handoff). Non-finite values serialize as
+`null` (valid JSON; the retired helper printed bare `NaN`).
 
 ### Exit codes
 

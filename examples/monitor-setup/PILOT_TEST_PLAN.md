@@ -11,8 +11,11 @@ and most run **without waiting for real hardware to misbehave**.
 Every command below runs **from this directory** (`examples/monitor-setup/`), so
 `config.toml` and fixture paths resolve as written and the helper scripts are
 reached as `../../skills/sensorwatch-monitor/scripts/*.py`. `sensorwatch` means
-the **Rust CLI** — use `../../rust/target/release/sensorwatch` (`.exe` on
-Windows) if the bare name resolves to the Python console script. `<state>` is
+the **Rust CLI** — the repo-built binary is not on `PATH` (and a stale Python
+install of 0.2.0 or earlier may still own the bare name), so alias it once per
+shell and the commands below paste as written:
+`alias sensorwatch=../../rust/target/release/sensorwatch` (append `.exe` under
+Git Bash on Windows). `<state>` is
 your monitor state directory — initialize it first with `init_state.py` (see the
 [worked-example README](README.md#3-run-the-monitor)). Commands use **POSIX
 shell** syntax (`\` line-continuation); run them in Git Bash or WSL, or adapt

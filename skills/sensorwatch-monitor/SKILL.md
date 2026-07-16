@@ -90,7 +90,9 @@ here). In prose:
 
 **Arm.** Run a blocking `watch` with a ~30-minute `--timeout` and
 `--spool-dir <state-dir>/spool/pending`, as a background task in a long-lived
-session or under the Phase 2 supervisor (LEO-340). The spool is the durable,
+session or under an unattended supervisor loop (the Phase 2 supervisor,
+LEO-340 — operator-side wiring that lives outside this repository; a public,
+copy-from equivalent is planned in LEO-458). The spool is the durable,
 at-least-once handoff: an event survives an agent that was not listening.
 **`watch` only ever *writes* the spool — it never replays it on re-arm.** So any
 events already in `spool/pending/` (a wake you missed, or a crash before ack) are
@@ -292,8 +294,9 @@ cursor keys off `seq`, never wall clock.
 per state directory** (the contract's single-watcher assumption). The helper
 scripts take no file locks — atomic writes keep any one file consistent, but
 concurrent invocations against one state dir are out of scope (e.g. two same-
-second notifies race on the outbox suffix). The supervisor (LEO-340) dispatches
-wake-ups serially.
+second notifies race on the outbox suffix). The supervisor (LEO-340; external
+operator-side wiring, not shipped in this repository) dispatches wake-ups
+serially.
 
 ## Escalation ladder
 
@@ -419,11 +422,12 @@ paths — never embed sensor data or code-heavy markdown:** say "see
 `incidents/open/psu-12v-sag.md` on the monitor host," do not paste readings.
 That keeps them public-repo-safe and ready to hand to any tracker.
 
-### Dead-man's switch (spec — wired in LEO-340)
+### Dead-man's switch (spec — implementation external, LEO-340)
 
-An on-box watchdog that alerts if the monitor itself goes silent. Specified here;
-**wired in LEO-340**. It shares **no failure mode** with the notify path it
-watches.
+An on-box watchdog that alerts if the monitor itself goes silent. Specified
+here; the LEO-340 wiring is operator-side and lives outside this repository
+(a public equivalent is planned in LEO-458). It shares **no failure mode**
+with the notify path it watches.
 
 - **Trigger.** A Windows Task Scheduler job runs a self-contained PowerShell
   one-shot every ~15 min. Parameters arrive as task arguments: `-StateDir`,

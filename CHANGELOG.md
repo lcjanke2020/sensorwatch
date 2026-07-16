@@ -15,9 +15,13 @@ release is listed under [Unreleased](#unreleased).
 
 ## [Unreleased]
 
-_Repository work on `master` since the `0.2.0` Python tag — the Rust CLI, the
-C++/Rust bindings, and the agent skills — is recorded here until the next Python
-release picks it up._
+_Repository work on `master` since the `0.3.0` Python tag is recorded here
+until the next Python release picks it up._
+
+## [0.3.0] - 2026-07-16
+
+_Rolls up all repository work on `master` since `0.2.0` — the Rust CLI, the
+C++/Rust bindings, and the agent skills — into a tagged Python release._
 
 ### Added
 
@@ -26,8 +30,8 @@ release picks it up._
   (2026-07-01, predating the tag flow), a provenance note in CONTRIBUTING's
   Rust-releasing section, and a new CONTRIBUTING **"Version streams"** section
   documenting the three deliberately independent version streams (Python
-  package `0.2.0` / C ABI draft `0.2.0` / Rust workspace `0.1.0` with
-  unreleased API awaiting the next crate release) and what publishing the
+  package `0.3.0` as of this release / C ABI draft `0.2.0` / Rust workspace
+  `0.1.0` with unreleased API awaiting the next crate release) and what publishing the
   repo-only CLI crate would take (a `version` on its path-only dependency —
   the one `cargo package` blocker — plus flipping `publish = false`, plus
   in-crate copies of the two test resources `rust/sensorwatch-cli/src/e2e.rs`
@@ -89,6 +93,23 @@ release picks it up._
   committed seed corpus. The `sensorwatch-cli` crate gains a thin library target so
   the fuzz harness can reach the replay parser (`main` is now a shim over it).
 
+### Changed
+
+- **Docs handoff (LEO-342)** — the Rust CLI is the canonical `sensorwatch`
+  interface and the Python package is frozen as the reference implementation;
+  README, ROADMAP, CONTRIBUTING, and the agent skills updated accordingly
+  (including Windows-native command forms for the live-read examples).
+
+### Removed
+
+- The **`sensorwatch` console-script entry point** — the Rust CLI binary owns
+  the `sensorwatch` name now; the Python logger stays runnable via
+  `python -m sensorwatch`. Installs of 0.2.0 or earlier keep their old console
+  script until upgraded.
+- The agent skill's bundled **`scripts/snapshot.py`** helper — the Rust CLI's
+  `snapshot` subcommand is the sanctioned one-shot read (same JSON shape; emits
+  valid-JSON `null` where the helper printed bare `NaN`).
+
 ### Fixed
 
 - `sw_snapshot_take()` (and the parser behind `sw_snapshot_from_buffer()`) now
@@ -124,7 +145,8 @@ release picks it up._
   substring include/exclude sensor filtering, configurable retention, and
   graceful shutdown on Ctrl+C / signals.
 
-[Unreleased]: https://github.com/lcjanke2020/sensorwatch/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/lcjanke2020/sensorwatch/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/lcjanke2020/sensorwatch/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lcjanke2020/sensorwatch/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/lcjanke2020/sensorwatch/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/lcjanke2020/sensorwatch/releases/tag/v0.1.0
