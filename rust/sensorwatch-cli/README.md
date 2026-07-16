@@ -268,6 +268,72 @@ readable, and it never writes state (in particular it never touches
 | 1 | Fatal: an existing config could not be read — message on stderr |
 | 2 | Usage error: invalid `[[rules]]`, a bad `--since`/`--until`/`--last` value, `since` after `until`, or a `--max-bytes`/`--indent` combination too small to fit even the meta-only digest |
 
+## `export`
+
+Materialize a window of logged history as a flat Apache Parquet file — the
+**deep-analysis** complement to `report`. The digest stays the first-line,
+bounded surface; `export` is for the per-sample questions the aggregate-only
+digest deliberately cannot answer ("at what minute did the GPU peak?",
+"correlate fan RPM against temperature"). The file is **one row per reading per
+sample**, Snappy-compressed, and is queried on the consumer side with any
+Parquet reader — [DuckDB](https://duckdb.org/), Polars, pandas — sensorwatch
+itself gains no query engine and runs no service:
+
+```sh
+sensorwatch export --last 24h --out sensors.parquet
+sensorwatch export --since 2026-02-18 --until 2026-02-19 --out feb18.parquet
+sensorwatch export --log-dir ./logs --last 6h -o six-hours.parquet
+```
+
+Flags: `--out/-o <PATH>` (required; created, or **truncated** if it already
+exists — no overwrite prompt; if a mid-write failure exits 1, a partial file may
+remain); `--config/-c` (supplies **only** `log_dir` — `[[rules]]` and
+`interval_seconds` are never read, and the config is not consulted at all when
+`--log-dir` is given); `--since`/`--until`/`--last` (the same forms and defaults
+as `report`); `--log-dir <PATH>` (override the config's); `--verbose/-v`.
+
+**Schema** (fixed, six columns):
+
+| Column | Parquet type | Notes |
+|--------|--------------|-------|
+| `timestamp` | `INT64` · `TIMESTAMP(MICROS, adjusted-to-UTC)` | The sample instant. DuckDB surfaces it as `TIMESTAMP WITH TIME ZONE`. The log line's original local offset is **not** preserved — convert in SQL (`timestamp AT TIME ZONE ...`) for local wall-clock questions. |
+| `sensor`, `reading`, `type`, `unit` | `BYTE_ARRAY` · `STRING` (dictionary-encoded) | `type` is the canonical Title-case label the CLI uses everywhere (`Voltage`, `Temperature`, …). |
+| `value` | `DOUBLE`, nullable | An absent, JSON-`null`, or non-finite reading becomes SQL `NULL` — what aggregates and comparisons handle sanely. |
+
+`export` streams through the same bounded, lenient replay parser as `report`
+(malformed and oversized lines are skipped and counted), writes fixed-size row
+groups so memory stays bounded no matter the window, and always prints a
+one-line summary to stderr — rows, samples, files scanned, and **skipped
+lines**, the data-integrity signal:
+
+```
+sensorwatch export: wrote 17280 rows from 8640 samples (2 files scanned, 0 skipped lines) to sensors.parquet
+```
+
+HWiNFO's source-lifetime `min`/`max`/`avg` are deliberately **not** exported —
+they are wrong for any window (the same reason `report` ignores them), and
+window aggregates are one `GROUP BY` away. Like `report`, `export` is pure file
+reading: any OS, no live source, never writes state (never touches
+`watch.seq`).
+
+**Query it with DuckDB:**
+
+```sql
+SELECT timestamp, value
+FROM read_parquet('sensors.parquet')
+WHERE sensor = 'MEG Ai1600T' AND reading = '+12V'
+ORDER BY value ASC
+LIMIT 5;   -- "when did the rail sag lowest?"
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | An export was written — including a zero-row window, which yields a valid schema-only file (the dead-logger signal) |
+| 1 | Fatal: an existing config could not be read, or the output file could not be created or written — message on stderr (a partial `--out` may remain) |
+| 2 | Usage error: a bad `--since`/`--until`/`--last` value, `since` after `until`, a syntactically malformed config, or a missing `--out` |
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

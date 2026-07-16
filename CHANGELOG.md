@@ -18,6 +18,28 @@ release is listed under [Unreleased](#unreleased).
 _Repository work on `master` since the `0.3.0` Python tag is recorded here
 until the next Python release picks it up._
 
+### Added
+
+- **`sensorwatch export`** (LEO-349) — new Rust CLI subcommand that streams a
+  `--since`/`--until`/`--last` window of `sensors_*.jsonl` through the same
+  bounded lenient replay parser as `report` and writes a flat
+  one-row-per-reading-per-sample Apache Parquet file (Snappy): `timestamp`
+  (TIMESTAMP micros, UTC), `sensor`, `reading`, `type`, `unit` (STRING), and
+  `value` (nullable DOUBLE — absent/null/non-finite readings become SQL NULL;
+  HWiNFO's source-lifetime min/max/avg are deliberately excluded). The
+  sanctioned **deep-analysis** surface for per-sample SQL with DuckDB / Polars
+  / pandas on the consumer side; `report` stays the first-line bounded digest.
+  The usage skill gains a matching "deep analysis" recipe (Recipe 5),
+  resolving Recipe 4's standing "sanctioned SQL surface" design note.
+
+### Changed
+
+- **Rust workspace MSRV: 1.82 → 1.85** (LEO-349) — required by the `parquet`
+  crate (59.x, an edition-2024 dependency tree; built with default features
+  off, so no arrow stack). The clap (`<4.5.58`) and toml (`<0.9`) caps in
+  `sensorwatch-cli` are unchanged but now liftable in a future dedicated
+  bump, since Rust 1.85 parses edition 2024.
+
 ## [0.3.0] - 2026-07-16
 
 _Rolls up all repository work on `master` since `0.2.0` — the Rust CLI, the

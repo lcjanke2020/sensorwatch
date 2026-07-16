@@ -17,9 +17,10 @@ license: MIT
 [sensorwatch](https://github.com/lcjanke2020/sensorwatch) is a lightweight
 hardware-sensor monitor for Windows. It reads HWiNFO64's shared-memory feed and
 exposes every sensor HWiNFO sees — temperatures, voltages, currents, power, fan
-speeds, clocks, and usage. This skill covers the four things an agent typically
+speeds, clocks, and usage. This skill covers the five things an agent typically
 wants: **read the current state now**, **collect history**, **watch for alert
-events**, and **analyze the logs**.
+events**, **analyze the logs**, and — when aggregates aren't enough — **run
+deep analysis over a Parquet export**.
 
 > **Read-only.** sensorwatch only *reads* hardware data and *writes* local log
 > files — it never controls hardware and opens no network listeners. Do not make
@@ -312,13 +313,63 @@ or a trailing entry in `gaps`, means the feed has stalled.
 individual samples — so per-sample questions ("at what minute did the GPU peak?",
 "plot the +12V rail across yesterday") are **out of protocol on purpose**: the
 whole point is a fixed, small context budget. Do not fall back to hand-parsing
-the raw logs to answer them. A future `report` capability (a per-series
-bucket/sparkline flag, or a sanctioned SQL surface) will widen this when needed.
+the raw logs to answer them. When a per-sample question genuinely needs
+answering, use the sanctioned deep-analysis path instead:
+[Recipe 5](#recipe-5--deep-analysis-per-sample-sql-over-a-parquet-export).
 
 For a full **human** offline analysis (efficiency study, Polars + DuckDB
 queries, charts over a curated flat export), see
 [`examples/psu-efficiency/`](../../examples/psu-efficiency/) — a worked example,
 not the logger's output format.
+
+## Recipe 5 — Deep analysis (per-sample SQL over a Parquet export)
+
+`report` (Recipe 4) is always the first-line surface. Reach for deep analysis
+only when a question genuinely needs individual samples — "at what minute did
+the GPU peak?", "correlate fan RPM against temperature" — and the digest's
+window aggregates cannot answer it.
+
+`sensorwatch export` materializes a window as a flat Parquet file (Snappy) —
+**one row per reading per sample**, six fixed columns: `timestamp` (TIMESTAMP,
+microseconds, UTC), `sensor`, `reading`, `type`, `unit` (strings; `type` is the
+canonical Title-case label), and `value` (nullable DOUBLE — absent, `null`, and
+non-finite readings are SQL `NULL`). It shares `report`'s window flags:
+
+```powershell
+.\rust\target\release\sensorwatch.exe export --last 24h --out sensors.parquet
+```
+
+Query it with [DuckDB](https://duckdb.org/) (or Polars/pandas — any Parquet
+reader; sensorwatch itself runs no SQL):
+
+```sh
+duckdb -c "
+SELECT date_trunc('minute', timestamp) AS minute, max(value) AS max_c
+FROM read_parquet('sensors.parquet')
+WHERE type = 'Temperature' AND reading = 'GPU Hot Spot'
+GROUP BY minute ORDER BY max_c DESC LIMIT 5;"
+```
+
+**Protocol guardrails — this stays bounded:**
+
+- `report` first; `export` + SQL only when per-sample analysis is genuinely
+  needed. Deep analysis is not the default history path.
+- **Never** read the Parquet file — or the raw `sensors_*.jsonl` — into
+  context. Only bounded *query results* enter context: every query aggregates
+  and/or carries a `LIMIT`.
+- Timestamps are UTC instants; the log's original local offset is not
+  preserved. Convert in SQL (`timestamp AT TIME ZONE ...`) when a question is
+  about local wall-clock time.
+- `export` is read-only over the logs and reuses `report`'s tolerant parser:
+  malformed and oversized lines are skipped and counted in the one-line stderr
+  summary — a non-zero skipped count is a data-integrity signal, not noise.
+- HWiNFO's source-lifetime `min`/`max`/`avg` are not in the export (wrong for
+  any window — the same reason `report` ignores them); window aggregates are
+  one `GROUP BY` away.
+
+`export` is pure file reading like `report` — it works on any OS wherever the
+logs are readable, including over a recorded fixture with `--log-dir` (see the
+[replay demo](../../examples/demo/) for a no-hardware dataset to try it on).
 
 ## Other language surfaces
 

@@ -66,10 +66,13 @@ guards): [`examples/demo/`](examples/demo/).
   JSON with type and substring filters, a `log` subcommand (alias `run`) that
   replaces the Python logger loop with a single static binary (byte-compatible
   output included), a `watch` subcommand that evaluates declarative `[[rules]]`
-  and emits structured JSON events for deterministic alerting, and a `report`
+  and emits structured JSON events for deterministic alerting, a `report`
   subcommand that condenses logged history into a bounded JSON digest — window
   aggregates, re-derived violations, and sampling gaps under a hard size cap —
-  for humans and LLMs alike (see [Rust binding](#rust-binding)).
+  for humans and LLMs alike, and an `export` subcommand that materializes a
+  time window as a flat Apache Parquet file, the deep-analysis surface for
+  per-sample SQL with DuckDB/Polars/pandas on the consumer side (see
+  [Rust binding](#rust-binding)).
 - **Agent monitor skill** (`skills/sensorwatch-monitor/`) — teaches an agent to
   *be* the always-on monitor: arm `watch` as a wake-up primitive, triage its
   events on a fixed context budget, and keep durable ack / incident / escalation
@@ -85,6 +88,9 @@ Requirements depend on what you're doing:
 - [Rust](https://rustup.rs/) 1.85+ (the CI MSRV) and a C compiler for the
   vendored native core — `cc`/`clang` on Linux/macOS, the MSVC Build Tools on
   Windows.
+- To *query* a `sensorwatch export` Parquet file: any Parquet reader —
+  [DuckDB](https://duckdb.org/), Polars, pandas — on the consumer side.
+  sensorwatch itself gains no runtime dependency from this.
 
 **To install and run the Python package / logger:**
 
@@ -214,6 +220,23 @@ zero-sample digest the "logger is dead" signal in a single call; and
 `--max-bytes` guarantees the output fits an agent's context budget. Full flag
 tour and the digest schema:
 [rust/sensorwatch-cli/README.md](rust/sensorwatch-cli/README.md#report).
+
+When aggregates aren't enough, `export` materializes a window as a flat Apache
+Parquet file — one row per reading per sample — for **deep analysis** with any
+SQL engine:
+
+```sh
+# Materialize the last 24 h, then ask a per-sample question with DuckDB
+./target/release/sensorwatch export --last 24h --out sensors.parquet
+duckdb -c "SELECT reading, max(value) FROM read_parquet('sensors.parquet')
+           WHERE type = 'Temperature' GROUP BY reading LIMIT 10"
+```
+
+Six fixed columns (`timestamp` in UTC microseconds, `sensor`, `reading`,
+`type`, `unit`, nullable `value`), streamed through the same bounded parser as
+`report`. The digest remains the first-line surface — reach for `export` only
+when a question genuinely needs individual samples. Schema and flags:
+[rust/sensorwatch-cli/README.md](rust/sensorwatch-cli/README.md#export).
 
 ## Running from WSL-2
 

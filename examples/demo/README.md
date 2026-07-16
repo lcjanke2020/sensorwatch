@@ -111,6 +111,20 @@ Change a number in [`demo.toml`](demo.toml) or add a line to
 - **Analyze recorded history** instead of alerting on it:
   `sensorwatch report --last 24h` condenses a log directory into one
   size-bounded digest (see the [CLI README](../../rust/sensorwatch-cli/README.md#report)).
+- **Ask a per-sample question** — stage the recording under the daily-file
+  name the exporter scans for, export it as Parquet, and query it with
+  [DuckDB](https://duckdb.org/) (the pinned `-05:00` window matches the
+  recording's timestamps in any local time zone):
+
+  ```sh
+  mkdir -p demo-logs && cp sensors_demo.jsonl demo-logs/sensors_2026-02-18.jsonl
+  ../../rust/target/release/sensorwatch export --log-dir demo-logs \
+    --since 2026-02-18T00:00:00-05:00 --until 2026-02-19T00:00:00-05:00 \
+    --out demo.parquet
+  duckdb -c "SELECT timestamp, value FROM read_parquet('demo.parquet') ORDER BY value LIMIT 3"
+  ```
+
+  (schema and flags: [CLI README → export](../../rust/sensorwatch-cli/README.md#export))
 - **Run it for real** on Windows with HWiNFO64 — drop `--replay` and `watch`
   reads live sensors (see the top-level [README](../../README.md#usage)).
 - **Make an agent the monitor** — the
