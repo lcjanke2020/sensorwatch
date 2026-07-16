@@ -5,8 +5,9 @@ description: >-
   currents, power, clocks, usage) from a Windows PC with sensorwatch — query the
   current state through its Python/C/C++ API, run the CLI logger to collect
   history as JSON Lines, watch declarative alert rules and dispatch on the
-  structured JSON events they emit, and analyze the logged data. Use when an
-  agent needs the current hardware state, deterministic hardware alerting, or
+  structured JSON events they emit, analyze the logged data, and export time
+  windows as Parquet for consumer-side SQL deep analysis. Use when an agent
+  needs the current hardware state, deterministic hardware alerting, or
   historical sensor trends, on a Windows machine running HWiNFO64 with Shared
   Memory Support enabled.
 license: MIT
@@ -330,13 +331,15 @@ the GPU peak?", "correlate fan RPM against temperature" — and the digest's
 window aggregates cannot answer it.
 
 `sensorwatch export` materializes a window as a flat Parquet file (Snappy) —
-**one row per reading per sample**, six fixed columns: `timestamp` (TIMESTAMP,
-microseconds, UTC), `sensor`, `reading`, `type`, `unit` (strings; `type` is the
-canonical Title-case label), and `value` (nullable DOUBLE — absent, `null`, and
-non-finite readings are SQL `NULL`). It shares `report`'s window flags:
+**one row per reading per sample**, six fixed columns in file order:
+`timestamp` (TIMESTAMP, microseconds, UTC), `sensor`, `reading`, `type`
+(strings; `type` is the canonical Title-case label), `value` (nullable DOUBLE —
+absent, `null`, and non-finite readings are SQL `NULL`), and `unit` (string).
+It shares `report`'s window flags. Use the built Rust binary path, as in
+Recipes 1–4:
 
-```powershell
-.\rust\target\release\sensorwatch.exe export --last 24h --out sensors.parquet
+```sh
+./target/release/sensorwatch export --last 24h --out sensors.parquet
 ```
 
 Query it with [DuckDB](https://duckdb.org/) (or Polars/pandas — any Parquet

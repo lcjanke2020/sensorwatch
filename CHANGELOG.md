@@ -23,10 +23,12 @@ until the next Python release picks it up._
 - **`sensorwatch export`** (LEO-349) — new Rust CLI subcommand that streams a
   `--since`/`--until`/`--last` window of `sensors_*.jsonl` through the same
   bounded lenient replay parser as `report` and writes a flat
-  one-row-per-reading-per-sample Apache Parquet file (Snappy): `timestamp`
-  (TIMESTAMP micros, UTC), `sensor`, `reading`, `type`, `unit` (STRING), and
-  `value` (nullable DOUBLE — absent/null/non-finite readings become SQL NULL;
-  HWiNFO's source-lifetime min/max/avg are deliberately excluded). The
+  one-row-per-reading-per-sample Apache Parquet file (Snappy), columns in file
+  order: `timestamp` (TIMESTAMP micros, UTC), `sensor`, `reading`, `type`
+  (STRING), `value` (nullable DOUBLE — absent/null/non-finite readings become
+  SQL NULL), `unit` (STRING); HWiNFO's source-lifetime min/max/avg are
+  deliberately excluded. An `--out` that names a selected input log is refused
+  (usage error), so an export can never overwrite the history it reads. The
   sanctioned **deep-analysis** surface for per-sample SQL with DuckDB / Polars
   / pandas on the consumer side; `report` stays the first-line bounded digest.
   The usage skill gains a matching "deep analysis" recipe (Recipe 5),

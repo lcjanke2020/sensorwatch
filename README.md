@@ -232,9 +232,9 @@ duckdb -c "SELECT reading, max(value) FROM read_parquet('sensors.parquet')
            WHERE type = 'Temperature' GROUP BY reading LIMIT 10"
 ```
 
-Six fixed columns (`timestamp` in UTC microseconds, `sensor`, `reading`,
-`type`, `unit`, nullable `value`), streamed through the same bounded parser as
-`report`. The digest remains the first-line surface — reach for `export` only
+Six fixed columns in file order (`timestamp` in UTC microseconds, `sensor`,
+`reading`, `type`, nullable `value`, `unit`), streamed through the same bounded
+parser as `report`. The digest remains the first-line surface — reach for `export` only
 when a question genuinely needs individual samples. Schema and flags:
 [rust/sensorwatch-cli/README.md](rust/sensorwatch-cli/README.md#export).
 

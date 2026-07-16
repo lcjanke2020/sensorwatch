@@ -286,19 +286,22 @@ sensorwatch export --log-dir ./logs --last 6h -o six-hours.parquet
 ```
 
 Flags: `--out/-o <PATH>` (required; created, or **truncated** if it already
-exists — no overwrite prompt; if a mid-write failure exits 1, a partial file may
-remain); `--config/-c` (supplies **only** `log_dir` — `[[rules]]` and
+exists — no overwrite prompt, and if a mid-write failure exits 1 a partial file
+may remain; the one refusal: an `--out` that names or aliases a **selected
+input log** is a usage error, so the export can never destroy the history it
+reads); `--config/-c` (supplies **only** `log_dir` — `[[rules]]` and
 `interval_seconds` are never read, and the config is not consulted at all when
 `--log-dir` is given); `--since`/`--until`/`--last` (the same forms and defaults
 as `report`); `--log-dir <PATH>` (override the config's); `--verbose/-v`.
 
-**Schema** (fixed, six columns):
+**Schema** (fixed — the rows below are the file's column order):
 
-| Column | Parquet type | Notes |
-|--------|--------------|-------|
-| `timestamp` | `INT64` · `TIMESTAMP(MICROS, adjusted-to-UTC)` | The sample instant. DuckDB surfaces it as `TIMESTAMP WITH TIME ZONE`. The log line's original local offset is **not** preserved — convert in SQL (`timestamp AT TIME ZONE ...`) for local wall-clock questions. |
-| `sensor`, `reading`, `type`, `unit` | `BYTE_ARRAY` · `STRING` (dictionary-encoded) | `type` is the canonical Title-case label the CLI uses everywhere (`Voltage`, `Temperature`, …). |
-| `value` | `DOUBLE`, nullable | An absent, JSON-`null`, or non-finite reading becomes SQL `NULL` — what aggregates and comparisons handle sanely. |
+| # | Column | Parquet type | Notes |
+|---|--------|--------------|-------|
+| 1 | `timestamp` | `INT64` · `TIMESTAMP(MICROS, adjusted-to-UTC)` | The sample instant. DuckDB surfaces it as `TIMESTAMP WITH TIME ZONE`. The log line's original local offset is **not** preserved — convert in SQL (`timestamp AT TIME ZONE ...`) for local wall-clock questions. |
+| 2–4 | `sensor`, `reading`, `type` | `BYTE_ARRAY` · `STRING` (dictionary-encoded) | `type` is the canonical Title-case label the CLI uses everywhere (`Voltage`, `Temperature`, …). |
+| 5 | `value` | `DOUBLE`, nullable | An absent, JSON-`null`, or non-finite reading becomes SQL `NULL` — what aggregates and comparisons handle sanely. |
+| 6 | `unit` | `BYTE_ARRAY` · `STRING` (dictionary-encoded) | The reading's unit as logged (`V`, `°C`, …); may be empty. |
 
 `export` streams through the same bounded, lenient replay parser as `report`
 (malformed and oversized lines are skipped and counted), writes fixed-size row
@@ -332,7 +335,7 @@ LIMIT 5;   -- "when did the rail sag lowest?"
 |------|---------|
 | 0 | An export was written — including a zero-row window, which yields a valid schema-only file (the dead-logger signal) |
 | 1 | Fatal: an existing config could not be read, or the output file could not be created or written — message on stderr (a partial `--out` may remain) |
-| 2 | Usage error: a bad `--since`/`--until`/`--last` value, `since` after `until`, a syntactically malformed config, or a missing `--out` |
+| 2 | Usage error: a bad `--since`/`--until`/`--last` value, `since` after `until`, a syntactically malformed config, a missing `--out`, or an `--out` naming a selected input log |
 
 ## License
 
