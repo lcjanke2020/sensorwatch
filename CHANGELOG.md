@@ -27,8 +27,10 @@ until the next Python release picks it up._
   order: `timestamp` (TIMESTAMP micros, UTC), `sensor`, `reading`, `type`
   (STRING), `value` (nullable DOUBLE — absent/null/non-finite readings become
   SQL NULL), `unit` (STRING); HWiNFO's source-lifetime min/max/avg are
-  deliberately excluded. An `--out` that names a selected input log is refused
-  (usage error), so an export can never overwrite the history it reads. The
+  deliberately excluded. An `--out` that names or aliases a selected input log
+  is refused (usage error; path aliases are detected on every platform, hard
+  links additionally on Unix), so an export can never overwrite the history it
+  reads. The
   sanctioned **deep-analysis** surface for per-sample SQL with DuckDB / Polars
   / pandas on the consumer side; `report` stays the first-line bounded digest.
   The usage skill gains a matching "deep analysis" recipe (Recipe 5),

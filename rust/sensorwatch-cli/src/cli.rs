@@ -88,7 +88,8 @@ pub enum Command {
     /// Streams through the same bounded lenient parser as `report` (malformed
     /// and oversized lines are skipped and counted); memory stays bounded via
     /// fixed-size row groups. `--out` is created or truncated — but an --out
-    /// that aliases a selected input log is refused, so the export can never
+    /// that aliases a selected input log is refused (by path everywhere; by
+    /// file identity, catching hard links, on Unix), so the export can never
     /// destroy the history it reads. Read-only over the logs; never touches
     /// `watch.seq`. Pure file reading — works on any platform.
     ///

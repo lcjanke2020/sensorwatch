@@ -32,8 +32,15 @@
 //! **Read-only guarantee.** `export` never writes state — in particular it
 //! never touches `watch.seq`. Its only write is the `--out` file, which is
 //! created or truncated; an `--out` that aliases one of the selected input
-//! logs is refused (usage error) so the export can never destroy the history
-//! it reads. A mid-write failure exits 1 and may leave a partial file behind.
+//! logs — by path (symlinks, `.`/`..` segments, Windows case folding) or, on
+//! Unix, by file identity (hard links share an inode but canonicalize to two
+//! different paths) — is refused (usage error) so the export can never
+//! destroy the history it reads. The output is opened without truncation and
+//! truncated only after the guard passes, through the same handle, so the
+//! file that was checked is the file that gets truncated. std has no stable
+//! Windows file-identity API, so an NTFS hard link to a log is the one alias
+//! the Windows check misses. A mid-write failure exits 1 and may leave a
+//! partial file behind.
 //!
 //! **Timestamps are UTC instants.** The log line's original local offset
 //! (`raw_timestamp`) is not preserved as a column; convert in SQL
@@ -165,28 +172,21 @@ pub(crate) fn run(args: &ExportArgs) -> ExitCode {
 
     // Select the input files BEFORE the output is opened: `--out` accepts any
     // path, and create/truncate would otherwise destroy the very history being
-    // exported if it named (or aliased, via symlinks / `.`-segments / Windows
-    // case folding — canonicalize handles all three) a selected input log.
-    // Candidates exist on disk (candidate_files stats them), so both sides
-    // canonicalize; a candidate that fails to is unreadable and moot.
+    // exported if it named (or aliased) a selected input log.
     let files = digest::candidate_files(&log_dir, since, until, &tz);
-    if args.out.exists() {
-        if let Ok(out_canonical) = std::fs::canonicalize(&args.out) {
-            let aliases_input = files
-                .iter()
-                .any(|file| std::fs::canonicalize(file).is_ok_and(|c| c == out_canonical));
-            if aliases_input {
-                return usage(format!(
-                    "--out {} is one of the selected input logs; refusing to overwrite history",
-                    args.out.display()
-                ));
-            }
-        }
-    }
 
-    // The output file is created (or truncated) before the scan so even a
-    // zero-sample window leaves a valid schema-only file behind.
-    let file = match File::create(&args.out) {
+    // Open the output WITHOUT truncating, then let the alias guard judge the
+    // opened handle itself. Only a pre-existing file can alias an input (a
+    // freshly created one has a fresh identity and a fresh canonical path), a
+    // refused output is left exactly as it was found, and truncating through
+    // the validated handle — not by reopening the path — means the file that
+    // was checked is the file that gets truncated.
+    let file = match File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&args.out)
+    {
         Ok(file) => file,
         Err(err) => {
             eprintln!(
@@ -196,6 +196,21 @@ pub(crate) fn run(args: &ExportArgs) -> ExitCode {
             return ExitCode::from(exit::FATAL);
         }
     };
+    if aliases_selected_input(&file, &args.out, &files) {
+        return usage(format!(
+            "--out {} is one of the selected input logs; refusing to overwrite history",
+            args.out.display()
+        ));
+    }
+    // Truncate now that the handle is validated — even a zero-sample window
+    // leaves a valid schema-only file behind.
+    if let Err(err) = file.set_len(0) {
+        eprintln!(
+            "sensorwatch export: cannot truncate {}: {err}",
+            args.out.display()
+        );
+        return ExitCode::from(exit::FATAL);
+    }
     let mut sink = match ParquetSink::new(file) {
         Ok(sink) => sink,
         Err(err) => {
@@ -260,6 +275,46 @@ pub(crate) fn run(args: &ExportArgs) -> ExitCode {
 fn usage(message: impl AsRef<str>) -> ExitCode {
     eprintln!("sensorwatch export: {}", message.as_ref());
     ExitCode::from(exit::USAGE)
+}
+
+/// True when the already-open (and not yet truncated) output is one of the
+/// selected input logs. Two alias mechanisms are checked: canonical-path
+/// equality — symlinks, `.`/`..` segments, Windows case folding — and, on
+/// Unix, the opened handle's file identity (`st_dev`, `st_ino`), which also
+/// catches hard links, where two directory entries share an inode but
+/// canonicalize to two different paths. std exposes no stable Windows
+/// file-identity API (`MetadataExt::file_index` is nightly-only), so Windows
+/// keeps the path check alone. Candidates exist on disk (`candidate_files`
+/// stats them), so both sides canonicalize; a candidate that fails to is
+/// unreadable and moot.
+fn aliases_selected_input(out: &File, out_path: &std::path::Path, inputs: &[PathBuf]) -> bool {
+    let out_canonical = std::fs::canonicalize(out_path).ok();
+    #[cfg(unix)]
+    let out_id = {
+        use std::os::unix::fs::MetadataExt;
+        out.metadata().ok().map(|meta| (meta.dev(), meta.ino()))
+    };
+    #[cfg(not(unix))]
+    let _ = out;
+    inputs.iter().any(|input| {
+        if let (Some(out_canonical), Ok(input_canonical)) =
+            (out_canonical.as_ref(), std::fs::canonicalize(input))
+        {
+            if *out_canonical == input_canonical {
+                return true;
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let (Some(out_id), Ok(meta)) = (out_id, std::fs::metadata(input)) {
+                if out_id == (meta.dev(), meta.ino()) {
+                    return true;
+                }
+            }
+        }
+        false
+    })
 }
 
 /// A columnar sink over [`SerializedFileWriter`]: buffers up to

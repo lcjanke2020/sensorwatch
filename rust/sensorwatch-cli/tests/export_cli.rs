@@ -625,6 +625,45 @@ fn out_aliasing_an_input_log_is_refused_and_history_survives() {
     assert_eq!(rows(&unselected).len(), 16);
 }
 
+/// A hard link shares the input's inode but canonicalizes to a different
+/// path, so a path-based guard alone misses it: before the identity check,
+/// this truncated both directory entries (the same file) and exited 0. On
+/// Unix the guard now compares (st_dev, st_ino) through the opened handle.
+#[cfg(unix)]
+#[test]
+fn out_hardlinked_to_an_input_log_is_refused_and_history_survives() {
+    let (dir, config) = full_fixture();
+    let target = dir.path().join("logs").join("sensors_2026-02-18.jsonl");
+    let hard = dir.path().join("hard.jsonl");
+    std::fs::hard_link(&target, &hard).unwrap();
+
+    let output = sensorwatch(&[
+        "export",
+        "--config",
+        arg(&config),
+        FULL_WINDOW[0],
+        FULL_WINDOW[1],
+        FULL_WINDOW[2],
+        FULL_WINDOW[3],
+        "--out",
+        arg(&hard),
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "hard-linked --out must be a usage error; stderr: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("refusing to overwrite history"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    // Both directory entries still hold the untouched history.
+    assert_eq!(std::fs::read(&target).unwrap(), DAY1.as_bytes());
+    assert_eq!(std::fs::read(&hard).unwrap(), DAY1.as_bytes());
+}
+
 #[test]
 fn compound_and_bare_integer_last_forms_select_the_window() {
     let (dir, config) = full_fixture();
