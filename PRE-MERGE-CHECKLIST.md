@@ -72,7 +72,7 @@ Only when the PR touches versions, dependencies, or packaged files:
       ([CONTRIBUTING → Releasing](CONTRIBUTING.md#releasing) has the exact
       commands).
 - [ ] New dependencies are justified in the PR description and respect the
-      dependency-light principle and the Rust MSRV (1.82).
+      dependency-light principle and the Rust MSRV (1.85).
 
 ## 4. Public-repo hygiene
 

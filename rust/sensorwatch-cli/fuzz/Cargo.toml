@@ -15,7 +15,7 @@ path = ".."
 
 # An empty [workspace] table makes this crate its own workspace root, detaching
 # it from the parent rust/ workspace. That keeps the nightly-only fuzz deps out
-# of the workspace Cargo.lock and out of the MSRV (1.82) / publish jobs — the
+# of the workspace Cargo.lock and out of the MSRV (1.85) / publish jobs — the
 # fuzz crate is never built by `cargo build --workspace`.
 [workspace]
 

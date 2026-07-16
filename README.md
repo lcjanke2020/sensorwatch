@@ -82,7 +82,7 @@ Requirements depend on what you're doing:
 
 **To try the replay demo (any OS) — no hardware:**
 
-- [Rust](https://rustup.rs/) 1.82+ (the CI MSRV) and a C compiler for the
+- [Rust](https://rustup.rs/) 1.85+ (the CI MSRV) and a C compiler for the
   vendored native core — `cc`/`clang` on Linux/macOS, the MSVC Build Tools on
   Windows.
 

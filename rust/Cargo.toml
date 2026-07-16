@@ -12,6 +12,8 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/lcjanke2020/sensorwatch"
 authors = ["Leonard Janke"]
-# bindgen emits `unsafe extern "C"` blocks (stabilized in Rust 1.82), so that is
-# the effective floor for the -sys crate and hence the workspace.
-rust-version = "1.82"
+# The floor is the parquet crate (59.x, an edition-2024 dependency tree, requires
+# Rust 1.85) pulled in by the CLI's `export` subcommand (LEO-349). Before that the
+# floor was 1.82 for bindgen's `unsafe extern "C"` blocks, which is no longer the
+# binding constraint.
+rust-version = "1.85"
