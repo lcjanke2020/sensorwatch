@@ -11,7 +11,7 @@
  * the DLL. The flat extern "C" ABI stays the boundary; this wrapper only *calls*
  * those functions, so its exceptions never cross back into C.
  *
- * It mirrors the shipped Python binding (sensorwatch.native, v0.2.0): move-only
+ * It mirrors the shipped Python binding (sensorwatch.native, v0.3.0): move-only
  * Session / Snapshot handles closed/freed by RAII, a Reading value type, a
  * ReadingType enum that folds unrecognized categories to Unknown, and string
  * fields read through the ABI's length-query-then-copy contract. Every non-SW_OK

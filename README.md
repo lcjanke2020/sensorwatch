@@ -156,8 +156,9 @@ python -m sensorwatch --config config.toml --verbose
 ```
 
 If you previously ran the bare `sensorwatch` command from a 0.2.0-or-earlier
-install, that invocation is now the Rust CLI's `log` subcommand; the
-`python -m sensorwatch` module form is unchanged.
+install, that job now belongs to the Rust CLI's `log` subcommand — invoked by
+path as above, or as a bare `sensorwatch log` once you put the built binary on
+`PATH` yourself; the `python -m sensorwatch` module form is unchanged.
 
 The Python package stays in-tree as a **frozen reference implementation**: it
 gathered the original PSU dataset, and its pure-Python shared-memory reader

@@ -30,8 +30,8 @@ C++/Rust bindings, and the agent skills — into a tagged Python release._
   (2026-07-01, predating the tag flow), a provenance note in CONTRIBUTING's
   Rust-releasing section, and a new CONTRIBUTING **"Version streams"** section
   documenting the three deliberately independent version streams (Python
-  package `0.2.0` / C ABI draft `0.2.0` / Rust workspace `0.1.0` with
-  unreleased API awaiting the next crate release) and what publishing the
+  package `0.3.0` as of this release / C ABI draft `0.2.0` / Rust workspace
+  `0.1.0` with unreleased API awaiting the next crate release) and what publishing the
   repo-only CLI crate would take (a `version` on its path-only dependency —
   the one `cargo package` blocker — plus flipping `publish = false`, plus
   in-crate copies of the two test resources `rust/sensorwatch-cli/src/e2e.rs`

@@ -25,7 +25,7 @@ log = logging.getLogger("sensorwatch")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="sensorwatch",
+        prog="python -m sensorwatch",
         description="Monitor hardware sensors via HWiNFO64 shared memory",
     )
     parser.add_argument(

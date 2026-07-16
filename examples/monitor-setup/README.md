@@ -37,11 +37,15 @@ This directory holds three files:
 > the [test plan](PILOT_TEST_PLAN.md)) runs **from this directory**
 > (`examples/monitor-setup/`), so `config.toml` and fixture paths resolve as
 > written, and repo files are reached with `../../`. And `sensorwatch` always
-> means the **Rust CLI** — the repo-built binary is not on `PATH`, so invoke it
-> by path: `../../rust/target/release/sensorwatch` (`sensorwatch.exe` on
-> Windows). (Only a stale Python install — 0.2.0 or earlier — still puts a
-> `sensorwatch` console script, with no `watch`/`report`, on `PATH`; 0.3.0
-> dropped it.)
+> means the **Rust CLI** — the repo-built binary is not on `PATH`, so alias it
+> once per shell and every command below pastes as written:
+>
+> ```sh
+> alias sensorwatch=../../rust/target/release/sensorwatch   # Git Bash on Windows: append .exe
+> ```
+>
+> (Only a stale Python install — 0.2.0 or earlier — still puts a `sensorwatch`
+> console script, with no `watch`/`report`, on `PATH`; 0.3.0 dropped it.)
 
 ## 1. Rules — `config.toml`
 
