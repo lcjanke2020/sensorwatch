@@ -671,7 +671,8 @@ fn out_hardlinked_to_an_input_log_is_refused_and_history_survives() {
 /// alias" would truncate the shared file (reproduced in review round 4). The
 /// export must refuse with a fatal error instead, because it cannot prove
 /// the pre-existing --out is not the history. Unix-only: 0o222 is Unix
-/// permission semantics (and Windows identity opens request no read access).
+/// permission semantics (same-file's identity open is read-only on every
+/// platform, but Windows read denial comes from ACLs, not mode bits).
 #[cfg(unix)]
 #[test]
 fn unverifiable_input_identity_fails_closed_and_history_survives() {
@@ -682,6 +683,15 @@ fn unverifiable_input_identity_fails_closed_and_history_survives() {
     let hard = dir.path().join("hard.jsonl");
     std::fs::hard_link(&target, &hard).unwrap();
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o222)).unwrap();
+
+    // Running as root (some CI containers) bypasses the permission bits — the
+    // identity check then succeeds, correctly detects the alias, and exits 2,
+    // so the fail-closed path can't be exercised. Skip rather than assert
+    // falsely (the same guard as report_cli's permission test).
+    if std::fs::File::open(&target).is_ok() {
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
 
     let output = sensorwatch(&[
         "export",
