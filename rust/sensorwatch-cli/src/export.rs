@@ -32,15 +32,14 @@
 //! **Read-only guarantee.** `export` never writes state — in particular it
 //! never touches `watch.seq`. Its only write is the `--out` file, which is
 //! created or truncated; an `--out` that aliases one of the selected input
-//! logs — by path (symlinks, `.`/`..` segments, Windows case folding) or, on
-//! Unix, by file identity (hard links share an inode but canonicalize to two
-//! different paths) — is refused (usage error) so the export can never
-//! destroy the history it reads. The output is opened without truncation and
-//! truncated only after the guard passes, through the same handle, so the
-//! file that was checked is the file that gets truncated. std has no stable
-//! Windows file-identity API, so an NTFS hard link to a log is the one alias
-//! the Windows check misses. A mid-write failure exits 1 and may leave a
-//! partial file behind.
+//! logs — by path (symlinks, `.`/`..` segments, Windows case folding) or by
+//! file identity (hard links share one file but canonicalize to two
+//! different paths) — is refused (usage error) on every platform, so the
+//! export can never destroy the history it reads. The output is opened
+//! without truncation and truncated only after the guard passes, through the
+//! same handle, so the file that was checked is the file that gets
+//! truncated. A mid-write failure exits 1 and may leave a partial file
+//! behind.
 //!
 //! **Timestamps are UTC instants.** The log line's original local offset
 //! (`raw_timestamp`) is not preserved as a column; convert in SQL
@@ -278,24 +277,22 @@ fn usage(message: impl AsRef<str>) -> ExitCode {
 }
 
 /// True when the already-open (and not yet truncated) output is one of the
-/// selected input logs. Two alias mechanisms are checked: canonical-path
-/// equality — symlinks, `.`/`..` segments, Windows case folding — and, on
-/// Unix, the opened handle's file identity (`st_dev`, `st_ino`), which also
-/// catches hard links, where two directory entries share an inode but
-/// canonicalize to two different paths. std exposes no stable Windows
-/// file-identity API (`MetadataExt::file_index` is nightly-only), so Windows
-/// keeps the path check alone. Candidates exist on disk (`candidate_files`
-/// stats them), so both sides canonicalize; a candidate that fails to is
-/// unreadable and moot.
+/// selected input logs. Two alias mechanisms are checked, both on every
+/// platform: canonical-path equality — symlinks, `.`/`..` segments, Windows
+/// case folding — and file identity via [`same_file::Handle`] (`st_dev`/
+/// `st_ino` on Unix, volume serial number + file index on Windows), which
+/// also catches hard links, where two directory entries share one file but
+/// canonicalize to two different paths. The output's identity comes from the
+/// opened handle itself (`try_clone` duplicates the OS handle), so the file
+/// that is judged is the file that was opened. Candidates exist on disk
+/// (`candidate_files` stats them); a candidate that can be neither
+/// canonicalized nor opened is unreadable and moot.
 fn aliases_selected_input(out: &File, out_path: &std::path::Path, inputs: &[PathBuf]) -> bool {
     let out_canonical = std::fs::canonicalize(out_path).ok();
-    #[cfg(unix)]
-    let out_id = {
-        use std::os::unix::fs::MetadataExt;
-        out.metadata().ok().map(|meta| (meta.dev(), meta.ino()))
-    };
-    #[cfg(not(unix))]
-    let _ = out;
+    let out_handle = out
+        .try_clone()
+        .ok()
+        .and_then(|clone| same_file::Handle::from_file(clone).ok());
     inputs.iter().any(|input| {
         if let (Some(out_canonical), Ok(input_canonical)) =
             (out_canonical.as_ref(), std::fs::canonicalize(input))
@@ -304,13 +301,11 @@ fn aliases_selected_input(out: &File, out_path: &std::path::Path, inputs: &[Path
                 return true;
             }
         }
-        #[cfg(unix)]
+        if let (Some(out_handle), Ok(input_handle)) =
+            (out_handle.as_ref(), same_file::Handle::from_path(input))
         {
-            use std::os::unix::fs::MetadataExt;
-            if let (Some(out_id), Ok(meta)) = (out_id, std::fs::metadata(input)) {
-                if out_id == (meta.dev(), meta.ino()) {
-                    return true;
-                }
+            if *out_handle == input_handle {
+                return true;
             }
         }
         false

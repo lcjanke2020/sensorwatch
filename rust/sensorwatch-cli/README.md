@@ -289,8 +289,8 @@ Flags: `--out/-o <PATH>` (required; created, or **truncated** if it already
 exists — no overwrite prompt, and if a mid-write failure exits 1 a partial file
 may remain; the one refusal: an `--out` that names or aliases a **selected
 input log** is a usage error, so the export can never destroy the history it
-reads — path aliases such as symlinks, `.` segments, and case folding are
-detected on every platform, hard links additionally on Unix);
+reads — aliases are detected both by canonical path and by file identity, so
+symlinks, `.` segments, case folding, and hard links are all caught);
 `--config/-c` (supplies **only** `log_dir` — `[[rules]]` and
 `interval_seconds` are never read, and the config is not consulted at all when
 `--log-dir` is given); `--since`/`--until`/`--last` (the same forms and defaults

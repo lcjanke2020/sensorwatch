@@ -625,11 +625,12 @@ fn out_aliasing_an_input_log_is_refused_and_history_survives() {
     assert_eq!(rows(&unselected).len(), 16);
 }
 
-/// A hard link shares the input's inode but canonicalizes to a different
-/// path, so a path-based guard alone misses it: before the identity check,
-/// this truncated both directory entries (the same file) and exited 0. On
-/// Unix the guard now compares (st_dev, st_ino) through the opened handle.
-#[cfg(unix)]
+/// A hard link shares the input's file identity but canonicalizes to a
+/// different path, so a path-based guard alone misses it: before the
+/// identity check, this truncated both directory entries (the same file)
+/// and exited 0. The guard now compares file identity through the opened
+/// handle on every platform — dev/inode on Unix, volume serial number +
+/// file index on Windows (NTFS hard links, so this runs on Windows CI too).
 #[test]
 fn out_hardlinked_to_an_input_log_is_refused_and_history_survives() {
     let (dir, config) = full_fixture();

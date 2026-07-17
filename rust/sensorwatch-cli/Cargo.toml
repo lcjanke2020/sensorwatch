@@ -59,3 +59,10 @@ ctrlc = { version = "3.4", features = ["termination"] }
 # the committed lockfile plus the --locked rust-msrv job make that a visible
 # failure at update time, never a silent MSRV break.
 parquet = { version = "59", default-features = false, features = ["snap"] }
+# `export`'s --out alias guard (LEO-349): file-identity comparison so an --out
+# that hard-links a selected input log is refused on every platform — two
+# directory entries for one file canonicalize to different paths, and std's
+# Windows file-identity API is nightly-only. Pure std on Unix (dev/ino); on
+# Windows it calls GetFileInformationByHandle via winapi-util, reusing the
+# windows-sys already in the tree.
+same-file = "1"
