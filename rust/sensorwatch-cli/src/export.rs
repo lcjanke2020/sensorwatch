@@ -49,8 +49,10 @@
 //! **Timestamps are UTC instants.** The log line's original local offset
 //! (`raw_timestamp`) is not preserved as a column; convert in SQL
 //! (`timestamp AT TIME ZONE ...`) for local wall-clock questions. Sub-µs
-//! precision would be truncated by `as_microsecond`, but both loggers write
-//! exactly six fractional digits, so nothing is lost.
+//! precision would be truncated by `as_microsecond`, but every timestamp the
+//! replay parser accepts is microsecond-or-coarser (the current loggers
+//! write six fractional digits; pendulum-era lines write none), so nothing
+//! is lost.
 
 use std::fs::File;
 use std::path::PathBuf;
@@ -421,8 +423,9 @@ impl<W: std::io::Write + Send> ParquetSink<W> {
         self.readings.push(ByteArray::from(r.reading.as_str()));
         self.types.push(ByteArray::from(r.kind));
         // ReplaySource folds absent/`null`/Python non-finite tokens to NaN
-        // (and ±Infinity parses to itself), so `is_finite` is the single,
-        // total present-vs-NULL gate.
+        // (the fixup pass rewrites the bare tokens to `null` before parsing),
+        // and an overflowing JSON number parses to ±infinity, so `is_finite`
+        // is the single, total present-vs-NULL gate.
         if r.value.is_finite() {
             self.values.push(r.value);
             self.value_defs.push(1);
