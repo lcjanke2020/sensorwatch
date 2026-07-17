@@ -29,7 +29,9 @@ until the next Python release picks it up._
   SQL NULL), `unit` (STRING); HWiNFO's source-lifetime min/max/avg are
   deliberately excluded. An `--out` that names or aliases a selected input log
   — by path or by file identity, hard links included — is refused (usage
-  error), so an export can never overwrite the history it reads. The
+  error), and a pre-existing `--out` that cannot be verified distinct from
+  every input fails closed (fatal error) rather than truncating unverified,
+  so an export can never overwrite the history it reads. The
   sanctioned **deep-analysis** surface for per-sample SQL with DuckDB / Polars
   / pandas on the consumer side; `report` stays the first-line bounded digest.
   The usage skill gains a matching "deep analysis" recipe (Recipe 5),

@@ -95,8 +95,10 @@ pub enum Command {
     ///
     /// Exit codes: 0 an export was written — including a zero-row window (a
     /// valid schema-only file, the "logger is dead" signal); 1 fatal (an
-    /// existing config that cannot be read, or the output file cannot be
-    /// created or written); 2 usage (bad window/duration arguments, a
+    /// existing config that cannot be read, the output file cannot be
+    /// created or written, or a pre-existing --out whose distinctness from
+    /// the input logs cannot be verified — the guard fails closed rather
+    /// than truncate unverified); 2 usage (bad window/duration arguments, a
     /// malformed config, missing --out, or an --out naming a selected input
     /// log).
     Export(ExportArgs),

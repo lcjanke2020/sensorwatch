@@ -38,7 +38,12 @@
 //! export can never destroy the history it reads. The output is opened
 //! without truncation and truncated only after the guard passes, through the
 //! same handle, so the file that was checked is the file that gets
-//! truncated. A mid-write failure exits 1 and may leave a partial file
+//! truncated. The guard is conclusive or it refuses: a pre-existing `--out`
+//! whose distinctness from every input cannot be *proven* (an input whose
+//! identity cannot be obtained, say) fails closed with a fatal error rather
+//! than truncating unverified, while a brand-new `--out` (created
+//! exclusively) needs no guard at all — a file that did not exist cannot
+//! alias an input. A mid-write failure exits 1 and may leave a partial file
 //! behind.
 //!
 //! **Timestamps are UTC instants.** The log line's original local offset
@@ -174,19 +179,37 @@ pub(crate) fn run(args: &ExportArgs) -> ExitCode {
     // exported if it named (or aliased) a selected input log.
     let files = digest::candidate_files(&log_dir, since, until, &tz);
 
-    // Open the output WITHOUT truncating, then let the alias guard judge the
-    // opened handle itself. Only a pre-existing file can alias an input (a
-    // freshly created one has a fresh identity and a fresh canonical path), a
+    // Open the output WITHOUT truncating, trying brand-new creation first: a
+    // file that did not exist cannot alias a selected input, so only a
+    // pre-existing `--out` needs the alias guard — which then judges the
+    // opened handle itself and must be CONCLUSIVE (an identity it cannot
+    // obtain is a refusal, never a shrug; see `aliases_selected_input`). A
     // refused output is left exactly as it was found, and truncating through
     // the validated handle — not by reopening the path — means the file that
     // was checked is the file that gets truncated.
-    let file = match File::options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&args.out)
-    {
-        Ok(file) => file,
+    let (file, preexisting) = match File::options().write(true).create_new(true).open(&args.out) {
+        Ok(file) => (file, false),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            // `create(true)` keeps a dangling-symlink --out working: create_new
+            // sees EEXIST for the link itself while its target may still need
+            // creating (in which case the guard below sees a fresh, unaliased
+            // file and passes).
+            match File::options()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&args.out)
+            {
+                Ok(file) => (file, true),
+                Err(err) => {
+                    eprintln!(
+                        "sensorwatch export: cannot create {}: {err}",
+                        args.out.display()
+                    );
+                    return ExitCode::from(exit::FATAL);
+                }
+            }
+        }
         Err(err) => {
             eprintln!(
                 "sensorwatch export: cannot create {}: {err}",
@@ -195,11 +218,22 @@ pub(crate) fn run(args: &ExportArgs) -> ExitCode {
             return ExitCode::from(exit::FATAL);
         }
     };
-    if aliases_selected_input(&file, &args.out, &files) {
-        return usage(format!(
-            "--out {} is one of the selected input logs; refusing to overwrite history",
-            args.out.display()
-        ));
+    if preexisting {
+        match aliases_selected_input(&file, &args.out, &files) {
+            Ok(false) => {}
+            Ok(true) => {
+                return usage(format!(
+                    "--out {} is one of the selected input logs; refusing to overwrite history",
+                    args.out.display()
+                ));
+            }
+            // Fail closed: truncating a pre-existing file whose distinctness
+            // from the inputs cannot be proven risks the history itself.
+            Err(why) => {
+                eprintln!("sensorwatch export: {why}; refusing to overwrite history unverified");
+                return ExitCode::from(exit::FATAL);
+            }
+        }
     }
     // Truncate now that the handle is validated — even a zero-sample window
     // leaves a valid schema-only file behind.
@@ -276,40 +310,58 @@ fn usage(message: impl AsRef<str>) -> ExitCode {
     ExitCode::from(exit::USAGE)
 }
 
-/// True when the already-open (and not yet truncated) output is one of the
-/// selected input logs. Two alias mechanisms are checked, both on every
+/// Judges whether the already-open (and not yet truncated) output is one of
+/// the selected input logs. Two alias mechanisms are checked, both on every
 /// platform: canonical-path equality — symlinks, `.`/`..` segments, Windows
 /// case folding — and file identity via [`same_file::Handle`] (`st_dev`/
 /// `st_ino` on Unix, volume serial number + file index on Windows), which
 /// also catches hard links, where two directory entries share one file but
 /// canonicalize to two different paths. The output's identity comes from the
 /// opened handle itself (`try_clone` duplicates the OS handle), so the file
-/// that is judged is the file that was opened. Candidates exist on disk
-/// (`candidate_files` stats them); a candidate that can be neither
-/// canonicalized nor opened is unreadable and moot.
-fn aliases_selected_input(out: &File, out_path: &std::path::Path, inputs: &[PathBuf]) -> bool {
+/// that is judged is the file that was opened; the path check stays as an
+/// independent second net for filesystems with unreliable file identities.
+///
+/// Path inequality proves nothing (that is exactly the hard-link case), so
+/// distinctness rests on file identity alone — and an identity that cannot
+/// be obtained is therefore an `Err`, never a silent "not an alias". The
+/// caller fails closed on `Err` instead of truncating unverified: a
+/// write-only input, for example, defeats the read-only identity open on
+/// Unix while remaining perfectly truncatable through a hard link.
+fn aliases_selected_input(
+    out: &File,
+    out_path: &std::path::Path,
+    inputs: &[PathBuf],
+) -> Result<bool, String> {
     let out_canonical = std::fs::canonicalize(out_path).ok();
     let out_handle = out
         .try_clone()
-        .ok()
-        .and_then(|clone| same_file::Handle::from_file(clone).ok());
-    inputs.iter().any(|input| {
+        .and_then(same_file::Handle::from_file)
+        .map_err(|err| {
+            format!(
+                "cannot verify the identity of --out {}: {err}",
+                out_path.display()
+            )
+        })?;
+    for input in inputs {
         if let (Some(out_canonical), Ok(input_canonical)) =
             (out_canonical.as_ref(), std::fs::canonicalize(input))
         {
             if *out_canonical == input_canonical {
-                return true;
+                return Ok(true);
             }
         }
-        if let (Some(out_handle), Ok(input_handle)) =
-            (out_handle.as_ref(), same_file::Handle::from_path(input))
-        {
-            if *out_handle == input_handle {
-                return true;
-            }
+        let input_handle = same_file::Handle::from_path(input).map_err(|err| {
+            format!(
+                "cannot verify that --out {} and the selected input log {} are distinct files: {err}",
+                out_path.display(),
+                input.display()
+            )
+        })?;
+        if out_handle == input_handle {
+            return Ok(true);
         }
-        false
-    })
+    }
+    Ok(false)
 }
 
 /// A columnar sink over [`SerializedFileWriter`]: buffers up to

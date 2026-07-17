@@ -665,6 +665,53 @@ fn out_hardlinked_to_an_input_log_is_refused_and_history_survives() {
     assert_eq!(std::fs::read(&hard).unwrap(), DAY1.as_bytes());
 }
 
+/// An input whose identity cannot be obtained must fail CLOSED. With a
+/// write-only (0222) hard-linked input, canonical paths differ and the
+/// read-only identity open fails — a guard that shrugged that off as "not an
+/// alias" would truncate the shared file (reproduced in review round 4). The
+/// export must refuse with a fatal error instead, because it cannot prove
+/// the pre-existing --out is not the history. Unix-only: 0o222 is Unix
+/// permission semantics (and Windows identity opens request no read access).
+#[cfg(unix)]
+#[test]
+fn unverifiable_input_identity_fails_closed_and_history_survives() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (dir, config) = full_fixture();
+    let target = dir.path().join("logs").join("sensors_2026-02-18.jsonl");
+    let hard = dir.path().join("hard.jsonl");
+    std::fs::hard_link(&target, &hard).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o222)).unwrap();
+
+    let output = sensorwatch(&[
+        "export",
+        "--config",
+        arg(&config),
+        FULL_WINDOW[0],
+        FULL_WINDOW[1],
+        FULL_WINDOW[2],
+        FULL_WINDOW[3],
+        "--out",
+        arg(&hard),
+    ]);
+    // Restore permissions first so the assertions below can read the file.
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an unverifiable input must fail closed as a fatal error; stderr: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("cannot verify"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    // Both directory entries still hold the untouched history.
+    assert_eq!(std::fs::read(&target).unwrap(), DAY1.as_bytes());
+    assert_eq!(std::fs::read(&hard).unwrap(), DAY1.as_bytes());
+}
+
 #[test]
 fn compound_and_bare_integer_last_forms_select_the_window() {
     let (dir, config) = full_fixture();

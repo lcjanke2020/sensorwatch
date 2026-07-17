@@ -290,7 +290,9 @@ exists — no overwrite prompt, and if a mid-write failure exits 1 a partial fil
 may remain; the one refusal: an `--out` that names or aliases a **selected
 input log** is a usage error, so the export can never destroy the history it
 reads — aliases are detected both by canonical path and by file identity, so
-symlinks, `.` segments, case folding, and hard links are all caught);
+symlinks, `.` segments, case folding, and hard links are all caught, and if a
+pre-existing `--out` cannot be *proven* distinct from every input the export
+fails closed with a fatal error instead of truncating unverified);
 `--config/-c` (supplies **only** `log_dir` — `[[rules]]` and
 `interval_seconds` are never read, and the config is not consulted at all when
 `--log-dir` is given); `--since`/`--until`/`--last` (the same forms and defaults
@@ -336,7 +338,7 @@ LIMIT 5;   -- "when did the rail sag lowest?"
 | Code | Meaning |
 |------|---------|
 | 0 | An export was written — including a zero-row window, which yields a valid schema-only file (the dead-logger signal) |
-| 1 | Fatal: an existing config could not be read, or the output file could not be created or written — message on stderr (a partial `--out` may remain) |
+| 1 | Fatal: an existing config could not be read, the output file could not be created or written, or a pre-existing `--out` could not be verified distinct from the input logs (the alias guard fails closed) — message on stderr (a partial `--out` may remain) |
 | 2 | Usage error: a bad `--since`/`--until`/`--last` value, `since` after `until`, a syntactically malformed config, a missing `--out`, or an `--out` naming a selected input log |
 
 ## License
