@@ -73,6 +73,35 @@ pub enum Command {
     /// even fully truncated). Pure file reading — works on any platform, with
     /// or without a live sensor source.
     Report(ReportArgs),
+
+    /// Export a window of logged sensor history as a flat Apache Parquet file
+    /// (Snappy) — one row per reading per sample — for per-sample SQL analysis
+    /// with any Parquet reader (DuckDB, Polars, pandas) on the consumer side.
+    ///
+    /// The deep-analysis complement to `report`: the digest stays the
+    /// first-line, bounded surface; `export` materializes the samples
+    /// themselves when a per-sample question genuinely needs them. Six fixed
+    /// columns, in file order: timestamp (TIMESTAMP, microseconds, UTC),
+    /// sensor, reading, type (strings), value (nullable DOUBLE — absent,
+    /// null, and non-finite readings become SQL NULL), unit (string).
+    /// HWiNFO's source-lifetime min/max/avg are deliberately not exported.
+    /// Streams through the same bounded lenient parser as `report` (malformed
+    /// and oversized lines are skipped and counted); memory stays bounded via
+    /// fixed-size row groups. `--out` is created or truncated — but an --out
+    /// that aliases a selected input log is refused, checked both by path
+    /// and by file identity (hard links included), so the export can never
+    /// destroy the history it reads. Read-only over the logs; never touches
+    /// `watch.seq`. Pure file reading — works on any platform.
+    ///
+    /// Exit codes: 0 an export was written — including a zero-row window (a
+    /// valid schema-only file, the "logger is dead" signal); 1 fatal (an
+    /// existing config that cannot be read, the output file cannot be
+    /// created or written, or a pre-existing --out whose distinctness from
+    /// the input logs cannot be verified — the guard fails closed rather
+    /// than truncate unverified); 2 usage (bad window/duration arguments, a
+    /// malformed config, missing --out, or an --out naming a selected input
+    /// log).
+    Export(ExportArgs),
 }
 
 #[derive(Args)]
@@ -236,6 +265,47 @@ pub struct ReportArgs {
         value_parser = clap::value_parser!(u32).range(..=16)
     )]
     pub indent: u32,
+
+    /// Enable debug logging on stderr (takes precedence over RUST_LOG).
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
+}
+
+#[derive(Args)]
+pub struct ExportArgs {
+    /// Path to config.toml (default: ./config.toml if present). Supplies only
+    /// the `log_dir`; `[[rules]]` and `interval_seconds` are not read, and the
+    /// config is not consulted at all when `--log-dir` is given.
+    #[arg(long, short = 'c', value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
+    /// Window start: an RFC 3339 instant, a local `YYYY-MM-DDTHH:MM:SS`, or a
+    /// bare `YYYY-MM-DD` (the start of that local day). Overrides `--last`.
+    #[arg(long, value_name = "WHEN", conflicts_with = "last")]
+    pub since: Option<String>,
+
+    /// Window end (same forms as `--since`; a bare `YYYY-MM-DD` means the END
+    /// of that local day). Defaults to now; pass it explicitly for a
+    /// reproducible window, as tests and scripts should.
+    #[arg(long, value_name = "WHEN")]
+    pub until: Option<String>,
+
+    /// Trailing window length ending at `--until`, when `--since` is absent.
+    /// Accepts `24h`, `90m`, `45s`, `7d`, compound `1d12h` (case-insensitive
+    /// units), or a bare integer of seconds.
+    #[arg(long, default_value = "24h", value_name = "DURATION")]
+    pub last: String,
+
+    /// Write the Parquet file to this path (created, or truncated if it
+    /// already exists — except a path that names one of the selected input
+    /// logs, which is refused). Required.
+    #[arg(long, short = 'o', value_name = "PATH")]
+    pub out: PathBuf,
+
+    /// Read logs from this directory instead of the config's `log_dir`. A
+    /// missing or unreadable directory yields a clean zero-row export.
+    #[arg(long = "log-dir", value_name = "PATH")]
+    pub log_dir: Option<PathBuf>,
 
     /// Enable debug logging on stderr (takes precedence over RUST_LOG).
     #[arg(long, short = 'v')]

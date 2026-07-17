@@ -106,8 +106,15 @@ Two standing notes:
 
 - The published Rust crates (`0.1.0`, 2026-07-01) have since gained public API
   in-tree (`Snapshot::from_buffer` and the regenerated `-sys` bindings for C ABI
-  `0.2.0`); that API is unreleased until the next crate release, which should
-  bump the workspace to `0.2.0` via the flow below.
+  `0.2.0`), the CLI gained the `export` subcommand, and the workspace MSRV moved
+  from 1.82 to 1.85 (the `parquet` crate's floor, LEO-349); all of that is
+  unreleased until the next crate release, which should bump the workspace to
+  `0.2.0` via the flow below and will publish crates carrying
+  `rust-version = "1.85"`. The library crates themselves still only need 1.82
+  (parquet is a CLI-only dependency); they inherit the workspace floor
+  **deliberately** — one MSRV, one CI leg — and cargo's MSRV-aware resolver
+  hands older-toolchain consumers `0.1.0`. Split the floors per crate only if
+  a consumer actually asks for the older one.
 - The CLI crate (`sensorwatch-cli`) is repo-only (`publish = false`) and
   versions with the workspace. If it is ever published: the one
   `cargo package` blocker is the path-only dependency on the wrapper

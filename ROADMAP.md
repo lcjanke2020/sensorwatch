@@ -21,7 +21,7 @@ nothing below depends on a later phase to be useful.
 | Python binding (cffi, API mode) | Shipped — `sensorwatch.native` |
 | C++ binding (header-only, C++17 RAII) | Shipped — [`include/sensorwatch/sensorwatch.hpp`](include/sensorwatch/sensorwatch.hpp) |
 | Rust bindings (`-sys` crate + safe wrapper) | Shipped — [crates.io](https://crates.io/crates/sensorwatch), OIDC trusted publishing |
-| Rust CLI — `snapshot` + `log` + `watch` + `report` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), the canonical CLI (repo-built binary `sensorwatch`) |
+| Rust CLI — `snapshot` + `log` + `watch` + `report` + `export` subcommands | Shipped — [`rust/sensorwatch-cli`](rust/sensorwatch-cli/), the canonical CLI (repo-built binary `sensorwatch`) |
 | CMake `install()` / `find_package(sensorwatch CONFIG)` export | Shipped |
 | Agent skill (portable Agent Skills bundle) | Shipped — [`skills/sensorwatch/`](skills/sensorwatch/) |
 | Agent monitor skill (wake-up protocol + durable state dir) | Shipped — [`skills/sensorwatch-monitor/`](skills/sensorwatch-monitor/) |
@@ -191,6 +191,13 @@ earliest design discussions:
   hardware renames and multi-source setups.
 - **Per-reading quality flags.** `valid` / `stale` / `missing` as first-class
   data instead of inference, feeding the rule engine directly.
+- **Deep-analysis query surface.** *Partially shipped (LEO-349):* the CLI's
+  `export` subcommand materializes a time window as a flat
+  one-row-per-reading-per-sample Parquet file (Snappy), queried consumer-side
+  with DuckDB/Polars/pandas — the sanctioned per-sample complement to the
+  aggregate-only `report`. Still open: a managed query wrapper (guardrailed
+  SQL execution with result-row caps and timeouts), if recipe-level discipline
+  proves insufficient.
 - **Optional localhost REST service.** Read-only live queries bound strictly
   to `127.0.0.1`, for dashboards and non-Python consumers. This is also the
   designated route should remote access ever be wanted — see the threat model

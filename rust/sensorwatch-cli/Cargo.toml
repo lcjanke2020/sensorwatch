@@ -36,15 +36,33 @@ sensorwatch = { path = "../sensorwatch" }
 # next subcommands (ROADMAP Phase 1): toml + jiff (`log` config and
 # timestamps), ctrlc (graceful shutdown for `log`/`watch`).
 # clap is capped at 4.5.57, the last patch whose tree stays on edition 2021
-# (clap 4.6, and clap_builder >= 4.5.58 via clap_lex 1.x, are edition 2024 —
-# see the toml note).
+# (clap 4.6, and clap_builder >= 4.5.58 via clap_lex 1.x, are edition 2024).
+# The cap was forced by the old 1.82 MSRV; the 1.85 MSRV (LEO-349) parses
+# edition 2024, so it is liftable in a dedicated bump PR — kept here to avoid
+# churning the resolved tree in a feature PR (see the toml note).
 clap = { version = ">=4.5, <4.5.58", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4"
 env_logger = "0.11"
-# toml is capped below 0.9: the 0.9 family (serde_spanned 1.x) is edition
-# 2024, which the MSRV toolchain (1.82) cannot parse.
+# toml is capped below 0.9: the 0.9 family (serde_spanned 1.x) is edition 2024,
+# which the old MSRV toolchain (1.82) could not parse. Liftable-later on the
+# 1.85 MSRV, same reasoning as the clap cap above.
 toml = "0.8"
 jiff = "0.2"
 ctrlc = { version = "3.4", features = ["termination"] }
+# `export` (LEO-349): the first dependency added since the LEO-333 set. Minimal
+# build — default features off drops the whole arrow stack; `snap` enables the
+# Snappy compression the export writes (and the tests read back). parquet 59.x
+# requires Rust 1.85, which is what moved the workspace MSRV off 1.82. The
+# caret bound excludes 60.x, but arrow-rs may raise MSRV in a 59.x minor too —
+# the committed lockfile plus the --locked rust-msrv job make that a visible
+# failure at update time, never a silent MSRV break.
+parquet = { version = "59", default-features = false, features = ["snap"] }
+# `export`'s --out alias guard (LEO-349): file-identity comparison so an --out
+# that hard-links a selected input log is refused on every platform — two
+# directory entries for one file canonicalize to different paths, and std's
+# Windows file-identity API is nightly-only. Pure std on Unix (dev/ino); on
+# Windows it calls GetFileInformationByHandle via winapi-util, reusing the
+# windows-sys already in the tree.
+same-file = "1"

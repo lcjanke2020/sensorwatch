@@ -405,26 +405,26 @@ jobs:
       - name: Dry-run publish sensorwatch-sys (packages + verify build from the tarball)
         run: cargo publish --dry-run -p sensorwatch-sys
 
-  # Verify the declared MSRV (rust-version = 1.82, the floor for bindgen's
-  # `unsafe extern` blocks) actually builds — the `rust` job above uses the
-  # runner's default stable, which would hide an accidental newer-than-1.82
-  # feature. `cargo check --all-targets` runs build.rs (so the C core is compiled
-  # via cc) and type-checks the crates and their tests on 1.82.
+  # Verify the declared MSRV (rust-version = 1.85, the floor set by the parquet
+  # crate's edition-2024 tree — LEO-349) actually builds — the `rust` job above
+  # uses the runner's default stable, which would hide an accidental
+  # newer-than-1.85 feature. `cargo check --all-targets` runs build.rs (so the C
+  # core is compiled via cc) and type-checks the crates and their tests on 1.85.
   rust-msrv:
-    name: rust MSRV (1.82)
+    name: rust MSRV (1.85)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: rust
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: Install Rust 1.82.0
+      - name: Install Rust 1.85.0
         run: |
-          rustup toolchain install 1.82.0 --profile minimal
-          rustup override set 1.82.0
+          rustup toolchain install 1.85.0 --profile minimal
+          rustup override set 1.85.0
           rustc --version
       - name: Check on MSRV
-        run: cargo +1.82.0 check --workspace --all-targets --locked
+        run: cargo +1.85.0 check --workspace --all-targets --locked
 
   consumer-smoke-windows:
     name: consumer smoke (windows, msvc)
